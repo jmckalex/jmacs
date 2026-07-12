@@ -118,13 +118,19 @@ export class TextView extends ViewElement {
    * the desktop app passes via `configure`).
    *
    * @param {*} view
+   * @param {{ followMode?: 'auto' }} [opts] - Forwarded verbatim to the inner
+   *   editor. A server reconcile passes `{ followMode: 'auto' }` so the
+   *   follow-cursor yank-gate applies (scroll to the caret only when it
+   *   actually moved). Dropping it here forced a follow on EVERY reconcile, so
+   *   a scrolled-away viewport snapped to the caret on any server push (e.g. a
+   *   hover-doc round trip while scrolled down — the "hover snaps to top" bug).
    */
-  setView(view) {
+  setView(view, opts) {
     this._pendingView = view;
     this._pendingBuffer = view && view.buffer ? view.buffer : null;
     this._syncFilePathAttr(this._pendingBuffer);
     if (this._editor !== null) {
-      this._editor.setView(view);
+      this._editor.setView(view, opts);
     }
   }
 
@@ -230,6 +236,13 @@ export class TextView extends ViewElement {
   /** Flash a transient highlight band over the cursor's line. */
   flashCurrentLine() {
     if (this._editor !== null) this._editor.flashCurrentLine();
+  }
+
+  /** Force a re-render without moving the cursor — used by an embedding
+   *  host (the notebook view) to re-mount replaced-range widgets after an
+   *  out-of-band content change (a cell finished running). */
+  refresh() {
+    if (this._editor !== null) this._editor.refresh();
   }
 
   /** Roughly how many lines fit in the viewport — for paging. */

@@ -36,6 +36,84 @@ function snapshotLeaves(node, out = []) {
   return out;
 }
 
+// --- add-pane: insert at a border / splitter (the visual add-pane macro) ---
+
+test('addPaneAtBorder wraps the layout in an outer split; the new leaf takes focus', () => {
+  const { model, log } = makeModel('b1');
+  const before = log.changes;
+  const leaf = model.addPaneAtBorder('right');
+  assert.ok(leaf, 'returns the new leaf');
+  assert.equal(model.leafCount(), 2);
+  assert.equal(model.root.kind, 'split'); // the tree is now wrapped
+  assert.equal(model.focusedId, leaf.id); // focus MOVED to the new pane
+  assert.equal(model.focusedBufferId(), 'b1'); // shows the source buffer (like split)
+  assert.equal(log.changes, before + 1);
+});
+
+test('addPaneAtBorder rejects an unknown side (no tree change)', () => {
+  const { model, log } = makeModel('b1');
+  const before = log.changes;
+  assert.equal(model.addPaneAtBorder('sideways'), null);
+  assert.equal(model.leafCount(), 1);
+  assert.equal(log.changes, before);
+});
+
+test('addPaneAtSplitter inserts a third sibling into an existing split; new leaf focused', () => {
+  const { model } = makeModel('b1');
+  model.split('horizontal', 0.5); // now a split with two leaves
+  const splitId = model.root.id;
+  const leaf = model.addPaneAtSplitter(splitId);
+  assert.ok(leaf, 'returns the new leaf');
+  assert.equal(model.leafCount(), 3); // two existing + the new sibling
+  assert.equal(model.focusedId, leaf.id);
+});
+
+test('addPaneAtSplitter is a no-op (null) for an unknown split id', () => {
+  const { model, log } = makeModel('b1');
+  model.split('horizontal', 0.5);
+  const before = log.changes;
+  assert.equal(model.addPaneAtSplitter('no-such-split'), null);
+  assert.equal(model.leafCount(), 2);
+  assert.equal(log.changes, before);
+});
+
+// --- move-views: structural swap / permute (swap-views / permute-views) ---
+
+test('moveViews swaps two leaves STRUCTURALLY — the ids move (guest rides along)', () => {
+  const { model } = makeModel('b1');
+  model.split('horizontal', 0.5); // 2 leaves in tree order [a, b]
+  const [a, b] = model.leaves();
+  // slot holding a should now hold b, and vice versa.
+  assert.equal(model.moveViews([a.id, b.id], [b.id, a.id]), true);
+  const [na, nb] = model.leaves();
+  assert.equal(na.id, b.id); // the leaf NODE moved, keeping its id
+  assert.equal(nb.id, a.id);
+});
+
+test('moveViews rotates three leaves', () => {
+  const { model } = makeModel('b1');
+  model.split('horizontal', 0.5); // 2
+  model.split('vertical', 0.5);   // 3 → tree order [a, b, c]
+  const [a, b, c] = model.leaves();
+  // slot(a)←c, slot(b)←a, slot(c)←b
+  assert.equal(model.moveViews([a.id, b.id, c.id], [c.id, a.id, b.id]), true);
+  const [na, nb, nc] = model.leaves();
+  assert.equal(na.id, c.id);
+  assert.equal(nb.id, a.id);
+  assert.equal(nc.id, b.id);
+});
+
+test('moveViews rejects a non-bijective / incomplete request (no change)', () => {
+  const { model, log } = makeModel('b1');
+  model.split('horizontal', 0.5);
+  const [a, b] = model.leaves();
+  const before = log.changes;
+  assert.equal(model.moveViews([a.id, b.id], [a.id, a.id]), false); // not a bijection
+  assert.equal(model.moveViews([a.id], [b.id]), false); // doesn't cover every leaf
+  assert.equal(model.moveViews([], []), false);
+  assert.equal(log.changes, before); // nothing fired
+});
+
 test('snapshot carries text only for a DIFFERENT-buffer leaf (Step 3b)', () => {
   const texts = { A: 'alpha text', B: 'beta text' };
   const model = createPaneModel(
@@ -92,6 +170,24 @@ test('a tabline leaf seeds its curated tabs; a switch ADDS a tab (Step 3c)', () 
   leaf = snapshotLeaves(model.snapshot())[0];
   assert.deepEqual(leaf.tabs.map((t) => t.bufferId), ['b1', 'b2'], 'no duplicate tab');
   assert.equal(leaf.bufferId, 'b1', 're-activated the existing tab');
+});
+
+test('a tabline tab carries its data-source state on the wire (Step 3c)', () => {
+  // A non-text tab (customize/jukebox/bookmark) renders FROM its state when it
+  // is the active tab. tabMeta supplies kind + state; both must reach the wire,
+  // else the active tab falls back to a default (the customize-shows-godot bug).
+  const model = createPaneModel(
+    { initialBufferId: 'ds1' },
+    {
+      nameForBuffer: (id) => `name-of-${id}`,
+      tabMeta: (id) => ({ name: `name-of-${id}`, viewKind: 'customize', state: { scope: { group: id } } }),
+    }
+  );
+  model.toggleFocusedTabline(true);
+  const leaf = snapshotLeaves(model.snapshot())[0];
+  assert.equal(leaf.tabs[0].viewKind, 'customize', 'the tab carries its kind');
+  assert.deepEqual(leaf.tabs[0].state, { scope: { group: 'ds1' } },
+    'the tab carries its state so the active tab renders the right scope');
 });
 
 test('setFocusedBuffer on a NON-tabline leaf replaces (no tab set) (Step 3c)', () => {

@@ -432,6 +432,17 @@ async function editor(initialText = 'hello world', options = {}) {
         (await readdir(languagesDir)).filter((n) => n.endsWith('.lisp')),
     }
   );
+  // B4 face-info port: face-info.lisp's commands now fetch tree-sitter info via
+  // `with-tree-sitter-info` (in the real spine, an async renderer round-trip that
+  // returns lang + captures + node-at-point together). Bridge it to the existing
+  // synchronous test stubs so the command-logic tests run unchanged.
+  interpreter.evaluate(`
+    (define (with-tree-sitter-info cb)
+      (let ((info (tree-sitter-captures-for-buffer!)))
+        (if (nil? info)
+            (cb nil nil nil)
+            (cb (car info) (cdr info) (tree-sitter-node-at-point! (point))))))
+  `);
   return {
     buffer,
     interpreter,
@@ -560,27 +571,29 @@ test('word movement extends an active region', async () => {
   assert.deepEqual(buffer.selection, { start: 0, end: 5 });
 });
 
-test('Tab key inserts *tab-width* spaces by default', async () => {
+test('Tab key inserts a literal \\t by default', async () => {
   const { buffer, interpreter } = await editor('');
   buffer.moveTo(0);
   press(interpreter, 'tab');
-  // *tab-width* defaults to 4; *indent-tabs-mode* defaults to #f.
-  assert.equal(buffer.text, '    ');
-});
-
-test('Tab key inserts a literal \\t when *indent-tabs-mode* is on', async () => {
-  const { buffer, interpreter } = await editor('');
-  buffer.moveTo(0);
-  interpreter.evaluate('(set! *indent-tabs-mode* #t)');
-  press(interpreter, 'tab');
+  // *indent-tabs-mode* defaults to #t, so Tab inserts a literal tab.
   assert.equal(buffer.text, '\t');
 });
 
-test('Tab in Makefile mode inserts a literal \\t regardless of the global', async () => {
-  // Makefile-mode pins :indent-tabs? on so a Makefile recipe gets a
-  // real tab even when *indent-tabs-mode* is its #f default.
+test('Tab key inserts *tab-width* spaces when *indent-tabs-mode* is off', async () => {
   const { buffer, interpreter } = await editor('');
   buffer.moveTo(0);
+  interpreter.evaluate('(set! *indent-tabs-mode* #f)');
+  press(interpreter, 'tab');
+  // *tab-width* defaults to 4.
+  assert.equal(buffer.text, '    ');
+});
+
+test('Tab in Makefile mode inserts a literal \\t regardless of the global', async () => {
+  // Makefile-mode pins :indent-tabs? on, so a Makefile recipe gets a
+  // real tab even when the global *indent-tabs-mode* is turned off.
+  const { buffer, interpreter } = await editor('');
+  buffer.moveTo(0);
+  interpreter.evaluate('(set! *indent-tabs-mode* #f)');
   interpreter.evaluate('(set-major-mode! makefile-mode)');
   press(interpreter, 'tab');
   assert.equal(buffer.text, '\t');
@@ -589,6 +602,8 @@ test('Tab in Makefile mode inserts a literal \\t regardless of the global', asyn
 test('changing *tab-width* changes how many spaces Tab emits', async () => {
   const { buffer, interpreter } = await editor('');
   buffer.moveTo(0);
+  // *tab-width* only governs the Tab key when tabs-mode is off (spaces).
+  interpreter.evaluate('(set! *indent-tabs-mode* #f)');
   interpreter.evaluate('(set! *tab-width* 2)');
   press(interpreter, 'tab');
   assert.equal(buffer.text, '  ');
@@ -795,13 +810,22 @@ test('C-x n opens a seeded scratch buffer; new-view stays on M-x', async () => {
 test('C-s starts an incremental search', async () => {
   const { interpreter, searchCalls } = await editor();
   press(interpreter, 'C-s');
-  assert.deepEqual(searchCalls, ['search']);
+  // isearch-forward now runs the loop in-process (search.lisp): it shows the
+  // I-search prompt and arms read-next-key — no more start-search! stub. The
+  // full per-keystroke behaviour is covered by mwb/isearch.test.js.
+  assert.ok(
+    searchCalls.some((s) => s.startsWith('status:I-search') && !s.includes('backward')),
+    `expected the I-search prompt; got ${JSON.stringify(searchCalls)}`
+  );
 });
 
 test('C-r starts a backward search', async () => {
   const { interpreter, searchCalls } = await editor();
   press(interpreter, 'C-r');
-  assert.deepEqual(searchCalls, ['search-backward']);
+  assert.ok(
+    searchCalls.some((s) => s.startsWith('status:I-search backward')),
+    `expected the I-search backward prompt; got ${JSON.stringify(searchCalls)}`
+  );
 });
 
 test('M-x opens the command palette', async () => {
@@ -2804,6 +2828,18 @@ test('current-face-styles returns an alist for every face', async () => {
   const keys = commentAttrs.map((c) => c.head.name).sort();
   assert.ok(keys.includes('foreground'));
   assert.ok(keys.includes('slant'));
+});
+
+test('current-face-styles tolerates a non-symbol *theme* (the symbol->string fix)', async () => {
+  const { interpreter } = await editor();
+  // -theme->name maps either form to the `:default-<theme>` key name.
+  assert.equal(interpreter.evaluate("(-theme->name 'solarized-dark)"), 'solarized-dark');
+  assert.equal(interpreter.evaluate('(-theme->name "solarized-dark")'), 'solarized-dark');
+  // *theme* is normally a symbol, but customize / the REPL can set it to a
+  // STRING; resolution must fall through to the matching block, not throw.
+  interpreter.evaluate('(set! *theme* "dark")');
+  const alist = listToArray(interpreter.call('current-face-styles'));
+  assert.ok(alist.length >= 13, 'resolves every face with a string *theme*, no throw');
 });
 
 // --- face overrides (Phase 2) -----------------------------------------

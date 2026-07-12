@@ -2933,6 +2933,643 @@ drop the data-source. **Bigger next:** the MUTABLE data-source fan-out seam
 A MERGE CHECKPOINT to main is worth considering (147 commits unmerged, flag-off
 byte-for-byte).
 
+## [2026-06-24] view-port sweep: 5 non-text views graduated to server data-sources
+
+**Context**: Continued the Model-B view ports. Five views ported + LIVE-VERIFIED
+by Jason this session (branch `multi-window-b`, tip `b4cf01b`, ~153 ahead, suite
+878, flag-off byte-for-byte). Not a blocker note — a session summary.
+
+**Done (4 commits):**
+- `ea556a9` PDF media fix — opened blank in server mode. `loadServerMediaSrc`
+  mutates the view in place to add `src`, then re-`setBuffer(sameRef)`; pdf-view's
+  identity guard dropped it. Now short-circuits only when already loaded/loading.
+- `eaa0e38` directory-tree/columns AS server data-sources (server detects a dir via
+  `statSync`; `<directory-tree-view>` lists the FS; file clicks → new `VISIT_FILE`
+  intent → `visitFile`). **Folded in: session TAB-CLOSE fix** (`shownBufferIds` —
+  persistence records the SHOWN pane-tree set, re-persists on a pane intent; a
+  closed/un-curated tab stays closed across relaunch).
+- `1b07615` generic element-views (atari + bib-search + any define-element-view).
+  Renderer-computes-and-sends: 3 new protocol msgs CLIENT_COMMANDS /
+  RUN_CLIENT_COMMAND / OPEN_ELEMENT_SOURCE (renderer owns the spec — user views live
+  in init.lisp + bib-search needs host-file-url). bib-search `:no-focus` opens
+  beside the doc (`openSourceBesideFocus`), `insert-text`→server SELF_INSERT, server
+  resolves the doc's real `.bib` (markdown header / \bibliography / \addbibresource)
+  → `*bib-search-doc-override*`. Fixed a nil-truthy crash (`nil` is truthy → guard
+  with `string?`, not `(and val …)`).
+- `b4cf01b` jukebox AS a server data-source (server scans dir → `{dir,tracks,art}`;
+  client does labels via `format-track`, `media://` playback, art, shuffle).
+
+**The established pattern** (now documented in HANDOVER.md): non-text view → server
+DATA-SOURCE; PANE_TREE leaf carries `viewKind`+`state`/`filePath`; client
+`buildServerMediaView` builds the view's extras; the kind's configure factory made
+server-aware (`serverMediaKeyOption`, `visitPath`/`insertText`). Two creation
+sub-patterns: server-detects/scans (media/directory/jukebox) vs
+renderer-computes-and-sends (element-views).
+
+**Next (Jason's order): bookmarks → gnuplot → notebook.** ⚠ Bookmarks is the HARDEST,
+not easy — `bookmarks.lisp` is unported and the 190-line `bookmarks.js` engine ties
+each bookmark to an L2 marker (rides edits) + `metadata.bookmarks` + the
+`.godot-metadata` sidecar, all server-owned now, so the whole engine + commands + the
+`bookmark` view must move to the spine. Notebook is likely the actual easy one (server
+text buffer + `notebook-eval!` round-trip). Jason will /clear + start fresh for bookmarks.
+
+**State**: clean, all committed, suite green. Nothing merged; `main` untouched.
+
+---
+
+## [2026-06-25] Shell port to Model B: DONE (4 commits) + one design fork for you
+
+**Built + committed on `mwb/shell`** (off `mwb/minimap`; `mwb/minimap` already
+folded into `multi-window-b` this session): the shell view graduated to Model B.
+- `26c9646` Phase 1+2 — server-owned `{viewKind:'shell', state:{sessionId,cwd}}`
+  data-source; PER-INSTANCE client views (each shell its own `<shell-view>` +
+  xterm + pty, so several render at once — splits AND a tabline of shell tabs).
+- `8f8b7ec` Phase 3 — reap a shell's pty on close (open-set fan `shellSessionsOf`
+  → client reaps when a session leaves it; switch-away survives).
+- `c71719b` Phase 4 — session-restore (fresh process, same cwd).
+- Suite 925/0. **LIVE-VERIFIED by you:** shells render in tabs, multiple
+  coexist, Claude Code runs, switch-away persists. NOT yet verified: pty reap on
+  close (the C-x k blocker below; the tab × should work — please test).
+
+**THE FORK — `C-x k` can't close a focused shell (your call; I did NOT guess):**
+When a shell is focused, xterm.js forwards every Ctrl chord to the pty, so `C-x`
+becomes the literal `\x18` byte — it never reaches the editor keymap, so
+`kill-buffer` never fires. And kill-buffer kills the *focused* buffer, so you'd
+have to be focused on the shell to kill it → catch-22. The reap MECHANISM is
+correct; only the keyboard *trigger* is blocked. Options:
+- **A (status quo):** close via the tab × (mouse) — already wired (close-tab
+  reaps a shell). No keyboard close from inside a shell.
+- **B:** intercept the `C-x` prefix in `<shell-view>` (xterm
+  `attachCustomKeyEventHandler` → return false so it propagates to the editor
+  router). Risk: breaks shell-side `C-x` (emacs, readline `C-x C-e`).
+- **C (VS Code's `commandsToSkipShell`):** a configurable set of editor chords
+  the shell-view intercepts; everything else → pty. Most flexible, most work.
+- **D (tmux / term-mode style):** a dedicated "escape the terminal" key (e.g. Esc
+  or `C-g` defocuses to the editor), then editor chords work normally.
+- **Worth a quick test:** `M-x` is Cmd+X; xterm usually does NOT grab Cmd combos
+  on macOS, so `M-x kill-buffer` may ALREADY work from a focused shell — if so,
+  that's a zero-code keyboard close. Try it.
+Recommendation: D or C. I'd lean D (one escape key) for v1 simplicity.
+
+**Gotcha for the gnuplot port (next): the double-`setBuffer` race.** A non-text
+element-view in a tabline is re-`setBuffer`'d on every reconcile (app.js re-point
+~6553); for an xterm-backed view that re-enters the async `ensureTerminal()` and
+builds a SECOND Terminal (the empty one paints over the live one → blank grid).
+Fix pattern (now in for shells): skip the re-point for the kind, don't
+re-setBuffer on reuse, lazy-create the tab on activation (like text). gnuplot
+(also a live-process singleton) will hit this identically.
+
+**State**: clean, all committed on `mwb/shell` (tip `c71719b`), suite 925/0.
+`main` untouched; `mwb/minimap` folded into `multi-window-b`. Merge-to-main
+checkpoint still pending your go-ahead.
+
+---
+
+## [2026-06-25 late] Shell: FINISHED + 2 more fixes; gnuplot next; notebook-js spawned
+
+Shell port is now COMPLETE + LIVE-VERIFIED (`mwb/shell` tip `8135a1f`, 5 commits,
+926/0). Two fixes after the live-verify:
+- `39b6ba6` **pty-reap-on-close** — the leak was a STALE-BY-ONE `liveShells`:
+  `closeFocusedTab`/`killActiveBuffer` push the PANE_TREE synchronously *before*
+  the data-source is removed a line later, so the fanned `shellSessionsOf` still
+  listed the closing shell; the client's live-set lagged each close by one and
+  the LAST shell never reaped. Fix = re-push the PANE_TREE (`onPaneTree(index)`)
+  AFTER removal, both close paths. (Also defensive in shell.js: python resets
+  SIGTERM→SIG_DFL — a child can inherit SIG_IGN across exec — + a SIGKILL backstop;
+  but the re-push was the real fix.) Verified: 2 shells → close both → 0 ptys.
+- `8135a1f` **double-`*scratch*` on "Start fresh"** — crash-recovery recovered a
+  pristine empty `*scratch*` (recoverBuffer baselines empty text to a space → ●
+  → dirty-by-construction → re-snapshots + reappears every launch). Fix:
+  `selectRecoverable` drops an empty path-less snapshot. Unit-tested.
+
+DECISIONS (Jason): **`C-x k` from a focused shell DROPPED** — xterm grabs even
+Cmd-X (`M-x kill-buffer` doesn't work either); close via tab × + a future "Close
+pane"/kill-buffer MENU item (menu bypasses xterm). **Shell live-cwd restore
+PARKED** — restore uses the OPEN-TIME cwd, not the live cwd after `cd`; needs OSC
+7 (shell hook) or an lsof//proc read; deferred.
+
+**NEXT = the GNUPLOT port** (the last view-port). Structurally IDENTICAL to the
+shell — reuse the 5 `mwb/shell` commits verbatim (server data-source + per-instance
+client view + the double-`setBuffer` guards + the reap re-push). See the ⚡ NEXT
+ACTION in `HANDOVER.md`. Then fold `mwb/shell`→`multi-window-b` + merge-to-main.
+
+**Separate NEW project (design only):** branch `notebook-js` (off `mwb/shell`,
+worktree `/Users/jalex/Source/jmacs/godot-notebook`) — an Observable-like
+notebook whose cells run arbitrary JavaScript in the SAME Node session as the
+server's Lisp interpreter. A design subagent drafted `plans/NOTEBOOK-JS.md` there.
+
+---
+
+## [2026-06-29 overnight] Model-B-default Part B: B2 + B3 landed; stopping before blind B4 ports
+
+**Context**: Branch `model-b-default`. Jason went to bed and asked me to run
+autonomously to "land the Model B port". I CANNOT launch Electron here (the build
+side can't run the GUI — confirmed by `run-and-verify`), so the renderer DOM + real
+IPC are unverifiable by me; my tools are `pnpm test`, `node --check`, and
+`createSpine` harnesses.
+
+**What I landed this session (all on `model-b-default`, suite green 3197 at every
+commit, NOT merged):**
+- **B2 customize → server-authoritative, COMPLETE** (`272dd65` B2.2a, `dc1a36c`
+  B2.2b, `49a5178` B2.3a, `3840e38` B2.3b, `5f3e338` plan). Spine now persists
+  (atomic custom.lisp/faces.json), is the sole render driver (chrome push incl. a
+  new `css-knobs` directive; CUSTOMIZE_SYNC relay deleted), and computes+pushes the
+  customize MODEL. **The renderer makes ZERO `interpreter.*` calls for customize.**
+  Jason live-verified persistence-across-relaunch.
+- **B3 docs/help → server** (`f839218`). `docs.lisp` into `SPINE_STDLIB` +
+  `load-doc-manifest!` (fs) + `open-doc`/`open-manual`/`open-docstring` directives →
+  existing `openDocInPane`/`openDocstringBuffer`. Fixes C-h d / open-doc /
+  describe-symbol-at-point (were BROKEN under Model B). Harness-verified the spine
+  half; the doc-render half NEEDS LIVE-VERIFY.
+
+**Judgement call — why I STOPPED rather than keep porting B4 / doing the teardown:**
+1. I can't live-verify, and every B4 port adds unverified renderer surface. B3 was
+   safe because it REUSES existing render functions via a directive (can't regress a
+   feature that was already broken). The remaining B4 commands are NOT like that.
+2. I validated the remaining "broken under Model B" set against the live spine
+   (`(member "<cmd>" (registered-command-names))`, predicate sanity-checked:
+   forward-char ✓, open-manual ✓ (just ported), describe-face-at-point ✗). The
+   still-broken keybound commands, by feature:
+   - **face-info.lisp** (C-h F): `describe-face-at-point`, `highlight-construct-at-point`
+     — needs RENDER-SIDE tree-sitter captures (`tree-sitter-captures-for-buffer!`),
+     so the spine can't compute it; needs a request/response intent. NOT a clean port.
+   - **inline-eval.lisp**: `eval-expression-at-point`, `eval-expression-before-point`
+     — eval can run in the spine session, but the result OVERLAY is render UI.
+   - **sticky-notes.lisp**: add/edit/delete/toggle-sticky-note(s) — render view + metadata.
+   - **folding.lisp**: `fold-all`, `unfold-all`, `toggle-fold-at-point` — view-state heavy.
+   - **project.lisp**: `find-project`. **views/system**: `scratch-buffer`, `view-list`.
+   - **notebook.lisp**: `notebook`. **utility-pane.lisp**: `toggle-repl`.
+   - **renderer-dev**: `reload-stdlib` (reloads the RENDERER interpreter — becomes moot
+     once the interpreter is deleted; B7 territory, leave it).
+3. The interpreter teardown (B5–B7, incl. the deferred A3) is OFF-LIMITS unattended —
+   the boot-window dispatch trap + TDZ + "full live matrix" make it exactly the kind
+   of change that silently bricks the app and is found in the morning. Needs Jason.
+
+**State of the work**: clean + green on `model-b-default`. Working tree has only the
+long-standing untracked/unrelated files + this notes/handover/plan edit. Recovery
+tag `pre-model-b-default` @ `b2d4f03` (main's tip). NOT merged (Jason's call).
+
+**Recommended next steps (for Jason)**:
+- Live-verify B3 (C-h d opens the manual; C-h . on a symbol; M-x open-doc).
+- B4 is genuinely per-batch work needing live-verify — best done with Jason driving.
+  Suggest order: file/IO (find-file already works) → sticky-notes → folding →
+  inline-eval → face-info (needs the render→spine captures round-trip) → notebook.
+- I recommend (but did NOT do, per "set aside automation") promoting the throwaway
+  `createSpine` harnesses (customize persistence/push/model + docs) into committed
+  `apps/desktop/mwb/*.test.js` so the B2/B3 server behavior is regression-locked and
+  future B4 work is verifiable without Electron. This is the single highest-leverage
+  thing to make the rest of the epic safe.
+
+---
+
+## [2026-06-29 cont.] B4 ports started (folding + view/misc) + a B2 REGRESSION found
+
+Jason asked to "fix all of these" (the broken-under-Model-B commands). Ported two
+clean batches, then hit a regression + per-feature complications worth his call.
+
+**Landed (green 3197, harness-verified server-side):**
+- `63c4332` **folding** — fold-all/unfold-all/toggle-fold-at-point → spine commands
+  emitting fold-* directives → renderer editorView fold methods. Clean (the B3
+  pattern). NEEDS LIVE-VERIFY (folds toggle).
+- `267bac2` **view/misc** — next-view/previous-view (cycle the active window's
+  open-set, pure server-side), scratch-buffer (mint a seeded scratch buffer, pure
+  server-side), toggle-repl (directive → utilityDock). next/previous-view +
+  scratch are FULLY verified (the harness switches the actual buffer); only
+  toggle-repl's dock toggle needs live-verify. Defined in the embedded block (NOT
+  by loading views.lisp/system.lisp — those would shadow working server commands
+  kill-view/quit).
+
+**⚠️ B2 REGRESSION (from MY work this session): renderer-only-file defcustoms
+dropped out of the customize UI.** B2.3 moved the customize MODEL computation to the
+spine (computed from the spine's `*custom-registry*`). Defcustoms declared in files
+NOT in SPINE_STDLIB are absent from that registry, so they no longer appear in
+`M-x customize`. Confirmed missing (11): `*markdown-interpreter*` (sticky-notes),
+`*pdf-restore-default*` (views), `*autosave-recovery*` + `*autosave-recovery-interval*`
+(system), `*jukebox-track-format*` (jukebox), `*latex-command*`/`*latex-bibtex-command*`/
+`*latex-view*`/`*latex-pdf-restore*`/`*latex-clean*` (latex-compile),
+`*directory-tree-open-target*` (directory-tree). Existing SAVED values still apply at
+boot (the renderer's loadUserConfig still evals custom.lisp); the user just can't
+see/change them in customize anymore. Also: post-B2.3b, even if shown, a live edit to
+a RENDERER-CONSUMED defcustom wouldn't take effect (the renderer interpreter no longer
+gets customize edits) until restart — this is the deferred **B0 config-snapshot push**.
+**Proper fix needs a design call** (register these defcustoms server-side AND push the
+renderer-consumed values — B0). I did NOT hack a partial fix.
+
+**Why I paused the remaining ports (sticky-notes/inline-eval/notebook/project/
+face-info/latex-compile):** each has a Model-B complication that wants your input or
+is unverifiable here:
+- **sticky-notes**: `(note-edit! (note-create!))` chains a renderer-returned note id;
+  next/prev move the SERVER-owned cursor. So it's NOT a simple directive port — needs
+  command-level directives (renderer does the whole op) + a move-point intent. Also
+  owns `*markdown-interpreter*` (the regression).
+- **inline-eval**: eval must run in the SPINE session (the renderer interpreter is
+  going away); the result pill is a render overlay → eval server-side + push overlay.
+- **face-info** (C-h F): needs render-side tree-sitter captures → a request/response
+  round-trip (renderer computes captures → spine formats → directive back).
+- **project**: minibuffer completion + project-open (`-open-project-deliver`).
+- **latex-compile**: a subprocess (main process) + an output pane; owns 5 defcustoms.
+- **notebook**: a complex reactive view; `notebook` opens it, next/prev switch.
+
+**Recommendation**: (1) decide the defcustom/B0 approach — it's a real regression and
+blocks doing sticky-notes/latex-compile settings cleanly; (2) then I can do the
+command ports, but several need live-verify (I can't launch Electron). Suggest the
+order: project → notebook → inline-eval → sticky-notes → face-info, with the B0
+config push first (it unblocks the defcustoms AND is needed before B7 anyway).
+
+State: clean + green on `model-b-default`. 4 commits this round beyond B2/B3
+(folding, view/misc + the two doc commits). NOT merged.
+
+---
+
+## [2026-06-29 cont.2] B4: inline-eval + sticky-notes ported (feature-tier); the overlay-wiring lesson
+
+Continued B4 (Jason live-verifying each). Beyond folding/view-misc/docs:
+- **inline-eval** (`c089200`): eval-expression-at-point/-before-point evaluate IN THE
+  SPINE SESSION (form bounds via the pure brackets.js helpers over (buffer-text)/(point);
+  result pushed as `inline-eval-result` directive → the renderer pill). The renderer's
+  old eval-region! ran on the INERT renderer interpreter — that was the bug. `d140386`
+  positions the pill via the mirror; `d1403869` +6pt pad.
+- **sticky-notes FULL** (`a461e5e` commands → `edc64b1` display → `c8d9b51` persist).
+  The manager (apps/desktop/src/sticky-notes.js) was reusable as-is — it reads
+  buffer.metadata.notes + edit-tracks via buffer.onChange, both present on the CLIENT
+  MIRROR. Display: spine seeds notes onto spine.buffer.metadata (seedMetadata, legacy
+  .jmacs-metadata fallback included) → SNAPSHOT carries `notes` → client sets
+  mirror.metadata.notes + onServerBuffer points the manager at the mirror. Persist:
+  manager.onChange → `serverViewClient.notesChanged` → NOTES_CHANGED intent →
+  `spine.setBufferNotes` → persistMetadata (bookmarks in the same sidecar preserved).
+
+**THE LESSON (will recur):** under Model B, `mountKindView` EARLY-RETURNS for
+server-backed editor views, so the editor's overlay layer was never wired to the
+overlay managers (stickyNotes / inlineEval) — pills + notes couldn't render at all.
+Fixed `b6fa739` + the new `chrome.onServerBuffer(mirror, view)` hook
+(server-view-client fires it in onSnapshot after mounting). app.js's onServerBuffer
+sets `currentTextBuffer = mirror` (bare — server owns dirty/autosave) so inline-eval's
+getBuffer→positionAt + sticky-notes anchoring use the RIGHT buffer. Any future
+overlay/anchor feature wires through the mirror, not a local renderer buffer.
+
+**REMAINING B4 (all LARGE):** latex-compile (run-process! subprocess + async onExit +
+TeX views + PDF + errors + 5 defcustoms; the spine CAN spawn — it's a Node
+utilityProcess — + hold/apply the onExit closure async), project (open-project-at!
+workspace rebuild), notebook (reactive engine), face-info (needs a spine→renderer→reply
+round-trip for tree-sitter captures — the reverse of NOTEBOOK_EVAL). + the B2 defcustom
+regression (register the 11 server-side + the B0 config-push). Left Jason on the fork:
+**checkpoint/merge the milestone, or push into latex-compile.** ~24 commits, green 3197.
+
+---
+
+## [2026-06-29 overnight] B6/B7 interpreter teardown: drained the cleanly-separable clusters; the rest needs you
+
+**Context**: Continuing the B5–B7 interpreter teardown autonomously (you went to sleep, "press on").
+Branch `b6-b7-delete-interpreter` off main, 4 tested commits, suite 3214/0 at each. app.js
+`interpreter.*` sites **66 → 47** tonight (103 → 47 across the epic). Nothing merged.
+
+Tonight's commits (all bucket-A dead flag-off, provably safe — only-reachable-via-deleted-paths or
+behind a permanent `if (serverMode) return`):
+- `8016746c` updateModeline + 23 call sites (spine drives the modeline).
+- `58a30938` four local pickers (M-x / C-x b / C-h c / apropos) + their start-*! prims + fuzzyFilter import.
+- `2f900063` reftex Select overlay + cite panels + 6 bridges + 3 open-reftex-*! prims + createReftex*Panel imports.
+- `d661a26c` directory-tree view config → server-only (openPath/closeBuffer flag-off arms had an explicit serverMode guard).
+
+**Why I stopped here (didn't guess)**: the remaining 47 sites are NOT cleanly separable — they're
+either entangled with LIVE code or they delete *with* `createInterpreter` (the finale), and the finale
+hinges on a design decision I shouldn't make unsupervised. Specifically:
+
+1. **Local minibuffer cluster is ENTANGLED, not dead.** `const minibuffer = createMinibuffer(...)`
+   (app.js ~2720) is REUSED by the live server-suspended-read path (~6439-6471: `setEcho`/`setEchoRich`/
+   `setValue`/`close` + the server's TAB-completion reply). So I can't delete the `minibuffer` object.
+   Only the dead `interpreter.call('minibuffer-delivered')` / `minibuffer-tab-complete` calls inside the
+   flag-off `open-minibuffer!` prim + the local find-file completing-minibuffer are removable — surgical,
+   and needs live-verify that find-file/M-x/echo still work.
+2. **Jukebox**: `configureJukeboxView` is a LIVE data-source view; only the renderer `format-track`
+   (2112) + `openJukeboxForDirectory` (2158, called by a prim at ~4944) + the `jukebox-on-directory-chosen`
+   (5087) / `jukebox-track-ended` (5107) callbacks are the dead path. Verify the 4944 prim is dead before cutting.
+3. **Placeholder** (`*placeholder-default-action*` 9003, run-command 1141): audit §2 says delete the
+   chooser UI + helpers BUT "first verify the splitAndOpenFile callers (jmarkdown-preview split,
+   bookmark split) are server-gated." Needs that check.
+4. **Bucket-B "inert but reachable" — delete WITH createInterpreter (the finale), live-verify the whole**:
+   kill-view closeBuffer arms in doc/audio/video/(9116) configs (no serverMode guard — reach the idle
+   mirror; the known "audio keeps playing after tab-close" bug confirms the real close path is elsewhere);
+   `onSyncTexClick`→latex-synctex-inverse (pdf, 7980); media-key callbacks (7845/7847); element insert!
+   (8398); `deliverLispCallback` (10105); hover-doc (doc-summary-for/open-doc/eval 10303-10341); snippet
+   sites (580, 6969, 7150-7159); math-preview-mode (7228); the boot-install + reloadStdlib faces/theme/
+   highlight (5195-5351, 7558-7580); and `dispatchKey`'s body (handle-key 6962 + snippet-soft-commit 6969).
+
+5. **DESIGN DECISION (your call) — what replaces `keymapReady`?** `keymapReady` is set after
+   `loadStdlib`; B7 deletes loadStdlib, so it loses meaning. It gates the global key router
+   (`if (!keymapReady) return;` + the A3 pre-mount swallow) AND ~15 view-config `keymapReady ? {onKey:
+   dispatchKey} : {}` spreads. Options:
+   - (a) Replace with a server-readiness flag (`serverViewClient != null`, or a new `rendererReady` set
+     when the HELLO/first PANE_TREE lands). Cleanest; the router's swallow keys off it instead of keymapReady.
+   - (b) Drop the gate entirely (router always active; the mounted/pre-mount arms already self-gate on getView()).
+   - (c) Keep a vestigial `const keymapReady = true`. Hacky; rejected unless you want the smallest diff.
+   I lean (a). The ~15 `onKey: dispatchKey` spreads also die (dispatchKey goes); confirm each view's
+   server-mode onKey (serverViewKeyOption/serverMediaKeyOption already route server-backed; the raw
+   spreads are flag-off remnants — B5 sweep said dead, verify per-site).
+
+6. **View-config `chordPending` rewire** (bookmark/gnuplot/directory sidebars, 4 `chord-in-progress?`
+   sites): replace `() => keymapReady && interpreter.call('chord-in-progress?')` with `() => false`
+   (matches current server-mode behavior — the renderer interpreter's chord state is always empty) OR
+   wire to a server chord-state signal. Live-verify chord forwarding in those sidebars (e.g. C-x 0 while
+   focus is in the bookmark outline — a known-edges area).
+
+**Recommended supervised sequence**: (1) the 3 entangled bucket-A surgeries (minibuffer/jukebox/placeholder)
+as small commits, live-verify each; (2) pick the keymapReady replacement (a); (3) chordPending rewire;
+(4) the big B7 commit — delete createInterpreter + loadStdlib/reloadStdlib + the ~257 primitives + the
+bucket-B sites + the @editor/lisp+@editor/stdlib imports + import-map entries (index.html); confirm a
+bundle/boot drop; **run the full live matrix** (plan §4). B5 verification (this session) found 0 live
+holdouts, so the deletion is sound — it just needs your live eyes since the env can't launch Electron.
+
+**State of the work**: branch `b6-b7-delete-interpreter`, 4 commits, suite green, NOT merged. main has
+L6/ensureMajorMode/A3 merged (unpushed). HANDOVER.md current. Deferred bug filed: kill-ring → OS
+clipboard not syncing (M-w/C-w; not A3-introduced).
+
+---
+
+## [2026-07-04 00:30] Smoke triage: `set!` on a renderer-mirrored defcustom doesn't reach the renderer
+
+**Context**: Fixing the `liveDocs` smoke arm. The doc-view renders a live docstring
+through the RENDERER's cached `*markdown-interpreter*` (`app.js` reads
+`rendererConfig['*markdown-interpreter*']`, ~line 7523). The arm used
+`(set! *markdown-interpreter* "marked")` to force the render path; it had no
+effect — the render kept using a prior arm's `"echo smoke"`.
+
+**Observation (app-level, not a smoke bug)**: `*markdown-interpreter*` is a
+defcustom in `RENDERER_CONFIG_VARS` (spine.js ~622). The renderer's copy is only
+updated by `config-snapshot` (boot) or `config-apply` (live). `config-apply` is
+fired by the defcustom's `:on-change`, which runs on `custom-apply!` /
+`custom-apply-and-save!` — **not** on `set!`. So `(set! *markdown-interpreter* …)`
+(e.g. a user typing it in the REPL, or in init.lisp AFTER boot) silently changes
+only the spine var; every renderer-mirrored config var stays stale until the next
+`custom-apply!`. This is a footgun: `set!` looks like it should work and doesn't.
+
+**Question/blocker (your call)**: Is this intended (defcustoms must be changed via
+the customize pathway to take effect) or a gap worth closing? Options:
+  - (a) Leave as-is; document that live config changes go through `custom-apply!`.
+    Cheapest. But `set!` on these vars stays a silent no-op-to-the-renderer.
+  - (b) Make `set!` (or a thin `setq`-like) on a `RENDERER_CONFIG_VARS` member also
+    fire the config-apply push. Removes the footgun; a little magic in `set!`.
+  - (c) A dedicated "apply this config var live" primitive that isn't the
+    user-facing customize verb, for programmatic/live use (closer to what you
+    hinted at — a distinct access pathway rather than reusing `custom-apply!`).
+  I did NOT change any app behavior. For the SMOKE only, I used `custom-apply!`
+  to set up the test precondition (it's the same pathway the pollution — the
+  customize-save arm — came in on, so it's symmetric and realistic). If you pick
+  (b)/(c), the smoke arm can switch to whatever the new pathway is.
+
+**State of the work**: branch `fix-smoke-spine-wiring`. liveDocs green with
+`custom-apply!`. No app files touched.
+
+---
+## [2026-07-04 12:30] Smoke harness: 50/50 in ~25s; four app bugs found+fixed; two findings for you
+
+**Context**: Finishing the smoke port (branch `fix-smoke-spine-wiring`). The
+7–9 min runtime was Chromium throttling the hidden window's timers — fixed
+with `backgroundThrottling: false` (full sweep now ~25s, and
+`SMOKE_ARMS=<arm>` runs one arm in ~1.6s). All 10 red arms are green; the
+sweep is 50/50, three consecutive runs, no flake.
+
+**App bugs fixed along the way** (each has a regression test; all committed,
+tests green — but per test-before-merge these want a live pass from you):
+
+1. `client-buffer.js` — echoed direct edits double-applied in the mirror (the
+   press-and-hold éé bug): `sendIntent` never registered a predicted pending
+   entry. Live-verify: press-and-hold accents.
+2. `client-buffer.js` — `predictInsert` ignored the active selection (masked
+   by bug 1). Live-verify: click a colour swatch, OK a new colour.
+3. `spine.js`/`app.js` — closing the ACTIVE tab re-pointed the pane model but
+   never switched the client: modeline stuck on the killed buffer and the
+   next active-tab × silently no-op'd (an unkillable tab). The × now resolves
+   its bufferId from the wire tabs, and close-tab does a full
+   `switchClientToBuffer`.
+4. `spine.js` — `killBufferById`'s registry branch now un-curates the killed
+   id from tabline strips (mirrors the data-source branch). Before: corpse
+   ids lingered in curation (wire-filtered visually), later re-points landed
+   on them, and C-x k pushed an unrelated survivor tab into the strip.
+   **Behaviour change to review**: C-x k in a multi-tab tabline now stays
+   ring-fenced (re-points to a neighbour tab) instead of switching to a
+   global survivor. I believe this matches the tabline design; say if not.
+5. `spine.js` — two crash guards: `activeCursorCount()` read `.cursors` off
+   the null view a focused MEDIA leaf mints, and `entryForClient` fell back
+   to the long-killed `initialEntry`. Either uncaught throw EXITED THE WHOLE
+   SERVER process — focusing a video/audio view and pressing a key could
+   kill the spine. Live-verify: focus a video view, type, run REPL forms.
+
+**Finding 1 — `other-pane!` no-ops with a media leaf focused (NOT fixed)**:
+reproducible in an aged session (drive.js: open files into a strip, activate
+a video tab, then `(other-pane!)` — focus never moves; clicking the other
+pane works). The smoke's bug3 arm works around it by clicking. Suspect the
+focus echo/reconcile fight around the media façade, not pane-model (its
+`otherPane()` is sound). Needs its own investigation.
+
+**Finding 2 — should the server survive Lisp errors from intents?** Both
+crashes in (5) were ordinary exceptions escaping `onClientMessage` and
+killing the utilityProcess. A top-level catch (log + status message) would
+make the spine resilient to the whole class, at the cost of possibly hiding
+bugs. Your call; happy to implement either way.
+
+**Also open (carried)**: wire `(minor-mode-line)` into the server-baked
+modeline? Minor modes are invisible in the modeline today (the smoke now
+asserts via Lisp instead); `renderModeline` + spine viewState would need a
+small change if you want Emacs-style minor-mode display.
+
+**State of the work**: branch `fix-smoke-spine-wiring`, 33 commits, unmerged.
+`pnpm test` green (1086 desktop, all packages pass). Smoke 50/50 × 3 runs.
+Ready for your live pass + merge.
+
+---
+## [2026-07-04] auto-fill-mode: wrap-as-you-type minor mode — BUILT + self-verified
+
+**Context**: You asked (while away) for an auto-fill minor mode for text
+views: wrap lines as the user types at a customisable column, auto-indenting
+per the major mode via a mode-specifiable Lisp indent function. Built it end
+to end on branch `auto-fill-mode` off `main` (`0badde23`).
+
+**What landed** (see `plans/AUTO-FILL-MODE.md` for the full design + the
+assumptions I had to make):
+
+- `packages/stdlib/lisp/auto-fill.lisp` — `auto-fill-minor-mode` (the mode
+  value) + `M-x auto-fill-mode` (the toggle command; named for Emacs muscle
+  memory — the two names must differ, shared namespace), `*fill-column*`
+  defcustom (default 70; per-mode `:fill-column` override), the pure
+  `-auto-fill-break-index` core, `do-auto-fill`, the `:fill-indent-function`
+  seam, `set-fill-column` (C-x f).
+- `keymap.lisp` — a general `*post-self-insert-hook*` (Emacs's
+  post-self-insert-hook), run guarded (try/catch) after each self-insert;
+  empty by default. Auto-fill is its first client. Also the C-x f binding.
+- Registered `auto-fill.lisp` in BOTH load lists (STDLIB_FILES + SPINE_STDLIB)
+  right after keymap.lisp.
+- 20 unit tests (pure core + real-buffer mutation + the self-insert chain +
+  the indent seam + the toggle). Full suite green (stdlib 924, all packages).
+
+**Self-verified headless** (drive.js): the real spine loaded auto-fill.lisp
+(`command-registered? 'auto-fill-mode` → #t, hook registered → #t), and REAL
+keystrokes into the editor wrapped "the quick brown fox jumps over the lazy
+dog and runs away" at column 24 into "the quick brown fox" / "jumps over the
+lazy dog" / "and runs away…" — server buffer shows the inserted `\n`s and the
+client rendered the separate lines (the client-prediction reconcile displays
+cleanly, no jank). So the spine-load + hook + wrap all work live, not just in
+the harness.
+
+**Decisions you may want to revisit** (all noted in the plan):
+1. Off by default (Emacs). Enable per mode via
+   `(add-hook markdown-mode (lambda () (enable-minor-mode auto-fill-minor-mode)))`.
+   Say if you'd rather it be default-on in prose modes.
+2. `*fill-column*` default 70; the generic M-q `fill-paragraph!` (a JS host
+   primitive) still hardcodes 72 — I left it independent. Unify on request.
+3. Only the prose-default indenter ships; `:fill-indent-function` is the seam
+   for a real per-syntax indenter (none exists in the tree yet).
+
+**State of the work**: branch `auto-fill-mode`, 2 commits, unmerged, tests
+green, self-verified. Ready for your live pass + merge (per test-before-merge).
+
+---
+## [2026-07-04] jmarkdown-mode fill: :fill-indent-function + list/quote-aware M-q
+
+**Context**: Follow-on to auto-fill-mode — you asked for a fill-indent-function
+and a fill-paragraph for jmarkdown-mode. On the SAME branch `auto-fill-mode`
+(commit `b1f118a6`).
+
+**Found**: a JMarkdown-aware `jmarkdown-fill-paragraph` (M-q) already existed
+(languages/jmarkdown.lisp) — @begin/@end + ::: + heading + fence bounding, the
+@begin-line part-wrapping, indent-preserving. But it treated list items and
+blockquotes as plain prose (bullet/`>` swallowed as a word, continuations went
+flush-left). So the real gaps were: no fill-indent-function at all, and M-q
+mishandling lists/quotes.
+
+**Built** (sharing one structural-prefix brain, so M-q and auto-fill agree):
+- `jmarkdown-fill-indent` — the mode's `:fill-indent-function`. On an auto-fill
+  break, the continuation gets the paragraph's hanging prefix: list/definition
+  markers (`- * +`, `1.`/`2)`, `: `) → spaces (hang under the text); blockquote
+  `>` → repeated; plain prose → its indent. Wired in the define-mode form so the
+  registered mode map carries it.
+- `jmarkdown-fill-paragraph` prose branch reworked to use first-vs-continuation
+  structural prefixes, so M-q now hangs list items and keeps `>` on blockquotes.
+- Helpers: `-jmd-structural-prefixes`, `-jmd-marker-len`, `-jmd-blockquote-len`,
+  `-jmd-wrap2`, `-jmd-para-body` (superseded `-jmd-wrap`, removed).
+
+**Verified**: 15 new tests (structural-prefix cases, list/ordered/blockquote
+fill-paragraph, fill-indent in isolation + auto-fill end-to-end in jmarkdown-mode
++ wiring); ALL existing jmarkdown-fill tests preserved; full suite green (stdlib
+939). Headless (drive.js): the spine LOADS the changes live — jmarkdown-fill-
+paragraph registered, `:fill-indent-function` present & `eq?` the right symbol,
+and `(-jmd-structural-prefixes ...)` returns the right prefixes server-side.
+
+**Two honest caveats**:
+1. I could not exercise the jmarkdown-specific LIVE typing via drive.js: the
+   drive instance had a `.js` file open, and a buffer's mode is derived from its
+   filename, so a REPL `set-major-mode! jmarkdown-mode` didn't stick (it reverts
+   to JavaScript). Open a `.jmd` file to live-test: `M-x auto-fill-mode`, type a
+   long `- list item` / `> quote` and watch the hang / `>`; and `M-q` on same.
+2. Under fast SYNTHETIC typing (45ms/char, throttled hidden window) the GENERIC
+   auto-fill dropped a space at a wrap boundary ("delta epsilon"->"deltaepsilon")
+   — a client-prediction/reconcile artifact (auto-fill plan assumption #6). Not
+   seen in the unit tests (which drive keys synchronously) or the earlier live
+   run of a different sentence. Please watch for it under real typing; if it
+   reproduces, it's an auto-fill reconcile issue, not jmarkdown-specific.
+
+**State**: branch `auto-fill-mode`, now 4 commits, unmerged, suite green. Ready
+for the live pass + merge alongside auto-fill-mode.
+
+---
+## [2026-07-04] jmarkdown fill: flush-right (>>) / centred (>> <<) + frontmatter guard
+
+Follow-on to the jmarkdown fill work, same branch `auto-fill-mode` (commit
+`bbb39b11`). You asked for flush-right / centred support in fill-paragraph and
+flagged that syntax-extensions matter.
+
+- **Aligned blocks** (docs/syntax-adjustments): a `>>`-prefixed line is
+  flush-right; a `>> … <<` line is centred (trailing `<<` distinguishes them).
+  You chose REFLOW-like-a-blockquote, so M-q merges the block's lines and
+  re-wraps to the fill column, keeping `>> ` on every line and (centred)
+  re-aligning `<<` to the column. `>>`/`<<` are matched as whitespace-delimited
+  TOKENS (per the extensions "split on whitespace" rule), which also keeps them
+  distinct from a `> ` blockquote. A bare `>>` / `>> <<` line is a paragraph
+  separator (bounds sub-paragraphs like a blank line).
+- **Frontmatter guard** (the syntax-extensions point): user syntax extensions are
+  DEFINED in the `---` metadata header (multi-line, whitespace-significant
+  `Extension …:` entries). Reflowing those corrupts them, so fill now leaves the
+  entire `---` frontmatter untouched. (Inline extension delimiters within prose
+  reflow safely; `@begin/@end` block environments were already bounded.)
+
+Verified: 7 new tests (token-rule detection, flush-right + centred reflow, fixed
+point, separator bounding, frontmatter no-op, prose-after-frontmatter); existing
+tests preserved; full suite green (stdlib 946). Spine-load + exact reflow output
+self-verified via drive.js — including the centred `<<` aligned at the column.
+
+**Interpretation flagged for you**: I read "syntax-extensions is important too" as
+"don't let fill corrupt the extension DEFINITIONS in the frontmatter" (+ respect
+the `>>`/`<<` token rule). If you meant something more (e.g. bounding fill at
+user-defined *block* extensions with custom sigils, which a general fill can't
+know without parsing each doc's header), say so and I'll extend it.
+
+Live-test (needs a .jmd): M-q inside a `>>` block and a `>> … <<` block; M-q
+inside the `---` header (should no-op).
+
+---
+## [2026-07-05] "AUCTeX for JMarkdown" — full authoring environment for jmarkdown-mode
+
+**Context**: You asked (overnight) to design + build an AUCTeX/RefTeX-class
+authoring layer for jmarkdown-mode, menu- AND key-accessible, with in-app docs.
+You chose: HTML/LaTeX/PDF compile · full RefTeX analog · AUCTeX-style
+`C-c C-<letter>` keys · full construct surface. Built autonomously on branch
+`jmarkdown-auctex` (off `auto-fill-mode`, so merge that first). Design +
+assumptions + live-verify checklist: **`plans/JMARKDOWN-AUCTEX.md`**.
+
+**Method**: a 13-agent understanding sweep (JMarkdown source + docs + the Godot
+LaTeX/RefTeX/doc/menu machinery) → design → implement in tested commits →
+spine-load self-verify → a 6-dimension adversarial review (13 findings fixed).
+
+**What shipped** (four TOP-LEVEL stdlib files, pure Lisp over existing
+primitives — no new spine host primitives; keymap+menu wiring appended to the
+jmarkdown language file):
+- `jmarkdown-compile.lisp` — `C-c C-c` compile (HTML/LaTeX via the `jmarkdown`
+  CLI; PDF = HTML then headless Chrome; `C-u` prompts format), `C-c C-o` view
+  built artifact, `` C-c ` `` next-error (jumps on a parsed `path:line:`),
+  `C-c C-w` show output. run-process! loop → utility-dock output/errors.
+- `jmarkdown-insert.lisp` — completing `@begin` (`C-c C-e` `jmarkdown-environment`)
+  / `:::` (`C-c C-m` `jmarkdown-directive`) / heading (`C-c C-s`) pickers + a
+  large templated-insert set (tables, floats, code, math, alerts, games, lists,
+  collection markers, anchor, comments, extension/script/target/source). Ports
+  latex-insert's completing-minibuffer + TAB-chaining + NUL-sentinel templates.
+- `jmarkdown-nav.lisp` — `C-c C-n`/`C-c C-u` section motion, `C-c C-j`
+  nesting-aware `@begin`↔`@end` jump, `M-RET` continue-list (increments ordered/
+  lettered), `C-c =` outline/TOC jump.
+- `jmarkdown-ref.lisp` — `C-c (` label (heading-slug suggestion), `C-c )`
+  reference (`:ref`/`:cref`/`:Cref`, key completed from scanned `:label[]`/`{id=}`),
+  `C-c [` citation (picks from the front-matter `.bib` via
+  citation-parse-lenient/citation-entries), `C-c /` index. Lisp doc scanning.
+- Wiring: font (`C-c C-f`) + toggle (`C-c C-t`) sub-maps, `M-RET`, and a grouped
+  9-section mode menu. Existing single-letter `C-c` keys + the quick
+  `jmarkdown-insert-environment`/`-directive` (C-c @ / C-c d) are UNTOUCHED — the
+  smart versions are separately named so both coexist.
+- Docs: a `C-h d` manual chapter "Authoring in JMarkdown"
+  (`docs/chapters/jmarkdown.md`, included in MANUAL.jmd; rebuilds clean, 802 nodes).
+
+**Verified**: 28 tests in `jmarkdown-auctex.test.js` (23 feature + 5 review
+regressions); full suite green (stdlib 974). drive.js confirmed the real spine loads all 18
+commands, wires every keybinding (existing preserved), runs the pure helpers,
+and shows 9 menu sections. Review fixed a real citation-picker crash
+(author-less bib entry), the target/source directive syntax, PDF-warning loss,
+dead diagnostic-jump, and an `id=` false-positive scan.
+
+**Assumptions (in the plan)**: PDF via headless Chrome (`*jmarkdown-chrome*`;
+fails gracefully if absent — LaTeX→PDF is the alt); `jmarkdown` on PATH (dev
+launch inherits it); single-file scan (no `[[include]]` expansion yet);
+completing-minibuffer pickers, not the floating panel.
+
+**🔴 Live-verify before merge** (needs full quit + relaunch — spine + language
+files). Open a `.jmd`, then:
+1. `C-c C-c` → HTML build; dock shows output; `C-c C-o` opens the `.html`. Set
+   `*jmarkdown-compile-format*` latex/pdf and retry (PDF needs Chrome).
+2. `C-c C-e` → complete `theorem` → skeleton; `C-c C-m` → `note`; `C-c C-s` → heading.
+3. `C-c (` on a heading → `:label[sec:…]`; `C-c )` → pick → `:cref[…]`; `C-c [`
+   with a `Bibliography:` line → pick a bib entry → `\citep{…}`.
+4. `C-c =` outline → jump; `C-c C-n`/`C-c C-u` sections; `C-c C-j` on `@begin`;
+   `M-RET` in a list; the JMarkdown menu shows the new groups; `C-h d` → the
+   new chapter.
+
+**State**: branch `jmarkdown-auctex`, ~8 commits, unmerged, suite green,
+self-verified, reviewed. Depends on `auto-fill-mode` (merge that first).
 ## [2026-06-26 02:00] SVG editor (overnight build): MVP shipped, two decisions parked
 
 **Context**: Built the Inkscape-like `<svg-editor-view>` per plans/SVG-EDITOR.md

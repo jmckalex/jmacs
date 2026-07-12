@@ -214,6 +214,18 @@
   (let ((m (buffer-major-mode)))
     (if (nil? m) ";; " (get m :comment-prefix ";; "))))
 
+(define (major-mode-highlight)
+  "The current buffer's major-mode :highlight tag, as a grammar-tag STRING
+   (e.g. \"jmarkdown\") — nil when the mode declares none. This is the source of
+   truth for syntax highlighting: it follows the MAJOR MODE, so a file whose
+   extension was re-registered to another mode (e.g. .md -> jmarkdown-mode) is
+   highlighted by that mode, not by its filename."
+  (let ((m (buffer-major-mode)))
+    (if (nil? m)
+        nil
+        (let ((h (get m :highlight nil)))
+          (if (nil? h) nil (keyword->string h))))))
+
 ;; --- minor modes -------------------------------------------------------
 ;; Minor modes are orthogonal, toggleable. They stack by an explicit
 ;; :priority — higher first — ahead of the major mode in the keymap

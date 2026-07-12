@@ -42,10 +42,13 @@ import {
   replacePane,
   parentOf,
   siblingOf,
+  insertAtSplit,
   insertAtRootBorder,
   swapLeaves,
+  permuteLeaves,
   spiralOrder,
   computeRects,
+  bumpIdCounterPast,
   SPLIT_HORIZONTAL,
   SPLIT_VERTICAL,
 } from '@editor/pane';
@@ -205,10 +208,12 @@ export function createPaneModel(options = {}, hooks = {}) {
   }
 
   /** Mint a leaf pane over BUFFERID with a fresh state, registered in the map.
-   *  The leaf's `.view` is a thin handle the Lisp `current-view` returns. */
-  function makeLeaf(bufferId, seedState) {
+   *  The leaf's `.view` is a thin handle the Lisp `current-view` returns. An
+   *  explicit ID restores a persisted leaf's identity verbatim (session restore);
+   *  omitted, a fresh monotonic id is minted. */
+  function makeLeaf(bufferId, seedState, id) {
     const state = seedState ?? freshState(bufferId);
-    const leaf = createLeafPane({ view: { kind: 'text', get bufferId() { return state.bufferId; } } });
+    const leaf = createLeafPane({ id, view: { kind: 'text', get bufferId() { return state.bufferId; } } });
     state.bufferId = bufferId ?? state.bufferId ?? null;
     stateById.set(leaf.id, state);
     return leaf;
@@ -284,6 +289,56 @@ export function createPaneModel(options = {}, hooks = {}) {
       : createSplitPane({ orientation, ratio: r, first: target, second: newLeaf });
     rootPane = replacePane(rootPane, target, splitNode);
     focusedId = newLeaf.id; // focus moves to the new pane
+    onChange();
+    return newLeaf;
+  }
+
+  /** A fresh leaf seeded from the focused leaf's buffer (the add-pane gestures
+   *  insert one, matching `split`'s "new pane shows the same buffer" semantics).
+   *  Returns the leaf; the caller places it in the tree + moves focus. */
+  function makeAddedLeaf() {
+    const src = focusedState();
+    const newState = freshState(src ? src.bufferId : null, src ?? undefined);
+    return makeLeaf(newState.bufferId, newState);
+  }
+
+  /**
+   * Insert a fresh leaf INTO an existing split (the visual add-pane gesture on
+   * a SPLITTER): the split gains a third child along its axis, so its two
+   * existing leaves plus the new one become equal siblings. The new leaf shows
+   * the focused leaf's buffer and TAKES FOCUS. No-op (null) when SPLITID names
+   * no split node in this window.
+   *
+   * @param {string} splitId - A split node id (from the client's PANE_TREE; the
+   *   client rebuilds the tree with the server's ids, so they match).
+   * @returns {object|null} The new leaf, or null.
+   */
+  function addPaneAtSplitter(splitId) {
+    const splitNode = findSplitById(rootPane, String(splitId ?? ''));
+    if (!splitNode) return null;
+    const newLeaf = makeAddedLeaf();
+    rootPane = insertAtSplit(rootPane, splitNode, newLeaf);
+    focusedId = newLeaf.id;
+    onChange();
+    return newLeaf;
+  }
+
+  /**
+   * Insert a fresh leaf at an OUTER BORDER (the add-pane gesture on a window
+   * edge): wrap the whole existing layout in a new outer split with the fresh
+   * leaf on SIDE. The new leaf shows the focused leaf's buffer and TAKES FOCUS.
+   * No-op (null) on an unrecognised side.
+   *
+   * @param {'top'|'bottom'|'left'|'right'} side
+   * @returns {object|null} The new leaf, or null.
+   */
+  function addPaneAtBorder(side) {
+    if (side !== 'top' && side !== 'bottom' && side !== 'left' && side !== 'right') {
+      return null;
+    }
+    const newLeaf = makeAddedLeaf();
+    rootPane = insertAtRootBorder(rootPane, side, newLeaf);
+    focusedId = newLeaf.id;
     onChange();
     return newLeaf;
   }
@@ -484,6 +539,46 @@ export function createPaneModel(options = {}, hooks = {}) {
     // Exchange the state records (and re-point the leaf `.view` handles).
     stateById.set(leafA.id, b);
     stateById.set(leafB.id, a);
+    onChange();
+    return true;
+  }
+
+  /**
+   * Rearrange which pane shows which view by MOVING THE LEAVES (the visual
+   * swap-views / permute-views macro). SLOTORDER lists the leaf id currently at
+   * each slot (in the client's badge order); OCCUPANTS[s] is the leaf id whose
+   * content should land at slot s. Together they must be a permutation of every
+   * leaf in this window. Unlike `swapPanes` (which exchanges STATE between two
+   * fixed positions), this moves the leaf NODES — they keep their ids + content,
+   * so a guest view (browser / pdf / shell) is repositioned, never recreated,
+   * and focus follows the focused leaf to its new slot. Geometry lives on the
+   * client (it computes the badge order); the server just resolves ids. No-op
+   * (false) on a malformed / non-bijective request.
+   *
+   * @param {string[]} slotOrder - The leaf id at each slot, in badge order.
+   * @param {string[]} occupants - The leaf id whose content lands at each slot.
+   * @returns {boolean}
+   */
+  function moveViews(slotOrder, occupants) {
+    if (!Array.isArray(slotOrder) || !Array.isArray(occupants)) return false;
+    if (slotOrder.length === 0 || slotOrder.length !== occupants.length) return false;
+    const byId = new Map(leafPanes(rootPane).map((l) => [l.id, l]));
+    // permuteLeaves requires EVERY tree leaf slotted exactly once.
+    if (slotOrder.length !== byId.size) return false;
+    const slotByLeaf = new Map();
+    const occupantBySlot = [];
+    for (let s = 0; s < slotOrder.length; s += 1) {
+      const slotLeaf = byId.get(String(slotOrder[s]));
+      const occLeaf = byId.get(String(occupants[s]));
+      if (!slotLeaf || !occLeaf) return false;
+      slotByLeaf.set(slotLeaf, s);
+      occupantBySlot[s] = occLeaf;
+    }
+    try {
+      rootPane = permuteLeaves(rootPane, slotByLeaf, occupantBySlot);
+    } catch {
+      return false; // non-bijective slotting: permuteLeaves throws
+    }
     onChange();
     return true;
   }
@@ -770,8 +865,13 @@ export function createPaneModel(options = {}, hooks = {}) {
             filePath: meta.filePath ?? null,
           };
           // A non-text (data-source) tab carries its kind so the client mounts
-          // the right element-view / icons the tab.
+          // the right element-view / icons the tab — plus its `state`, so the
+          // ACTIVE tab renders from the same descriptor a bare leaf gets (e.g. a
+          // customize tab needs its scope; without it the view fell back to the
+          // default group).
           if (typeof meta.viewKind === 'string') tab.viewKind = meta.viewKind;
+          if (meta.state && typeof meta.state === 'object'
+              && Object.keys(meta.state).length > 0) tab.state = meta.state;
           return tab;
         });
       }
@@ -816,11 +916,18 @@ export function createPaneModel(options = {}, hooks = {}) {
     const blobFor = (id, withCursor) => {
       const src = resolveSource(id);
       if (!src) return null;
-      // A SHELL is path-less: persist its cwd (restore re-opens a FRESH shell
-      // there — a workspace saves the arrangement, not the live process). Must
-      // precede the path guard, which would otherwise drop it.
-      if (src.kind === 'shell') {
-        return { kind: 'shell', cwd: typeof src.cwd === 'string' ? src.cwd : '' };
+      // A LIVE-PROCESS view (shell/gnuplot) is path-less: persist its kind + cwd
+      // (restore re-opens a FRESH process there — a workspace saves the
+      // arrangement, not the live process). Must precede the path guard, which
+      // would otherwise drop it.
+      if (src.kind === 'shell' || src.kind === 'gnuplot') {
+        return { kind: src.kind, cwd: typeof src.cwd === 'string' ? src.cwd : '' };
+      }
+      // A BROWSER view is path-less too: persist its kind + url (restore re-opens
+      // a FRESH webview at that url — the live page isn't persisted). Must precede
+      // the path guard, which would otherwise drop it.
+      if (src.kind === 'browser') {
+        return { kind: 'browser', url: typeof src.url === 'string' ? src.url : '' };
       }
       if (typeof src.path !== 'string' || src.path === '') return null;
       if (src.kind !== 'text') {
@@ -890,13 +997,18 @@ export function createPaneModel(options = {}, hooks = {}) {
         }
         return {
           kind: 'split',
+          id: node.id,
           orientation: node.orientation,
           ratio: typeof node.ratio === 'number' ? node.ratio : 0.5,
           first: paneBlob(node.first),
           second: paneBlob(node.second),
         };
       }
-      const blob = { kind: 'leaf', view: serialiseLeafView(stateById.get(node.id), resolve) };
+      // Persist the leaf's id so restore re-creates it VERBATIM (loadLayout).
+      // Stable pane identity across a session round-trip lets a stored target —
+      // e.g. a directory-tree's editing-pane `openTargetPaneId` — still resolve
+      // after a restore instead of pointing at a since-re-minted leaf.
+      const blob = { kind: 'leaf', id: node.id, view: serialiseLeafView(stateById.get(node.id), resolve) };
       if (node.id === focusedId) blob.focused = true;
       return blob;
     }
@@ -971,7 +1083,12 @@ export function createPaneModel(options = {}, hooks = {}) {
         state.point = point;
         state.mark = mark;
       }
-      const leaf = makeLeaf(bufferId, state);
+      // Restore the leaf's persisted id verbatim (stable identity across the
+      // round-trip), and advance the shared id source past it so a later fresh
+      // mint can't collide with a restored id.
+      const restoredId = leafBlob && typeof leafBlob.id === 'string' ? leafBlob.id : undefined;
+      if (restoredId) bumpIdCounterPast(restoredId);
+      const leaf = makeLeaf(bufferId, state, restoredId);
       if (leafBlob && leafBlob.focused) nextFocusId = leaf.id;
       return leaf;
     }
@@ -984,7 +1101,9 @@ export function createPaneModel(options = {}, hooks = {}) {
         if (!first || !second) return first || second; // defensive: collapse a half-empty split
         const r = typeof node.ratio === 'number' && node.ratio > 0 && node.ratio < 1 ? node.ratio : 0.5;
         const orientation = node.orientation === SPLIT_VERTICAL ? SPLIT_VERTICAL : SPLIT_HORIZONTAL;
-        return createSplitPane({ orientation, ratio: r, first, second });
+        const splitId = typeof node.id === 'string' ? node.id : undefined;
+        if (splitId) bumpIdCounterPast(splitId);
+        return createSplitPane({ id: splitId, orientation, ratio: r, first, second });
       }
       if (node.kind === 'leaf') {
         const leaf = buildLeaf(node);
@@ -1010,6 +1129,8 @@ export function createPaneModel(options = {}, hooks = {}) {
   return {
     // structural ops (the model half of panes.lisp)
     split,
+    addPaneAtSplitter,
+    addPaneAtBorder,
     deletePane,
     deleteOtherPanes,
     otherPane,
@@ -1017,6 +1138,7 @@ export function createPaneModel(options = {}, hooks = {}) {
     toggleFocusedMinimap,
     balancePanes,
     swapPanes,
+    moveViews,
     setSplitRatio,
     focusPaneDirection,
     panesInSpiralOrder,

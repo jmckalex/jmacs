@@ -458,7 +458,7 @@ async function runSelfTest() {
     const off = mirror.onChange(() => { renders += 1; });
 
     // 1) Self-insert a marker at buffer start, each char through the keymap.
-    sendKey('M-less'); // beginning-of-buffer (a real command, server-side)
+    sendKey('M-S-comma'); // beginning-of-buffer (a real command, server-side)
     await frame();
     const marker = 'MWBxyz ';
     for (const ch of marker) {
@@ -475,7 +475,7 @@ async function runSelfTest() {
 
     // 2) A motion command moves point to buffer end (server-side, no text).
     const beforeEnd = mirror.point;
-    sendKey('M-greater'); // end-of-buffer
+    sendKey('M-S-period'); // end-of-buffer
     await sleep(150);
     const pointMovedByCommand = mirror.point > beforeEnd;
 
@@ -483,7 +483,7 @@ async function runSelfTest() {
     const modelineOk = modelineEl.textContent.includes(mirror.name);
 
     // 4) The minibuffer round-trip: run goto-line via M-x, supply "1".
-    sendKey('M-less');
+    sendKey('M-S-comma');
     await sleep(80);
     runCommandViaServer('goto-line');
     await sleep(150);
@@ -539,20 +539,20 @@ async function runCommandsSelfTest() {
 
     // 1) Type a known word at buffer start, select it, copy (M-w), then
     //    yank it (C-y) at end of buffer — the kill ring round-trip.
-    sendKey('M-less');
+    sendKey('M-S-comma');
     await frame();
     const word = 'YANKME';
     for (const ch of word) { dispatchKey(ch); await frame(); } // eslint-disable-line no-await-in-loop
     await sleep(200);
     // Select the word: mark at start, move right len times.
-    sendKey('M-less');
+    sendKey('M-S-comma');
     await sleep(60);
     sendKey('C-space');
     await sleep(40);
     for (let i = 0; i < word.length; i += 1) { sendKey('right'); await sleep(20); } // eslint-disable-line no-await-in-loop
     sendKey('M-w'); // copy-region
     await sleep(120);
-    sendKey('M-greater'); // end of buffer
+    sendKey('M-S-period'); // end of buffer
     await sleep(80);
     const beforeYank = mirror.text.length;
     sendKey('C-y'); // yank
@@ -563,7 +563,7 @@ async function runCommandsSelfTest() {
 
     // 2) A Markdown mode binding: select the leading word again and bold
     //    it with C-c b (dispatches through the server's mode-keymap chain).
-    sendKey('M-less');
+    sendKey('M-S-comma');
     await sleep(60);
     sendKey('C-space');
     await sleep(40);
@@ -678,7 +678,7 @@ async function runOverlaySelfTest() {
     // ----- the DRIVER path (client 0; also the sole client in 1-window) -
 
     // 1) Type the repeated word at buffer start (3 occurrences of the word).
-    sendKey('M-less'); // beginning-of-buffer
+    sendKey('M-S-comma'); // beginning-of-buffer
     await frame();
     for (const ch of OVERLAY_LINE) { dispatchKey(ch); await frame(); } // eslint-disable-line no-await-in-loop
     await sleep(250);
@@ -687,7 +687,7 @@ async function runOverlaySelfTest() {
     // 2) Multi-cursor: put point on the first occurrence, select all matches
     //    (C-c D → select-all-matches). The server builds a cursor at every
     //    match and syncs the full set to this client's mirror.
-    sendKey('M-less'); // back to buffer start (on the first word)
+    sendKey('M-S-comma'); // back to buffer start (on the first word)
     await sleep(80);
     sendKey('C-c'); // the global multi-cursor prefix (fundamental mode)
     await sleep(60);
@@ -709,7 +709,7 @@ async function runOverlaySelfTest() {
     // 4) Overlays: highlight every occurrence of the word (M-s h →
     //    highlight-matches). The server creates a search overlay at each
     //    match (its endpoints are L2 markers) and broadcasts the set.
-    sendKey('M-less'); // point on the first word again
+    sendKey('M-S-comma'); // point on the first word again
     await sleep(80);
     sendKey('M-s'); // the search prefix
     await sleep(60);
@@ -735,7 +735,7 @@ async function runOverlaySelfTest() {
       mirror.decorations.length === 0 && paintedSearchDecorations() === 0;
     // Re-create them so a two-window observer (if any) has overlays to see,
     // and so the DOM ends in the highlighted state for an eyeballed run.
-    sendKey('M-less');
+    sendKey('M-S-comma');
     await sleep(60);
     sendKey('M-s');
     await sleep(60);
@@ -853,7 +853,7 @@ async function runSameBufferTest() {
     }
     if (clientIndex === 0) {
       // The typer. Move to buffer start and type the marker, paced.
-      sendKey('M-less');
+      sendKey('M-S-comma');
       await frame();
       for (const ch of SAME_BUFFER_MARKER) {
         dispatchKey(ch);
@@ -942,13 +942,13 @@ async function runMultiBufferSelfTest() {
 async function runMultiBufferDriver(twoWindow) {
   // 1) Buffer A is the seed file. Type a marker + highlight it (overlays).
   const bufferAName = mirror.name;
-  sendKey('M-less');
+  sendKey('M-S-comma');
   await frame();
   for (const ch of MB_MARKER) { dispatchKey(ch); await frame(); } // eslint-disable-line no-await-in-loop
   await sleep(200);
   const markerInA = mirror.lineAt(0).text.startsWith(MB_MARKER);
   // Highlight every occurrence of the marker word (overlays on buffer A).
-  sendKey('M-less');
+  sendKey('M-S-comma');
   await sleep(60);
   sendKey('M-s');
   await sleep(60);
@@ -958,7 +958,7 @@ async function runMultiBufferDriver(twoWindow) {
   const hadOverlaysInA = overlaysInA >= 1;
   // Move point somewhere in A so we can prove the cursor is preserved on
   // a round-trip switch.
-  sendKey('M-greater'); // end of buffer A
+  sendKey('M-S-period'); // end of buffer A
   await sleep(80);
   const pointInA = mirror.point;
 
@@ -1037,7 +1037,7 @@ async function runMultiBufferDriver(twoWindow) {
   // Type the lockstep marker into B (point at end) after a delay so the
   // observer has switched to B by then.
   await sleep(2200);
-  sendKey('M-greater');
+  sendKey('M-S-period');
   await sleep(80);
   for (const ch of MB_LOCKSTEP) { dispatchKey(ch); await frame(); } // eslint-disable-line no-await-in-loop
   console.error('[mwb-multibuffer] driver typed the lockstep marker into B');

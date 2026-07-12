@@ -420,7 +420,9 @@ function createDirectoryTreeView(container, options = {}) {
     if (row.kind === 'directory') {
       toggleExpansion(row.path);
     } else if (openPath) {
-      openPath(row.path);
+      // Pass the wired editing-pane target (set on the element by the host's
+      // reapplyProjectDirTreeTarget) so the file opens THERE, not in the tree.
+      openPath(row.path, container.openTargetPaneId);
     }
   }
 
@@ -479,7 +481,7 @@ function createDirectoryTreeView(container, options = {}) {
     selectedIndex = idx;
     const rowData = rows[idx];
     if (rowData && !rowData.broken && rowData.kind !== 'directory' && openPath) {
-      openPath(rowData.path);
+      openPath(rowData.path, container.openTargetPaneId);
     }
   });
 

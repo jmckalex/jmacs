@@ -1,5 +1,12 @@
 # Model B — state & morning test guide
 
+> ⚠️ **STALE (~70 commits behind as of 2026-06-24).** Early morning-test snapshot.
+> For CURRENT state read `HANDOVER.md` (repo root, in the `main` worktree) + the
+> memory `project_model_b_graduation.md`. Tip is now `b4cf01b`, ~153 ahead, suite
+> 878 — single-window + G4 multi-window + composable panes + a full VIEW-PORT SWEEP
+> (media/PDF, directory views, element-views, jukebox) all live. The "what works"
+> list below is broadly accurate but predates all of that.
+
 > Branch **`multi-window-b`** in worktree `/Users/jalex/Source/jmacs/godot-mw-b`,
 > tip **`8ac50e6`**, **84 commits ahead of `main`**, full suite **GREEN 822/0**,
 > **nothing merged**, `main` untouched. Deep references: `architect-notes.md`

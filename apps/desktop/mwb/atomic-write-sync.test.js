@@ -9,11 +9,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, readdirSync } from 'node:fs';
+import {
+  mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync, utimesSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { atomicWriteSync } from './atomic-write-sync.js';
+import { atomicWriteSync, sweepStaleTemps } from './atomic-write-sync.js';
 
 function withTempDir(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'mwb-atomic-test-'));
@@ -55,4 +57,42 @@ test('a failed write leaves the original file untouched and no temp behind', () 
     // The temp file (a sibling of the bad target) never lands in `dir`.
     assert.deepEqual(readdirSync(dir), ['safe.txt']);
   });
+});
+
+/** Create a temp-shaped file with a controlled mtime (ms in the past). */
+function makeTemp(dir, name, ageMs) {
+  const p = join(dir, name);
+  writeFileSync(p, 'x');
+  const when = new Date(Date.now() - ageMs);
+  utimesSync(p, when, when);
+  return p;
+}
+
+test('sweepStaleTemps removes orphaned temps but keeps real files', () => {
+  withTempDir((dir) => {
+    makeTemp(dir, '.session.json.tmp-111-1700000000000', 5 * 60_000); // 5 min old
+    makeTemp(dir, '.custom.lisp.tmp-222-1700000000001', 5 * 60_000);
+    writeFileSync(join(dir, 'session.json'), 'real'); // a real file — must survive
+    const removed = sweepStaleTemps(dir);
+    assert.equal(removed, 2);
+    assert.deepEqual(readdirSync(dir).sort(), ['session.json']);
+  });
+});
+
+test('sweepStaleTemps spares a recent temp (a concurrent in-flight write)', () => {
+  withTempDir((dir) => {
+    makeTemp(dir, '.session.json.tmp-333-1700000000002', 1000); // 1s old
+    assert.equal(sweepStaleTemps(dir), 0); // default 60s threshold
+    assert.deepEqual(readdirSync(dir), ['.session.json.tmp-333-1700000000002']);
+  });
+});
+
+test('sweepStaleTemps ignores non-temp files and a missing dir (no throw)', () => {
+  withTempDir((dir) => {
+    writeFileSync(join(dir, 'session.json'), 'real');
+    writeFileSync(join(dir, 'notes.txt'), 'keep');
+    assert.equal(sweepStaleTemps(dir), 0);
+    assert.deepEqual(readdirSync(dir).sort(), ['notes.txt', 'session.json']);
+  });
+  assert.equal(sweepStaleTemps('/no/such/dir/anywhere-xyz'), 0);
 });

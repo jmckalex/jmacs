@@ -25,7 +25,7 @@
  * ports over `process.parentPort` — one per client window.
  */
 
-import { readFileSync, writeFileSync, readdirSync, statSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, statSync, rmSync, mkdirSync } from 'node:fs';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
@@ -42,7 +42,10 @@ import { createSessionStore, flatToWindowSession } from './session-store.js';
 // recovery-snapshot pure helpers are standalone production modules; the
 // server is a Node child, so it does file I/O DIRECTLY (no IPC), reusing
 // these without touching production app.js/main.js/view.js.
-import { atomicWriteSync } from './atomic-write-sync.js';
+import { atomicWriteSync, sweepStaleTemps } from './atomic-write-sync.js';
+import {
+  initTrace, traceEnabled, traceWire, traceRendererOp,
+} from './trace.js';
 import { createAutosave } from './autosave.js';
 // Per-file companion-metadata helpers (the `.godot-metadata` sidecar path
 // scheme + emptiness rule), shared verbatim with files.js's metadata:read /
@@ -65,6 +68,26 @@ const filePath = process.env.MWB_FILE || DEFAULT_FILE;
 // persistence functions further down share this const.
 const SESSION_STORE = process.env.MWB_SESSION_STORE
   || join(tmpdir(), 'godot-mw-b-session.json');
+
+// Sweep orphaned atomic-write temp files (`.<name>.tmp-<pid>-<ms>`) out of the
+// USER-DATA dir on startup. A force-quit during a session-snapshot / config
+// write kills the writer between the temp-write and the atomic rename, so its
+// cleanup never runs and the temp is stranded; without this they pile up forever
+// beside session.json / custom.lisp / faces.json. session.json is written by the
+// MAIN process (files.js) and config by the spine, but both land in MWB_CONFIG_HOME
+// — and the sweep removes every `.*.tmp-*` there regardless of which wrote it.
+// Age-thresholded, so a live concurrent write is never touched. (Falls back to
+// the session-store dir when MWB_CONFIG_HOME is unset, e.g. tests.)
+sweepStaleTemps(process.env.MWB_CONFIG_HOME || dirname(SESSION_STORE));
+
+// Debug tracer (off unless GODOT_TRACE is set). Writes one ordered log of every
+// client<->spine message + the renderer's forwarded scroll/follow ops. See
+// trace.js; the per-client wire taps live in registerClient.
+const TRACE_FILE = initTrace(
+  process.env,
+  process.env.MWB_CONFIG_HOME || process.env.GODOT_HOME || dirname(SESSION_STORE),
+);
+if (TRACE_FILE) console.error(`[mwb-server] TRACE ON → ${TRACE_FILE}`);
 
 // The named-session store (v3): the user's labelled sessions + the always-on
 // `__last__` auto-snapshot, each holding the full multi-window pane structure.
@@ -386,7 +409,7 @@ const spine = createSpine(
     // ALL clients' view-state after each intent in applyIntent anyway; these
     // hooks cover the minibuffer/status/scroll specifics.
     onStatus: () => broadcastView(),
-    onMinibufferOpen: (prompt) => openMinibuffer(prompt),
+    onMinibufferOpen: (prompt, initial) => openMinibuffer(prompt, initial),
     onMinibufferClose: () => closeMinibuffer(),
     onScroll: (req) => sendScrollToActive(req),
     // Overlays are PER-BUFFER, SHARED state: a highlight added on one window
@@ -413,6 +436,33 @@ const spine = createSpine(
     // active client to (host.newWindow() → main creates + attaches it as a new
     // client on this shared server).
     onNewWindow: () => sendWindowNewToActiveClient(),
+    // open-project-at! (find-project / open-project): each project opens in its
+    // OWN window now. Stash the project config, spawn a window, and assemble its
+    // 3-column layout on its HELLO (mirrors the multi-window restore spawn-and-
+    // apply). The home window is left untouched.
+    onOpenProjectWindow: (config) => {
+      // Read the project's saved open-file layout (<root>/.godot/project.json) so
+      // the spawned window restores its files; an unsaved/first-open project has
+      // none (a fresh scratch middle). The files are OPENED on the window's HELLO
+      // (below), then loadProjectWindow seeds the middle tabline from them.
+      const saved = readProjectState(config.root);
+      pendingProjectWindow = { root: config.root, files: saved.files, active: saved.active };
+      requestSpawnWindow(null);
+    },
+    // close-project: persist the project window's open files to its sidecar, then
+    // close the window (each project is its own window now). Raised by the spine's
+    // close-project! with the gathered {root, files, active}.
+    onCloseProject: ({ root, files, active, windowId }) => {
+      writeProjectState(root, { files, active });
+      const target = clients.find((c) => c && c.index === windowId);
+      if (target && target.port) {
+        sendClientDirective([windowId], 'close-window', []);
+      }
+    },
+    // emit-client-directive!: a command drove a renderer-side action in a chosen
+    // set of windows (e.g. C-x 5 1 close-other-windows). The spine resolved the
+    // target ids; post the directive to just those ports.
+    onClientDirective: (ids, name, args) => sendClientDirective(ids, name, args),
     openFile: readFileForVisit,
     // save-buffer / write-file: atomic disk write (temp + fsync + rename).
     saveFile: writeFileForSave,
@@ -464,12 +514,35 @@ function registerClient(port) {
   bootstrapClaimed = true;
   const client = { port, index, windowKind: 'single' };
   clients.push(client);
-  port.on('message', (event) => onClientMessage(client, event));
+  if (traceEnabled()) {
+    // Tap OUTBOUND (S->C): shadow the port's own postMessage so every send is
+    // logged in ONE place, whatever helper emitted it (all sends go through
+    // `client.port.postMessage`, and client.port === this port).
+    try {
+      const rawPost = port.postMessage.bind(port);
+      port.postMessage = (msg, transfer) => {
+        try { traceWire('S->C', index, msg); } catch { /* never break a send */ }
+        return transfer !== undefined ? rawPost(msg, transfer) : rawPost(msg);
+      };
+    } catch { /* a native port that forbids reassign: skip S->C wire trace */ }
+  }
+  port.on('message', (event) => {
+    const data = event && event.data;
+    // A renderer local-op line forwarded for the trace file — record + swallow.
+    // It is NOT a protocol message; never dispatch it.
+    if (data && data.type === '__trace__') { traceRendererOp(index, data); return; }
+    if (traceEnabled()) { try { traceWire('C->S', index, data); } catch { /* ignore */ } }
+    onClientMessage(client, event);
+  });
   // G4: when the window closes, its renderer's port is closed/GC'd and the
   // server's end fires 'close'. Reap the client so broadcasts don't post to a
   // dead port and the spine drops its window-state (the buffers outlive it).
   port.on('close', () => detachClient(client));
   port.start();
+  // Debug: ask this client to turn its renderer op-trace on (no-op when off).
+  if (traceEnabled()) {
+    try { port.postMessage({ type: MSG.TRACE, on: true }); } catch { /* ignore */ }
+  }
   // The client asks for its snapshot itself via HELLO once its page +
   // highlighters are ready (onClientMessage), so we don't snapshot here —
   // a pre-load snapshot would race the page and be discarded.
@@ -619,12 +692,17 @@ function sendPickerTo(client, req) {
  *  derives those). Sent on HELLO and whenever the layout/focus changes. */
 function sendPaneTreeTo(client) {
   const tree = spine.paneSnapshot(client.index);
-  // `liveShells` = the shell sources still open in this window. The client reaps
-  // a shell's pty + element when its session leaves this set (a real close), but
-  // NOT on a switch-away (the source stays open). See app.js reconcile.
+  // `liveProcs` = the live-process sources (shell + gnuplot) still open in this
+  // window. The client reaps a process's child + element when its session leaves
+  // this set (a real close), but NOT on a switch-away (the source stays open).
+  // `liveBrowsers` is the same seam for browser <webview>s (their Chromium page
+  // is the per-instance runtime that must survive a switch-away). See app.js
+  // reconcile.
   if (tree) {
     client.port.postMessage({
-      type: MSG.PANE_TREE, tree, seq, liveShells: spine.shellSessionsOf(client.index),
+      type: MSG.PANE_TREE, tree, seq,
+      liveProcs: spine.liveProcessSessionsOf(client.index),
+      liveBrowsers: spine.liveBrowserSourcesOf(client.index),
     });
   }
 }
@@ -637,9 +715,11 @@ function sendPaneTreeToIndex(index) {
 
 /** Open the minibuffer for the active client (the one that ran the
  *  command). One prompt at a time in the shared model. */
-function openMinibuffer(prompt) {
+function openMinibuffer(prompt, initial = '') {
   minibufferClient = activeClient;
-  minibufferState = { active: true, prompt, value: '' };
+  // `value` seeds the input — the client pre-fills it (find-file / find-project
+  // start at a sensible directory). Empty for an ordinary prompt.
+  minibufferState = { active: true, prompt, value: typeof initial === 'string' ? initial : '' };
   if (minibufferClient) sendViewTo(minibufferClient);
 }
 
@@ -675,6 +755,12 @@ function sendSnapshot(client) {
     point: spine.viewStateOf(client.index).point,
     name: spine.buffer.name,
     bufferId: spine.currentBufferIdOf(client.index),
+    // B4: the buffer's sticky notes (seeded from its .godot-metadata sidecar) so
+    // the client can render the overlay. Plain records (id/anchor/x/y/w/h/source/
+    // collapsed) — clone-safe. Empty for a sidecar-less / note-less buffer.
+    notes: (spine.buffer.metadata && Array.isArray(spine.buffer.metadata.notes))
+      ? spine.buffer.metadata.notes
+      : [],
     clientIndex: client.index, // so a client knows whether it's the typer
     // G4 Step 1: how this window presents its root — 'tabline' (window 1, the
     // welcome/restored session) or 'single' (a fresh window: one composable
@@ -682,6 +768,31 @@ function sendSnapshot(client) {
     windowKind: client.windowKind,
     seq,
   });
+}
+
+/** Paint a freshly-connected / freshly-restored CLIENT: the six per-client
+ *  sends (snapshot, view, overlays, cursors, buffer-list, pane-tree), EACH under
+ *  its own guard. A malformed restored buffer (a stale cursor, a bad overlay)
+ *  must never let one failing send skip the rest — above all the PANE_TREE, which
+ *  carries the window's layout and its keyboard-live leaf. Without this, a throw
+ *  in an early send (the freeze family) leaves the window painted but treeless and
+ *  dead to input; here it degrades to whatever the other sends can deliver. */
+function sendClientState(client) {
+  const steps = [
+    ['snapshot', sendSnapshot],
+    ['view', sendViewTo],
+    ['overlays', sendOverlaysTo],
+    ['cursors', sendCursorsTo],
+    ['bufferList', sendBufferListTo],
+    ['paneTree', sendPaneTreeTo],
+  ];
+  for (const [label, fn] of steps) {
+    try {
+      fn(client);
+    } catch (error) {
+      console.error(`[mwb-session] client paint step "${label}" failed: ${error.message}`);
+    }
+  }
 }
 
 /** Fully re-sync a client onto its current buffer: snapshot + view-state +
@@ -764,8 +875,32 @@ function applyIntent(client, intent) {
       case INTENT.KEY:
         spine.handleKey(String(intent.key ?? ''));
         break;
+      case INTENT.RUN_COMMAND: {
+        // A native app-menu / mode-menu click runs a command by EXACT name.
+        // Route like M-x's exact branch (no fuzzy match): a renderer-owned
+        // element-view command goes back DOWN via RUN_CLIENT_COMMAND; anything
+        // else runs on the spine. Handling it HERE (not as a top-level message)
+        // means the post-command fan-out below — caret echo + broadcastView —
+        // runs, so an editing command's cursor/preview refreshes without a
+        // manual click. setActiveClient already ran at the top of applyIntent.
+        const name = String(intent.name ?? '');
+        if (name) {
+          if (clientCommandNames.has(name)) {
+            sendRunClientCommand(client, name);
+          } else {
+            spine.runCommand(name);
+          }
+        }
+        break;
+      }
       case INTENT.POINT:
         buffer.moveTo(Number(intent.point) || 0);
+        // A drag-selection sends its anchor as `intent.mark`; moveTo() just
+        // cleared the mark, so reapply it (null = a plain click, no selection).
+        // Without this the echoed CURSOR/CURSORS report mark:null and the
+        // client's selection vanishes — click-to-place works, drag-select
+        // doesn't (the mirror's local mark is overwritten by the server echo).
+        buffer.setMark(typeof intent.mark === 'number' ? intent.mark : null);
         break;
       case INTENT.MINIBUFFER_SUBMIT:
         handleMinibufferSubmit(String(intent.value ?? ''));
@@ -840,16 +975,29 @@ function applyIntent(client, intent) {
       case INTENT.VISIT_FILE: {
         // Open a file by path directly (no minibuffer) — a file clicked in a
         // directory-view. Like find-file: visitFile ADDS/switches the active
-        // client onto it and fully re-syncs, so skip the edit path.
+        // client onto it and fully re-syncs, so skip the edit path. An optional
+        // `leafId` routes the open into a SPECIFIC leaf (the project's editing
+        // tabline the dir-tree wired), so it doesn't replace the tree's own pane.
         const path = String(intent.path ?? '');
         if (path !== '') {
-          const id = spine.visitFile(path);
+          const leafId =
+            typeof intent.leafId === 'string' && intent.leafId !== ''
+              ? intent.leafId
+              : null;
+          const id = spine.visitFile(path, leafId);
           if (id) resyncClientToCurrentBuffer(client);
           activeClient = null;
           return;
         }
         break;
       }
+      case INTENT.GOTO_LINE:
+        // Markdown-preview inverse search: move the active buffer's point to the
+        // clicked source line, then CENTER + flash it so the user sees where the
+        // jump landed. Falls through to the post-intent view emit, which
+        // reconciles the cursor.
+        spine.gotoLineReveal(Number(intent.line));
+        break;
       case INTENT.BOOKMARK_OP: {
         // An outline edit from a bookmark VIEW (mutable 'bookmark' data-source):
         // apply it to the source buffer's records. EDIT ops persist + fan the
@@ -860,6 +1008,111 @@ function applyIntent(client, intent) {
         if (jumped) resyncClientToCurrentBuffer(client);
         activeClient = null;
         return;
+      }
+      case INTENT.NOTES_CHANGED: {
+        // B4: a window edited a buffer's sticky notes. The server owns the file +
+        // sidecar, so persist the shipped-up notes to that buffer's metadata. No
+        // re-push: the originating window already shows them; other windows pick
+        // them up on their next snapshot of that buffer.
+        spine.setBufferNotes(
+          String(intent.bufferId ?? ''),
+          Array.isArray(intent.notes) ? intent.notes : [],
+        );
+        activeClient = null;
+        return;
+      }
+      case INTENT.CUSTOMIZE_OP: {
+        // Sub-navigation from a customize VIEW (openScope): find-or-create the
+        // requested SCOPE's customize leaf and switch this client to it. The
+        // view's model + value/face edits run client-side; only the leaf (pane
+        // structure) is server-owned, so this is all the server does.
+        const scope = (intent.scope && typeof intent.scope === 'object') ? intent.scope : null;
+        if (scope) {
+          spine.openCustomizeScope(scope);
+          resyncClientToCurrentBuffer(client);
+        }
+        activeClient = null;
+        return;
+      }
+      case INTENT.CUSTOMIZE_CHANGED: {
+        // A customize setting changed in `client`'s window. The spine is the sole
+        // applier + render driver + persister (B2.2): apply the change to its
+        // interpreter, which persists custom.lisp / faces.json AND pushes the
+        // resulting chrome (theme / faces / highlight / css-knobs) to EVERY window
+        // (its :on-change -> apply-* -> pushChromeToAll). The old CUSTOMIZE_SYNC
+        // relay to the other windows is gone — the push replaces it.
+        const change = (intent.change && typeof intent.change === 'object') ? intent.change : null;
+        if (change) spine.applyCustomizeChange(change);
+        activeClient = null;
+        return;
+      }
+      case INTENT.NOTEBOOK_EVAL: {
+        // The renderer can't eval (CSP forbids unsafe-eval); run the cell in the
+        // spine's Node context and reply to THIS client with the serializable
+        // result. Async — don't block the intent loop; reqId pairs the reply to
+        // the awaiting cell. runNotebookCell never throws, but guard the reply.
+        const reqId = intent.reqId;
+        const source = typeof intent.source === 'string' ? intent.source : '';
+        // The notebook's session id selects its persistent shared scope (a
+        // cell's top-level decls flow to later cells in the same notebook).
+        const sessionId = typeof intent.sessionId === 'string' ? intent.sessionId : null;
+        Promise.resolve(spine.runNotebookCell(source, sessionId))
+          .then((result) => {
+            try { client.port.postMessage({ type: MSG.NOTEBOOK_RESULT, reqId, result }); }
+            catch { /* client detached */ }
+          })
+          .catch((err) => {
+            try {
+              client.port.postMessage({
+                type: MSG.NOTEBOOK_RESULT,
+                reqId,
+                result: {
+                  state: 'error',
+                  descriptor: { type: 'empty' },
+                  logs: [],
+                  error: { name: 'Error', message: String((err && err.message) || err), stack: '' },
+                },
+              });
+            } catch { /* client detached */ }
+          });
+        activeClient = null;
+        return;
+      }
+      case INTENT.REPL_EVAL: {
+        // L5: evaluate the typed Lisp in the REAL spine world + reply the result.
+        // `break` (not return) so the post-command fan-out below runs — a REPL
+        // eval that edits the buffer (e.g. `(insert! …)`) refreshes the view like
+        // any command. spine.replEval never throws (it returns {ok,text}).
+        const result = spine.replEval(intent.source);
+        try { client.port.postMessage({ type: MSG.REPL_RESULT, reqId: intent.reqId, result }); }
+        catch { /* client detached */ }
+        break;
+      }
+      case INTENT.DOC_HOVER: {
+        // Hover-doc tooltip: resolve the symbol + doc summary under OFFSET against
+        // the active buffer and reply. `break` (not return): a hover reads, never
+        // edits, but the uniform post-intent fan-out is harmless. spine.docHover
+        // never throws (returns null on any miss).
+        const result = spine.docHover(intent.offset);
+        try { client.port.postMessage({ type: MSG.DOC_HOVER_RESULT, reqId: intent.reqId, result }); }
+        catch { /* client detached */ }
+        break;
+      }
+      case INTENT.DOC_OPEN: {
+        // Hover-doc click-through: open the doc page for NAME (opens/reuses the
+        // doc-view via the real open-doc). Fire-and-forget; the view-open's own
+        // effects refresh the client.
+        spine.docOpen(intent.name);
+        break;
+      }
+      case INTENT.SYNCTEX_INVERSE: {
+        // Inverse SyncTeX: run `synctex edit` for the clicked PDF point and
+        // reveal the source file:line in a source pane. The synctex spawn is
+        // async (run-process!); its callback's reveal (pane focus + scroll) fans
+        // out through the model's onChange + onScroll on its own. break (not
+        // return) so the uniform post-intent refresh runs too. Never throws.
+        spine.synctexInverse(intent.pdfPath, intent.page, intent.x, intent.y);
+        break;
       }
       default:
         break;
@@ -1060,6 +1313,20 @@ function sendRunClientCommand(client, name) {
   client.port.postMessage({ type: MSG.RUN_CLIENT_COMMAND, name, bibPath });
 }
 
+/** Send a client directive `{ name, args }` to each window in IDS. The spine's
+ *  command chose the recipients (this-window-id / other-window-ids /
+ *  all-window-ids); we post a CLIENT_DIRECTIVE to just those ports. Each
+ *  recipient applies it; the payload is structured-clone-safe. */
+function sendClientDirective(ids, name, args) {
+  if (!Array.isArray(ids)) return;
+  for (const index of ids) {
+    const client = clients.find((c) => c.index === index);
+    if (client && client.port) {
+      client.port.postMessage({ type: MSG.CLIENT_DIRECTIVE, directive: { name, args } });
+    }
+  }
+}
+
 function bestCommandMatch(value) {
   const v = value.trim();
   if (v === '') return null;
@@ -1103,21 +1370,29 @@ function onClientMessage(client, event) {
         // A just-spawned restore window: hand it the next saved layout BEFORE the
         // snapshot below, so it paints its restored tree (not the fresh scratch).
         applyNextRestoreWindow(client);
+      } else if (pendingProjectWindow) {
+        // A just-spawned PROJECT window (B4): open its saved files into the shared
+        // registry (visitFile switches THIS new window's leaf transiently — the
+        // home window is untouched since the new window is the active client during
+        // its HELLO), then assemble the 3-column layout BEFORE the snapshot so it
+        // paints directory-tree | editing tabline | bookmark. One project per spawn.
+        const config = pendingProjectWindow;
+        pendingProjectWindow = null;
+        for (const p of config.files) spine.visitFile(p);
+        spine.loadProjectWindow(client.index, config);
       }
-      sendSnapshot(client);
-      sendViewTo(client);
-      // A late-joining client needs its current buffer's overlays + its own
-      // cursor set (a window can attach while another already has highlights
-      // or multi-cursor active on the same buffer).
-      sendOverlaysTo(client);
-      sendCursorsTo(client);
-      // The full open-buffer set, so the client renders its tabs + active
-      // marker from the first paint (a reconnect may already have several
-      // buffers open). Re-pushed on every later buffer-set change via resync.
-      sendBufferListTo(client);
-      // The window's pane layout (a single leaf on first connect, or its
-      // restored split tree on reconnect).
-      sendPaneTreeTo(client);
+      // Paint the window: snapshot + view + overlays + cursors + buffer-list +
+      // pane-tree, each guarded so a malformed restored buffer degrades to a
+      // usable window rather than freezing the boot (the PANE_TREE always lands).
+      sendClientState(client);
+      // B1.3 (plans/MODEL-B-DEFAULT.md): paint this window's chrome from the
+      // server — theme CSS vars, the face-overrides CSS, and the user's
+      // highlight rules. The renderer no longer computes faces itself; it
+      // applies these directives. Sent now (after the view) so faces land with
+      // the first paint; re-pushed to all windows on any later change.
+      for (const d of spine.chromeDirectives()) {
+        sendClientDirective([client.index], d.name, d.args);
+      }
       // The view is now painted — open the workspace chooser LAST so its picker
       // grabs (and, via picker-panel's next-frame re-assert, keeps) focus.
       if (openChooserAfterPaint) openWorkspaceChooser(client);
@@ -1194,12 +1469,30 @@ function onClientMessage(client, event) {
       // can't be deleted this way (it's the live auto-snapshot).
       if (typeof msg.id === 'string' && msg.id !== '__last__') sessionStore.remove(msg.id);
       break;
+    case MSG.PROJECT_OPEN:
+      // B4 Stage 3: the native dir dialog / project chooser picked a directory.
+      // Route it to the spine, which opens it as a NEW project window (the same
+      // path find-project takes after its minibuffer submit).
+      if (typeof msg.path === 'string' && msg.path !== '') {
+        spine.setActiveClient(client.index);
+        spine.openProjectAt(msg.path);
+      }
+      break;
+    case MSG.TREE_SITTER_INFO:
+      // B4 face-info: the renderer's reply to a tree-sitter-query directive.
+      // Resume the suspended C-h F / C-h C-f command with the captures + node +
+      // the renderer-resolved {face: colour} map (face-color-for reads it for the
+      // *Face at point* "Resolved colour").
+      spine.setActiveClient(client.index);
+      spine.deliverTreeSitterInfo({ lang: msg.lang, captures: msg.captures, node: msg.node, colors: msg.colors });
+      break;
     case MSG.MINIBUFFER_COMPLETE: {
       // TAB in the minibuffer. Find-file gets CASE-INSENSITIVE path completion;
       // the client sent its current input. Other prompts (M-x, switch-to-buffer)
       // have their own completion — not wired yet. A read-only query (no edit),
       // so it replies directly rather than going through applyIntent.
       if (spine.activePrompt === 'Find file: '
+          || spine.activePrompt === 'Open project: '
           || spine.activePrompt === 'Directory tree: '
           || spine.activePrompt === 'Directory columns: '
           || spine.activePrompt === 'Jukebox directory: ') {
@@ -1218,6 +1511,15 @@ function onClientMessage(client, event) {
         for (const n of msg.names) {
           if (typeof n === 'string' && n !== '') clientCommandNames.add(n);
         }
+      }
+      break;
+    case MSG.BROWSER_NAVIGATED:
+      // A browser VIEW navigated (link / URL bar / in-page route). Quietly track
+      // the new URL on its data-source so a saved workspace restores the page the
+      // user is on. No fan-out / no view emit — a browser source isn't shared, so
+      // the originating window already shows the page.
+      if (typeof msg.sourceId === 'string' && typeof msg.url === 'string') {
+        spine.setBrowserSourceUrl(msg.sourceId, msg.url);
       }
       break;
     case MSG.OPEN_ELEMENT_SOURCE: {
@@ -1295,6 +1597,55 @@ function pathsInWindowBlob(rootPane) {
   };
   walkPane(rootPane);
   return out;
+}
+
+// --- per-project save-state (<root>/.godot/project.json) — B4 project ------
+// The spine is a Node child, so it owns the project's sidecar directly (no
+// main-process IPC). Mirrors files.js's projectStatePath/project:read/write.
+
+/** `<root>/.godot/project.json`, or null for a non-absolute root. */
+function projectStatePath(root) {
+  if (typeof root !== 'string' || root === '' || !root.startsWith('/')) return null;
+  return join(root, '.godot', 'project.json');
+}
+
+/** Read a project's saved state → `{ files: string[], active: string|null }`.
+ *  Tolerant of BOTH the forward `{ version, files, active }` shape AND an older
+ *  session-style blob (`{ windows:[{rootPane}] }` / `{ rootPane }`) — from which
+ *  the open-file paths are extracted via pathsInWindowBlob. Null/unreadable →
+ *  no saved files (a first open). */
+function readProjectState(root) {
+  const target = projectStatePath(root);
+  if (!target) return { files: [], active: null };
+  let data;
+  try {
+    data = JSON.parse(readFileSync(target, 'utf8'));
+  } catch {
+    return { files: [], active: null };
+  }
+  if (data && Array.isArray(data.files)) {
+    return {
+      files: data.files.filter((p) => typeof p === 'string' && p !== ''),
+      active: typeof data.active === 'string' ? data.active : null,
+    };
+  }
+  // Migrate an older session-blob format: pull the file paths out of its tree.
+  const win = data && Array.isArray(data.windows) ? data.windows[0] : data;
+  const rootPane = win && win.rootPane ? win.rootPane : null;
+  return { files: rootPane ? pathsInWindowBlob(rootPane) : [], active: null };
+}
+
+/** Write a project's open-file layout to `<root>/.godot/project.json` (atomic,
+ *  creating `.godot/`). The forward `{ version, files, active }` shape. */
+function writeProjectState(root, { files, active }) {
+  const target = projectStatePath(root);
+  if (!target) return;
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    atomicWriteSync(target, JSON.stringify({ version: 2, files, active: active ?? null }, null, 2));
+  } catch (error) {
+    console.error(`[mwb-project] write ${target} failed: ${error.message}`);
+  }
 }
 
 /** The boot SEED hint `{ files, active }` from the store's `__last__` snapshot:
@@ -1453,12 +1804,7 @@ function handleWorkspaceChoice(client, value) {
     // restore (applyNextRestoreWindow persists once every window has landed).
     persistLastSession();
   }
-  sendSnapshot(client);
-  sendViewTo(client);
-  sendOverlaysTo(client);
-  sendCursorsTo(client);
-  sendBufferListTo(client);
-  sendPaneTreeTo(client);
+  sendClientState(client); // guarded sends — a bad restored buffer can't freeze the paint
 }
 
 // --- multi-window restore orchestration (slice B) ---------------------
@@ -1473,6 +1819,10 @@ function handleWorkspaceChoice(client, value) {
 let pendingRestore = [];
 let awaitingRestoreWindow = false;
 let restoreInProgress = false;
+// B4 project: the project config awaiting its freshly-spawned window's HELLO
+// (open-project-at! → onOpenProjectWindow stashes it, then requestSpawnWindow).
+// The next non-bootstrap, non-restore HELLO assembles the 3-column layout for it.
+let pendingProjectWindow = null;
 
 /** The saved geometry `{ bounds, display }` of a window-blob, or null. */
 function windowGeometry(w) {
@@ -1565,7 +1915,14 @@ function restoreSession(client, id = '__last__') {
 function applyNextRestoreWindow(client) {
   awaitingRestoreWindow = false;
   const blob = pendingRestore.shift();
-  if (blob && blob.rootPane) spine.loadWindowLayout(client.index, blob.rootPane);
+  // Guard the layout load: a malformed window blob must not throw out of the
+  // HELLO handler (that would skip this window's paint below and freeze it). On
+  // failure the window keeps its fresh scratch — usable, not bricked.
+  try {
+    if (blob && blob.rootPane) spine.loadWindowLayout(client.index, blob.rootPane);
+  } catch (error) {
+    console.error(`[mwb-session] restore window layout failed: ${error.message}`);
+  }
   sendDockTo(client, blob && blob.dock); // restore this window's REPL/dock state
   if (pendingRestore.length > 0) {
     spawnNextRestoreWindow();
@@ -1724,7 +2081,7 @@ function runSaveSelfTest() {
 
     // 2) Edit it (self-insert) → dirty + the ● modeline indicator.
     const MARK = 'EDITED ';
-    spine.handleKey('M-greater'); // end of buffer
+    spine.handleKey('M-S-period'); // end of buffer
     for (const ch of MARK) spine.handleKey(ch);
     checks.dirty = spine.activeModified === true;
     checks.bullet = spine.viewState().modeline.startsWith('●');
@@ -1791,7 +2148,7 @@ function runUndoSelfTest() {
     spine.setActiveClient(0);
     const baseline = spine.buffer.text;
     // Edit → dirty (●).
-    spine.handleKey('M-greater'); // end of buffer
+    spine.handleKey('M-S-period'); // end of buffer
     for (const ch of 'XY') spine.handleKey(ch);
     checks.edited = spine.buffer.text === `${baseline}XY`;
     checks.dirty = spine.activeModified === true

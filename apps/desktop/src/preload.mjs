@@ -14,11 +14,10 @@ contextBridge.exposeInMainWorld('host', {
    *  filesystem and `file://` URL scheme will accept. */
   homeDirectory: homedir(),
 
-  /** G1 (plans/MWB-GRADUATION.md): true ONLY when GODOT_SERVER=1. The
-   *  renderer reads this single gate to decide whether to listen for the
-   *  Model-B server port (and, in G2, route editing through it). False (the
-   *  default) means the renderer boots exactly as today. */
-  serverMode: process.env.GODOT_SERVER === '1',
+  /** Model B is the only mode. Retained as a constant `true` while the renderer
+   *  still reads `window.host.serverMode` at its branch points; those reads go
+   *  away in Part A3 (plans/MODEL-B-DEFAULT.md), after which this field does too. */
+  serverMode: true,
 
   /** The editor's per-user data directory (`app.getPath('userData')`),
    *  resolved once at preload time over a synchronous IPC call. The
@@ -113,6 +112,12 @@ contextBridge.exposeInMainWorld('host', {
    *  creates the window and the bridge attaches it as a new client; a no-op
    *  in the flag-off build (nothing triggers it). */
   newWindow: (geometry) => ipcRenderer.send('window:new', geometry ?? null),
+
+  /** P2 (server mode): close THIS window. Driven by the server's close-window
+   *  CLIENT_DIRECTIVE (C-x 5 0 on this window, or C-x 5 1 from another). In
+   *  server mode the buffers live in the server and outlive the window, so the
+   *  close is free; main just closes this BrowserWindow. */
+  closeWindow: () => ipcRenderer.send('window:close'),
 
   /** Session restore (B2): this window's frame + display, for the geometry the
    *  session records. getWindowBounds is a one-shot pull (the client reports it
@@ -225,6 +230,57 @@ contextBridge.exposeInMainWorld('host', {
    */
   renderJMarkdown: (command, source) =>
     ipcRenderer.invoke('jmarkdown:render', { command, source }),
+
+  /**
+   * Start (or restart) this window's JMarkdown live-preview watcher for the
+   * saved file `path`. When `text` is given, the watcher previews a hidden
+   * shadow sidecar seeded with it (a save-free live preview of the current
+   * buffer); otherwise it watches the real file. Resolves `{ port }` once the
+   * server accepts connections, or `{ error }` on failure.
+   * @param {string} path - Absolute path of the saved file to preview.
+   * @param {string} [text] - Current buffer text to seed the preview shadow.
+   * @returns {Promise<{port: number} | {error: string}>}
+   */
+  startJmarkdownWatch: (path, text) =>
+    ipcRenderer.invoke('jmarkdown:watch:start', { path, text }),
+
+  /**
+   * Rewrite the preview shadow for `path` with the current buffer `text` — the
+   * debounced live-update after a typing pause. Fire-and-forget; a no-op in main
+   * when no preview shadow is active for `path`.
+   * @param {string} path - The real source path the preview was opened on.
+   * @param {string} text
+   * @returns {Promise<{ok: boolean}>}
+   */
+  syncJmarkdownWatch: (path, text) =>
+    ipcRenderer.invoke('jmarkdown:watch:sync', { path, text }),
+
+  /**
+   * Stop this window's JMarkdown preview watcher (a no-op if none is running).
+   * @returns {Promise<{ok: boolean}>}
+   */
+  stopJmarkdownWatch: () => ipcRenderer.invoke('jmarkdown:watch:stop'),
+
+  /**
+   * Pop this window's JMarkdown preview out into its own Godot window. The watch
+   * process's ownership transfers to the new window. Resolves `{ ok }` or
+   * `{ error }`.
+   * @param {{name?: string, bg?: string, fg?: string}} [opts] - File name + the
+   *   editor's resolved chrome colours, to theme the preview window's title bar.
+   * @returns {Promise<{ok: boolean, error?: string}>}
+   */
+  popOutPreview: (opts) => ipcRenderer.invoke('jmarkdown:watch:popout', opts),
+
+  /** Forward search to a popped-out preview window: the editor's cursor line.
+   *  `flash` requests the yellow location flash (the explicit C-c C-v sync). */
+  previewForward: (line, flash) =>
+    ipcRenderer.send('preview-sync:down', { type: 'scroll-to-line', line, flash: !!flash }),
+  /** Messages UP from a popped-out preview window: `{type:'ready'}` (replay the
+   *  cursor line) or `{type:'source-line-click', line}` (inverse search). */
+  onPreviewUp: (cb) => ipcRenderer.on('preview-sync:up', (_event, msg) => cb(msg)),
+  /** The popped-out preview window closed — stop forwarding to it. */
+  onPreviewPopoutClosed: (cb) =>
+    ipcRenderer.on('preview-sync:popout-closed', () => cb()),
 
   /**
    * Read a file's companion metadata (sticky notes), or null.
@@ -737,17 +793,12 @@ contextBridge.exposeInMainWorld('host', {
   },
 });
 
-// G1 (plans/MWB-GRADUATION.md): when (and only when) GODOT_SERVER=1, main
-// transfers a MessagePort connected to the Model-B server over the
+// Model B: main transfers a MessagePort connected to the server over the
 // `godot:server-port` IPC channel. ipcRenderer delivers transferred ports on
 // `event.ports`; the page can't touch ipcRenderer across the context bridge, so
 // we re-dispatch the port to the page as a `window` message (transferring it
-// into page-land). The renderer stashes it but does NOT route editing through it
-// yet (G2). With the flag off, this listener is never registered, so the preload
-// — and the renderer — behave exactly as today.
-if (process.env.GODOT_SERVER === '1') {
-  ipcRenderer.on('godot:server-port', (event) => {
-    const [port] = event.ports;
-    if (port) window.postMessage({ type: 'godot:server-port' }, '*', [port]);
-  });
-}
+// into page-land).
+ipcRenderer.on('godot:server-port', (event) => {
+  const [port] = event.ports;
+  if (port) window.postMessage({ type: 'godot:server-port' }, '*', [port]);
+});

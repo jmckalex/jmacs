@@ -292,6 +292,165 @@ test('[[file]] inclusion lines', () => {
   assert.ok(owned(scan, text, '[[chapter-2.jmd]]'));
 });
 
+/* ── @name directives (inline / block) ───────────────────────────────── */
+
+/** The html injection whose interior is wrapped as a synthetic tag. */
+function attrInjection(scan) {
+  return scan.injections.find(
+    (i) => i.language === 'html' && i.wrapPrefix === '<x '
+  );
+}
+
+test('@name directive: sigils/brackets faced, text ambient, attrs injected', () => {
+  const text = 'Here @note[hello]{.fancy #n1 data-x="7"} there.\n';
+  const scan = scanJmarkdown(text);
+  assert.equal(faceOf(scan, text, '@note'), 'jmd-directive-punct'); // the @
+  assert.equal(faceOf(scan, text, 'note'), 'jmd-directive-name');
+  assert.equal(faceAt(scan.captures, text.indexOf('[')), 'jmd-punct');
+  assert.equal(faceAt(scan.captures, text.indexOf(']')), 'jmd-punct');
+  assert.equal(faceAt(scan.captures, text.indexOf('{')), 'jmd-punct');
+  assert.equal(faceAt(scan.captures, text.indexOf('}')), 'jmd-punct');
+  // The text group is injected into jmarkdown_inline: not owned, no
+  // scanner face of its own, but an injection carries its interior.
+  assert.ok(!owned(scan, text, 'hello'), 'text group not owned');
+  assert.equal(faceOf(scan, text, 'hello'), null);
+  const inline = scan.injections.find((i) => i.language === 'jmarkdown_inline');
+  assert.ok(inline, 'text group injected into jmarkdown_inline');
+  assert.equal(text.slice(inline.start, inline.end), 'hello');
+  // The attribute list is injected into html, wrapped, and NOT owned
+  // (so the injection shows through the capture-provider clip).
+  const html = attrInjection(scan);
+  assert.ok(html, 'an html injection for the attribute list');
+  assert.equal(text.slice(html.start, html.end), '.fancy #n1 data-x="7"');
+  assert.equal(html.wrapSuffix, ' />');
+  assert.ok(!owned(scan, text, '.fancy'), 'attribute interior not owned');
+});
+
+test('@name+ block directive: the + is faced as directive punctuation', () => {
+  const text = '@note+[hi]{.x}\n';
+  const scan = scanJmarkdown(text);
+  assert.equal(faceOf(scan, text, 'note'), 'jmd-directive-name');
+  assert.equal(faceAt(scan.captures, text.indexOf('+')), 'jmd-directive-punct');
+  assert.ok(attrInjection(scan), 'attrs still injected on a block directive');
+});
+
+test('@<name> angle form: the < and > are faced; + sits outside', () => {
+  const text = 'A @<fig>[cap]{.big} and @<tbl>+[x]{.y} end.\n';
+  const scan = scanJmarkdown(text);
+  assert.equal(faceAt(scan.captures, text.indexOf('<')), 'jmd-directive-punct');
+  assert.equal(faceAt(scan.captures, text.indexOf('>')), 'jmd-directive-punct');
+  assert.equal(faceOf(scan, text, 'fig'), 'jmd-directive-name');
+  assert.equal(faceOf(scan, text, 'tbl'), 'jmd-directive-name');
+  // '+' after the closing '>' of the second directive.
+  assert.equal(faceAt(scan.captures, text.indexOf('+')), 'jmd-directive-punct');
+});
+
+test('an unpaired angle bracket is not a directive', () => {
+  const text = 'nope @<name[x]{.y} nope\n';
+  const scan = scanJmarkdown(text);
+  assert.equal(scan.captures.filter((c) => c.face === 'jmd-directive-name').length, 0);
+  assert.equal(scan.captures.filter((c) => c.face === 'jmd-directive-punct').length, 0);
+  assert.equal(attrInjection(scan), undefined, 'no attribute injection either');
+});
+
+test('both groups are optional: @name, @name[text], @name{attrs}', () => {
+  const bare = scanJmarkdown('Say @hello now.\n');
+  assert.equal(faceOf(bare, 'Say @hello now.\n', 'hello'), 'jmd-directive-name');
+  assert.equal(attrInjection(bare), undefined);
+
+  const textOnly = scanJmarkdown('@ref[sec-1] here\n');
+  assert.equal(faceAt(textOnly.captures, '@ref[sec-1] here\n'.indexOf('[')), 'jmd-punct');
+  assert.equal(attrInjection(textOnly), undefined, 'no attrs -> no injection');
+
+  const attrsOnly = scanJmarkdown('@x{.a}\n');
+  const html = attrInjection(attrsOnly);
+  assert.ok(html);
+  assert.equal('@x{.a}\n'.slice(html.start, html.end), '.a');
+});
+
+test('the text group may span lines (but not a blank line)', () => {
+  const text = '@note[line one\nline two]{.x}\nAfter.\n';
+  const scan = scanJmarkdown(text);
+  assert.equal(faceAt(scan.captures, text.indexOf(']')), 'jmd-punct');
+  const html = attrInjection(scan);
+  assert.ok(html);
+  assert.equal(text.slice(html.start, html.end), '.x');
+});
+
+test('a blank line inside a group aborts it (the bracket is left plain)', () => {
+  const text = '@note[line one\n\nline two]\n';
+  const scan = scanJmarkdown(text);
+  // The opening name is still faced, but the '[' never resolves to a group.
+  assert.equal(faceOf(scan, text, 'note'), 'jmd-directive-name');
+  assert.equal(faceAt(scan.captures, text.indexOf('[')), null);
+});
+
+test('attribute injection is quote-aware: a } inside a value does not close', () => {
+  const text = `@x{style='a}b' data-y="z"}\n`;
+  const scan = scanJmarkdown(text);
+  const html = attrInjection(scan);
+  assert.ok(html);
+  assert.equal(text.slice(html.start, html.end), `style='a}b' data-y="z"`);
+});
+
+test('the text group is a bracket-free jmarkdown_inline injection', () => {
+  // Injecting the bare interior (not the wrapping [ … ]) is what avoids
+  // the shortcut-link mis-parse; the span excludes the brackets.
+  const text = 'Here @note[hello *world*]{.x} there.\n';
+  const scan = scanJmarkdown(text);
+  const inline = scan.injections.find((i) => i.language === 'jmarkdown_inline');
+  assert.ok(inline);
+  assert.equal(text.slice(inline.start, inline.end), 'hello *world*');
+  assert.equal(text[inline.start - 1], '[', 'injection starts after the [');
+  assert.equal(text[inline.end], ']', 'injection ends before the ]');
+});
+
+test('the text interior stays unclaimed: scanner extras still paint there', () => {
+  // ==highlight==, {{mustache}} and a footnote opener inside the text
+  // group are painted by the scanner passes (the interior is unclaimed).
+  const text = '@note[see ==this==, {{v}} and more[^n: x]] ok\n';
+  const scan = scanJmarkdown(text);
+  assert.equal(faceOf(scan, text, 'this'), 'jmd-highlight');
+  assert.equal(faceOf(scan, text, 'v'), 'jmd-mustache');
+  assert.equal(faceOf(scan, text, '[^n:'), 'jmd-footnote');
+});
+
+test('a style="…" value in the attribute list is injected into css', () => {
+  const text = `@x{.a style='color: crimson; font-weight: bold'}\n`;
+  const scan = scanJmarkdown(text);
+  const css = scan.injections.find((i) => i.language === 'css');
+  assert.ok(css, 'a css injection for the style value');
+  assert.equal(text.slice(css.start, css.end), 'color: crimson; font-weight: bold');
+  assert.equal(css.wrapPrefix, '*{');
+  assert.equal(css.wrapSuffix, '}');
+  // The whole attribute list is still injected into html as well.
+  assert.ok(attrInjection(scan), 'html injection for the list is still present');
+});
+
+test('style-value css injection handles double quotes and coexists with html', () => {
+  const text = `@x{style="margin: 0 auto" data-y="7"}\n`;
+  const scan = scanJmarkdown(text);
+  const css = scan.injections.find((i) => i.language === 'css');
+  assert.ok(css);
+  assert.equal(text.slice(css.start, css.end), 'margin: 0 auto');
+  // data-y is a plain attribute, not css — only the style value is injected.
+  assert.equal(scan.injections.filter((i) => i.language === 'css').length, 1);
+});
+
+test('an email address is never a directive (@ must follow start or space)', () => {
+  const text = 'Write to me@example.com today.\n';
+  const scan = scanJmarkdown(text);
+  assert.equal(scan.captures.filter((c) => c.face === 'jmd-directive-name').length, 0);
+});
+
+test('@begin/@end environments are untouched by the @name pass', () => {
+  const text = '@begin(theorem)\nx\n@end(theorem)\n';
+  const scan = scanJmarkdown(text);
+  // Still the environment keyword face, not a directive name.
+  assert.equal(faceOf(scan, text, '@begin'), 'jmd-env-keyword');
+  assert.equal(faceOf(scan, text, 'theorem'), 'jmd-env-name');
+});
+
 /* ── embedded JavaScript chains ──────────────────────────────────────── */
 
 test('a call chain becomes a javascript injection', () => {

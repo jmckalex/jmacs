@@ -14,8 +14,8 @@
 ;;; in the renderer.
 ;;;
 ;;; `view-list!` is the command that OPENS the list — it has a side
-;;; effect, so it takes the `!` suffix; `buffer-menu` is kept as an alias
-;;; for muscle memory, and `C-x C-b` (keymap.lisp) points at `buffer-menu`.
+;;; effect, so it takes the `!` suffix; `list-views` is the view-vocab
+;;; command name, and `C-x C-b` (keymap.lisp) points at `list-views`.
 ;;; IMPORTANT: the bare `view-list` name belongs to the host PRIMITIVE
 ;;; that returns the array of open view handles. The command must NOT be
 ;;; called `view-list`, or it shadows that primitive and Lisp callers that
@@ -25,11 +25,13 @@
 (defcommand view-list! ()
   "Open the *View List* — a clickable table of every open view. Click a
    row to switch to that view; the row's ✕ kills it. The list refreshes
-   live as views open and close. Also reachable as `buffer-menu` / `C-x
+   live as views open and close. Also reachable as `list-views` / `C-x
    C-b`. (The `!` marks the side effect and keeps the name clear of the
    `(view-list)` primitive that returns the view-handle array.)"
   (open-view-list!))
 
-(defcommand buffer-menu ()
-  "Alias for `view-list!`, kept for Emacs muscle memory (`C-x C-b`)."
+(defcommand list-views ()
+  "List the open views and pick one (`C-x C-b`). The keyboard-facing name
+   for `view-list!`; a *view* is the general surface (only text views have a
+   buffer), so the vocabulary is view-centric, not buffer-centric."
   (open-view-list!))

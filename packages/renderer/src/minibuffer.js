@@ -178,6 +178,34 @@ export function createMinibuffer(container) {
       }
     },
 
+    /**
+     * A STYLED status: render `segments` ([{ text, color, bold }]) as coloured
+     * (and optionally bold) spans, in the same row setStatus uses (the prompt's
+     * status when a prompt is open, else the echo area). Inline `style.color` /
+     * `style.fontWeight` are DOM properties — CSP-safe (no inline <style>).
+     * @param {{ text: string, color?: string|null, bold?: boolean }[]} segments
+     */
+    setStatusRich(segments) {
+      const target = root.hidden ? echoEl : statusEl;
+      target.textContent = '';
+      const list = Array.isArray(segments) ? segments : [];
+      // Wrap the spans in ONE container: .minibuffer-echo is `display: flex`,
+      // so each direct child is a flex item whose trailing whitespace is
+      // trimmed (it would eat the space after "Save"). A single wrapper is the
+      // lone flex item; the segment spans inside stay inline, so inter-segment
+      // spaces survive.
+      const wrap = document.createElement('span');
+      for (const seg of list) {
+        const span = document.createElement('span');
+        span.textContent = String(seg && seg.text != null ? seg.text : '');
+        if (seg && seg.color) span.style.color = seg.color;
+        if (seg && seg.bold) span.style.fontWeight = 'bold';
+        wrap.appendChild(span);
+      }
+      target.appendChild(wrap);
+      if (root.hidden) echoEl.hidden = list.length === 0;
+    },
+
     clearStatus() {
       statusEl.textContent = '';
       echoEl.textContent = '';

@@ -155,12 +155,30 @@ export function createServerViewClient({
   let connected = false;
   let currentBufferId = null;
   let nextIntentId = 1;
+  // JS notebook: a cell's eval is a round-trip to the spine (Node; the renderer
+  // can't eval under CSP). Each run gets a reqId; the promise resolves when the
+  // matching MSG.NOTEBOOK_RESULT arrives.
+  let nextNotebookReq = 1;
+  const notebookPending = new Map();
+  // L5: the REPL's Lisp eval is the same round-trip shape — the spine evaluates
+  // in the real world, the promise resolves on the matching MSG.REPL_RESULT.
+  let nextReplReq = 1;
+  const replPending = new Map();
+  // Hover-doc: the same round-trip shape — the spine resolves the symbol + doc
+  // summary under a buffer offset (docs.lisp, live buffer); the promise resolves
+  // on the matching MSG.DOC_HOVER_RESULT.
+  let nextDocHoverReq = 1;
+  const docHoverPending = new Map();
 
   // --- the server-driven DOM chrome (server-mode only) -----------------
   // Hooks the caller (app.js) supplies; each missing one is a no-op so the
   // unit tests + the core text path run without any chrome.
   const setModelineDom = chrome.setModeline ?? (() => {});
   const setEchoDom = chrome.setEcho ?? (() => {});
+  // Styled echo: the server sent the status as coloured/bold segments
+  // (statusSegments — e.g. the quit walk's red Save prompt with a bold
+  // filename). Falls back to plain setEcho when the host doesn't wire it.
+  const setEchoRichDom = chrome.setEchoRich ?? null;
   const openMinibufferDom = chrome.openMinibuffer ?? (() => {});
   const closeMinibufferDom = chrome.closeMinibuffer ?? (() => {});
   const openPickerDom = chrome.openPicker ?? (() => {});
@@ -169,10 +187,9 @@ export function createServerViewClient({
   // in-renderer tabs + View List in server mode. A no-op until the host wires
   // it (the core text path is unaffected).
   const setBufferListDom = chrome.setBufferList ?? (() => {});
-  // Quit (C-x C-c): window-lifecycle, not buffer editing — the server can't
-  // close the renderer window, so the client owns the quit chord and asks the
-  // host to quit. A no-op until the host wires it.
-  const requestQuitDom = chrome.requestQuit ?? (() => {});
+  // (Quit is server-owned now: C-x C-c forwards to the server like any chord →
+  // quit-editor runs the cross-window save-some-buffers walk, then sends a
+  // `quit` CLIENT_DIRECTIVE back so the host shuts down. No client interception.)
   // New Window (G4): the server resolves C-x 5 2 → the new-window command and
   // sends WINDOW_NEW down; the client asks its host to open another window (a
   // new client on the shared server). Window lifecycle is the host's job, like
@@ -188,6 +205,15 @@ export function createServerViewClient({
   // (split structure + per-leaf buffer/view-state + the focused leaf; no
   // pixels). The host renders it — splits become visible. A no-op until wired.
   const setPaneTreeDom = chrome.setPaneTree ?? (() => {});
+  // B4: a freshly-mirrored server buffer mounted (SNAPSHOT). The host points the
+  // sticky-notes overlay manager at this mirror + its editor view so the buffer's
+  // notes (carried on the snapshot, set on mirror.metadata.notes below) render.
+  const onServerBufferDom = chrome.onServerBuffer ?? (() => {});
+  // CLIENT_DIRECTIVE: the server told THIS window to perform a renderer-side
+  // action (close-window, toggle a fold, re-theme, …). The host maps the
+  // directive name → an action (window lifecycle is the host's job, like quit /
+  // new-window). A no-op until wired. `(name, args)`.
+  const applyDirectiveDom = chrome.applyDirective ?? (() => {});
   // MINIBUFFER_COMPLETIONS: the server's reply to a TAB-completion request — the
   // completed value + the candidate list. The host fills the minibuffer + shows
   // the candidates (find-file). A no-op until wired.
@@ -209,10 +235,6 @@ export function createServerViewClient({
   // composable pane on its own *scratch*, no forced tabline). Passed to mountView
   // so the host mounts the right root. Stable per window; defaults to 'tabline'.
   let windowKind = 'tabline';
-  // The previous keystroke, tracked ONLY to catch the C-x C-c quit chord
-  // client-side (the server leaves it unbound — quitting the window is a host
-  // action). Any key between C-x and C-c resets it, so it never misfires.
-  let lastDispatchedKey = null;
 
   // Pending intents we sent + await confirmation for, keyed by id. `predicted`
   // is retained on the entry shape for the VIEW-reconcile guard (a stale VIEW
@@ -221,14 +243,19 @@ export function createServerViewClient({
   const pending = new Map();
 
   /** The mirror's wire-out: post an intent the server applies. The mirror only
-   *  calls this from its OWN mutators (a direct mirror edit); the typing path
-   *  no longer mutates the mirror locally (every key goes up as a KEY intent and
-   *  the server's echoed DELTA reconciles), so this is a thin pass-through kept
-   *  to satisfy the ClientBuffer contract. */
-  function sendIntent(intent) {
+   *  calls this from its OWN mutators (a direct mirror edit — the accent-commit
+   *  and IME paths); the typing path routes through sendKey instead. When the
+   *  mirror locally predicted the edit (meta.predicted — localEcho), register a
+   *  PREDICTED pending entry so onDelta reconciles the echo (cursor/seq only)
+   *  rather than re-applying the text on top of the prediction: without it the
+   *  press-and-hold accent commit landed twice in the mirror (the éé bug) while
+   *  the server's canonical buffer stayed correct. */
+  function sendIntent(intent, meta) {
+    const id = nextIntentId++;
+    pending.set(id, { predicted: !!(meta && meta.predicted) });
     port.postMessage({
       type: MSG.INTENT,
-      intent: { id: nextIntentId++, ...intent },
+      intent: { id, ...intent },
     });
   }
 
@@ -248,6 +275,16 @@ export function createServerViewClient({
     const id = nextIntentId++;
     pending.set(id, { predicted: false });
     port.postMessage({ type: MSG.INTENT, intent: { id, kind: INTENT.KEY, key } });
+  }
+
+  /** Markdown-preview INVERSE search: move the active buffer's point to the
+   *  1-based LINE the user ⌘/Ctrl-clicked in the preview. The server moves the
+   *  cursor (spine.gotoLine) and echoes the reconciled view. A no-op for a
+   *  non-positive / non-integer line. */
+  function sendGotoLine(line) {
+    const n = Number(line);
+    if (!Number.isInteger(n) || n < 1) return;
+    port.postMessage({ type: MSG.INTENT, intent: { id: nextIntentId++, kind: INTENT.GOTO_LINE, line: n } });
   }
 
   /** Measure the mounted view's visible text-line count and report it UP as a
@@ -301,15 +338,9 @@ export function createServerViewClient({
    */
   function dispatchKey(keyString) {
     if (!mirror) return false;
-    // C-x C-c quits the window. The server keymap leaves this chord unbound
-    // (quitting is a host action it can't perform), so the client resolves it:
-    // `lastDispatchedKey` shadows the server's prefix state for this ONE chord.
-    if (lastDispatchedKey === 'C-x' && keyString === 'C-c') {
-      lastDispatchedKey = null;
-      requestQuitDom();
-      return true;
-    }
-    lastDispatchedKey = keyString;
+    // Every key — C-x C-c included — goes up as a KEY intent; the server's
+    // keymap owns dispatch, including quit (C-x C-c → quit-editor, which runs
+    // the cross-window save-some-buffers walk, then a `quit` directive back).
     sendKey(keyString);
     return true;
   }
@@ -374,7 +405,13 @@ export function createServerViewClient({
     // echo while a prompt is up; this avoids fighting it).
     const mb = v.minibuffer;
     const mbActive = !!(mb && mb.active);
-    if (!mbActive && typeof v.status === 'string') setEchoDom(v.status);
+    if (!mbActive) {
+      if (Array.isArray(v.statusSegments) && v.statusSegments.length > 0 && setEchoRichDom) {
+        setEchoRichDom(v.statusSegments);
+      } else if (typeof v.status === 'string') {
+        setEchoDom(v.status);
+      }
+    }
     // Minibuffer open/close transitions, in lock-step with the server.
     if (mbActive && !minibufferActive) {
       minibufferActive = true;
@@ -440,6 +477,11 @@ export function createServerViewClient({
     });
     if (view) view.destroy();
     view = mountView(mirror, buildMountOptions());
+    // B4: seed the mirror's note metadata from the snapshot so the sticky-notes
+    // manager (pointed here by onServerBuffer) renders the buffer's notes. The
+    // manager reads buffer.metadata.notes + edit-tracks via mirror.onChange.
+    mirror.metadata = { notes: Array.isArray(msg.notes) ? msg.notes : [] };
+    onServerBufferDom(mirror, view);
     if (typeof view.focus === 'function') view.focus();
     // Report the freshly-mounted view's visible line count so screenful scroll
     // (C-v/M-v) is sized correctly from the first keystroke. A frame later the
@@ -471,7 +513,7 @@ export function createServerViewClient({
     if (msg.echoId != null) pending.delete(msg.echoId);
     mirror.cursors[0].point = msg.point;
     mirror.cursors[0].mark = msg.mark ?? null;
-    if (view) view.setView({ buffer: mirror });
+    if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
   }
 
   /** A CURSORS message: this client's full cursor set (multi-cursor). Skip the
@@ -484,14 +526,14 @@ export function createServerViewClient({
     const predictionsInFlight = [...pending.values()].some((p) => p.predicted);
     if (predictionsInFlight && cursors.length <= 1) return;
     mirror.applyCursors(cursors);
-    if (view) view.setView({ buffer: mirror });
+    if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
   }
 
   /** An OVERLAYS message: the buffer's shared overlay set. */
   function onOverlays(overlays) {
     if (!mirror) return;
     mirror.applyOverlays(overlays);
-    if (view) view.setView({ buffer: mirror });
+    if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
   }
 
   /** A RESYNC: canonical text + this client's cursor set (a multi-cursor edit
@@ -502,7 +544,7 @@ export function createServerViewClient({
       if (p.predicted) pending.delete(id);
     }
     mirror.applyResync(msg);
-    if (view) view.setView({ buffer: mirror });
+    if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
   }
 
   /** A VIEW message: non-text render state (modeline / status / minibuffer /
@@ -525,11 +567,11 @@ export function createServerViewClient({
     if (mirror && typeof v.point === 'number' && !predictionsInFlight) {
       mirror.cursors[0].point = v.point;
       mirror.cursors[0].mark = v.mark ?? null;
-      if (view) view.setView({ buffer: mirror });
+      if (view) view.setView({ buffer: mirror }, { followMode: 'auto' });
     } else if (modeChanged && mirror && view) {
       // A mode toggle (e.g. C-c C-p math-preview) with no cursor motion still
       // needs one re-render so the typeset widgets appear / disappear.
-      view.setView({ buffer: mirror });
+      view.setView({ buffer: mirror }, { followMode: 'auto' });
     }
     renderChrome(v);
   }
@@ -571,11 +613,80 @@ export function createServerViewClient({
           try { runClientCommand(msg.name, msg.bibPath ?? null); } catch { /* surfaced by app.js */ }
         }
         break;
-      case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveShells); break;
+      case MSG.PANE_TREE: setPaneTreeDom(msg.tree, msg.liveProcs, msg.liveBrowsers); break;
+      case MSG.CLIENT_DIRECTIVE:
+        if (msg.directive && typeof msg.directive.name === 'string') {
+          applyDirectiveDom(msg.directive.name, msg.directive.args ?? []);
+        }
+        break;
+      case MSG.REPL_RESULT: {
+        const resolve = replPending.get(msg.reqId);
+        if (resolve) { replPending.delete(msg.reqId); resolve(msg.result); }
+        break;
+      }
+      case MSG.NOTEBOOK_RESULT: {
+        const resolve = notebookPending.get(msg.reqId);
+        if (resolve) { notebookPending.delete(msg.reqId); resolve(msg.result); }
+        break;
+      }
+      case MSG.DOC_HOVER_RESULT: {
+        const resolve = docHoverPending.get(msg.reqId);
+        if (resolve) { docHoverPending.delete(msg.reqId); resolve(msg.result); }
+        break;
+      }
       case MSG.MINIBUFFER_COMPLETIONS:
         showCompletionsDom({ value: msg.value, items: msg.items, directory: msg.directory });
         break;
+      case MSG.TRACE:
+        setTrace(!!msg.on);
+        break;
       default: break; // PANE_TREE: not in this slice
+    }
+  }
+
+  // --- debug op-trace (off unless the spine booted with GODOT_TRACE) --------
+  // When on, `globalThis.__godotTrace(kind, data)` forwards a renderer LOCAL op
+  // (a scroll/follow decision — the stuff that never hits the wire) up to the
+  // spine, which writes it into the single trace file alongside the wire
+  // traffic. view.js et al. call `globalThis.__godotTrace?.(...)` at the key
+  // sites, so this is a no-op with zero cost when off.
+  let scrollIntoViewRaw = null;
+  function setTrace(on) {
+    if (on) {
+      globalThis.__godotTrace = (kind, data) => {
+        try {
+          port.postMessage({ type: '__trace__', kind, data, t: Date.now() });
+        } catch { /* ignore — a trace line must never break the app */ }
+      };
+      // Wrap scrollIntoView to capture WHAT scrolls the editor (the swatch-hover
+      // "snap to top" bug): the element, args, editor scrollTop, and a short
+      // stack pinning the exact call path.
+      if (!scrollIntoViewRaw && typeof Element !== 'undefined') {
+        scrollIntoViewRaw = Element.prototype.scrollIntoView;
+        const raw = scrollIntoViewRaw;
+        Element.prototype.scrollIntoView = function scrollIntoViewTraced(...args) {
+          try {
+            const ed = this.closest && this.closest('.editor');
+            if (globalThis.__godotTrace) {
+              globalThis.__godotTrace('scrollIntoView', {
+                cls: this.className,
+                args: JSON.stringify(args),
+                editorScrollTop: ed ? ed.scrollTop : null,
+                stack: (new Error().stack || '').split('\n').slice(2, 8)
+                  .map((s) => s.trim()).join(' | '),
+              });
+            }
+          } catch { /* ignore */ }
+          return raw.apply(this, args);
+        };
+      }
+      log('[trace] renderer op-trace ON');
+    } else {
+      globalThis.__godotTrace = null;
+      if (scrollIntoViewRaw) {
+        Element.prototype.scrollIntoView = scrollIntoViewRaw;
+        scrollIntoViewRaw = null;
+      }
     }
   }
 
@@ -658,13 +769,15 @@ export function createServerViewClient({
 
   /** Ask the server to open the file at PATH directly (no minibuffer) — a file
    *  clicked in a directory-view. The server runs the same `visitFile` find-file
-   *  uses, switching this client onto the opened buffer. A no-op for a falsy path. */
-  function visitPath(path) {
+   *  uses, switching this client onto the opened buffer. When LEAFID is given,
+   *  the open is routed into that specific leaf (the project's editing tabline a
+   *  directory-tree wired), rather than the client's focused leaf. A no-op for a
+   *  falsy path. */
+  function visitPath(path, leafId = null) {
     if (!path) return;
-    port.postMessage({
-      type: MSG.INTENT,
-      intent: { id: nextIntentId++, kind: INTENT.VISIT_FILE, path: String(path) },
-    });
+    const intent = { id: nextIntentId++, kind: INTENT.VISIT_FILE, path: String(path) };
+    if (typeof leafId === 'string' && leafId !== '') intent.leafId = leafId;
+    port.postMessage({ type: MSG.INTENT, intent });
   }
 
   /** Ask the server to hold a renderer-computed element-view SPEC as a
@@ -674,6 +787,29 @@ export function createServerViewClient({
   function openElementView(spec) {
     if (!spec || typeof spec !== 'object') return;
     port.postMessage({ type: MSG.OPEN_ELEMENT_SOURCE, spec });
+  }
+
+  /** Ask the server to run a command by EXACT name — a native app-menu /
+   *  mode-menu click. Sent as an INTENT (like a key) so it flows through the
+   *  server's `applyIntent`: the server routes it like M-x (an element-view
+   *  command goes back down via RUN_CLIENT_COMMAND; anything else runs on the
+   *  spine) AND the post-command fan-out (caret + view refresh) runs — so an
+   *  editing command's cursor/preview updates without a manual click. */
+  function runCommand(name) {
+    if (typeof name !== 'string' || name === '') return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.RUN_COMMAND, name },
+    });
+  }
+
+  /** Report that a browser VIEW (data-source SOURCEID) navigated to URL — a link
+   *  click, the URL bar, or an in-page route. The server quietly updates the
+   *  source's `state.url` (no fan-out) so the page is tracked for session-restore.
+   *  A no-op for a falsy id / url. */
+  function browserNavigated(sourceId, url) {
+    if (!sourceId || typeof url !== 'string' || url === '') return;
+    port.postMessage({ type: MSG.BROWSER_NAVIGATED, sourceId: String(sourceId), url });
   }
 
   /** Insert TEXT into the server's active buffer at point — the generic
@@ -715,10 +851,129 @@ export function createServerViewClient({
     });
   }
 
+  /** Customize sub-navigation (openScope): ask the spine to open SCOPE's
+   *  customize leaf ({group|variable|face}) and switch this client to it. The
+   *  model + value/face edits stay client-side; only the leaf is server-owned. */
+  function customizeOp(scope) {
+    if (!scope || typeof scope !== 'object') return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.CUSTOMIZE_OP, scope },
+    });
+  }
+
+  /** Send a customize SETTING change to the spine (CUSTOMIZE_CHANGED). The spine
+   *  applies it, persists custom.lisp / faces.json, and pushes the resulting
+   *  chrome (theme / faces / highlight / css-knobs) to EVERY window (B2.2).
+   *  CHANGE = `{ op, name?, valueSrc?, face?, attr? }`. */
+  function customizeChanged(change) {
+    if (!change || typeof change !== 'object') return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.CUSTOMIZE_CHANGED, change },
+    });
+  }
+
+  /** B4: ship the CURRENT buffer's sticky notes up so the server persists them to
+   *  the sidecar (it owns the file under Model B). Called by the sticky-notes
+   *  manager's onChange. A no-op without a current buffer. */
+  function notesChanged(notes) {
+    if (currentBufferId === null) return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: {
+        id: nextIntentId++,
+        kind: INTENT.NOTES_CHANGED,
+        bufferId: currentBufferId,
+        notes: Array.isArray(notes) ? notes : [],
+      },
+    });
+  }
+
+  /** Evaluate a JS notebook cell in the spine (Node — the renderer can't eval
+   *  under CSP). Returns a promise of the serializable result
+   *  `{ state, descriptor, logs, error }` (resolved on MSG.NOTEBOOK_RESULT). */
+  function notebookEval(source, sessionId) {
+    const reqId = nextNotebookReq++;
+    return new Promise((resolve) => {
+      notebookPending.set(reqId, resolve);
+      port.postMessage({
+        type: MSG.INTENT,
+        intent: {
+          id: nextIntentId++,
+          kind: INTENT.NOTEBOOK_EVAL,
+          reqId,
+          source: String(source ?? ''),
+          // Selects the notebook's persistent shared scope on the server
+          // (cross-cell state). Absent for an isolated (non-shared) cell.
+          sessionId: sessionId || null,
+        },
+      });
+    });
+  }
+
+  /** L5: evaluate a line of REPL Lisp in the spine (the renderer interpreter is
+   *  inert). Resolves with `{ ok, text, location? }` — the writeString'd value,
+   *  or the error message + source location — on the matching MSG.REPL_RESULT. */
+  function replEval(source) {
+    const reqId = nextReplReq++;
+    return new Promise((resolve) => {
+      replPending.set(reqId, resolve);
+      port.postMessage({
+        type: MSG.INTENT,
+        intent: { id: nextIntentId++, kind: INTENT.REPL_EVAL, reqId, source: String(source ?? '') },
+      });
+    });
+  }
+
+  /** Hover-doc: ask the spine for the symbol + doc summary under buffer OFFSET
+   *  (resolved against the LIVE active buffer — the renderer interpreter is idle
+   *  in server mode). Resolves with `{ kind, name, source? } | null` on the
+   *  matching MSG.DOC_HOVER_RESULT. */
+  function requestDocHover(offset) {
+    const reqId = nextDocHoverReq++;
+    return new Promise((resolve) => {
+      docHoverPending.set(reqId, resolve);
+      port.postMessage({
+        type: MSG.INTENT,
+        intent: { id: nextIntentId++, kind: INTENT.DOC_HOVER, reqId, offset: Number(offset) },
+      });
+    });
+  }
+
+  /** Hover-doc click-through: ask the spine to open the doc page for NAME (the
+   *  real `(open-doc name)` — opens/reuses the doc-view). Fire-and-forget. */
+  function docOpen(name) {
+    if (typeof name !== 'string' || name === '') return;
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: { id: nextIntentId++, kind: INTENT.DOC_OPEN, name },
+    });
+  }
+
+  /** Inverse SyncTeX: an Option-click in a pdf-view at PDFPATH, PAGE (1-based),
+   *  PDF point (X, Y). Ask the spine to run `synctex edit` and reveal the source
+   *  file:line in a source pane. Fire-and-forget — the reveal's focus/scroll fan
+   *  back through the normal view updates. */
+  function synctexInverse(pdfPath, page, x, y) {
+    port.postMessage({
+      type: MSG.INTENT,
+      intent: {
+        id: nextIntentId++,
+        kind: INTENT.SYNCTEX_INVERSE,
+        pdfPath: typeof pdfPath === 'string' ? pdfPath : '',
+        page: Number(page),
+        x: Number(x),
+        y: Number(y),
+      },
+    });
+  }
+
   return {
     connect,
     dispatchKey,
     sendPaneIntent,
+    sendGotoLine,
     // Re-report the REPL/dock visibility (app.js calls this after a manual toggle
     // + before a workspace save, so the saved arrangement is current).
     reportDock,
@@ -739,10 +994,29 @@ export function createServerViewClient({
     visitPath,
     // Hold a renderer-computed element-view spec as a server data-source.
     openElementView,
+    // Run a command by exact name (native app-menu / mode-menu click).
+    runCommand,
+    // Report a browser view's navigation UP so the server tracks its state.url.
+    browserNavigated,
     // Insert text into the server's active buffer (element-view insert-text).
     insertText,
     // Send a bookmark-outline edit op (jump/rename/delete/indent/outdent/toggle).
     bookmarkOp,
+    // Customize sub-navigation: open another scope's customize leaf (openScope).
+    customizeOp,
+    // Propagate a customize setting change outward (server relays to windows).
+    customizeChanged,
+    notesChanged,
+    // Evaluate a JS notebook cell in the spine (Node, no CSP) → serializable result.
+    notebookEval,
+    // Evaluate a line of REPL Lisp in the spine (L5).
+    replEval,
+    // Hover-doc: resolve the symbol + doc summary under a buffer offset (the live
+    // buffer), and open a doc page by name on click-through.
+    requestDocHover,
+    docOpen,
+    // Inverse SyncTeX: a pdf-view Option-click → spine `synctex edit` + reveal.
+    synctexInverse,
     // Close (kill) a server buffer by id (a tab ×): switch-to + C-x k.
     closeBuffer,
     // Measure + report the visible line count UP (VIEWPORT). Exposed so the

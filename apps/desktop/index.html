@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self' app:; script-src 'self' app: 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' app: 'unsafe-inline'; img-src 'self' app: data: media: https:; media-src 'self' app: media: data: https:; connect-src 'self' app: media:; frame-src 'self' app: https:"
+      content="default-src 'self' app:; script-src 'self' app: 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' app: 'unsafe-inline'; img-src 'self' app: data: media: https:; media-src 'self' app: media: data: https:; connect-src 'self' app: media:; frame-src 'self' app: https: http://localhost:* http://127.0.0.1:*"
     />
     <title>Godot</title>
     <!-- Vendor stylesheets first, our own styles.css last so it wins
@@ -28,9 +28,8 @@
           "@editor/buffer": "../../packages/buffer/src/index.js",
           "@editor/view": "../../packages/view/src/index.js",
           "@editor/pane": "../../packages/pane/src/index.js",
-          "@editor/lisp": "../../packages/lisp/src/index.js",
+          "@editor/lisp/values.js": "../../packages/lisp/src/values.js",
           "@editor/renderer": "../../packages/renderer/src/index.js",
-          "@editor/stdlib": "../../packages/stdlib/src/index.js",
           "@xterm/xterm": "../../packages/renderer/node_modules/@xterm/xterm/lib/xterm.mjs",
           "@xterm/addon-fit": "../../packages/renderer/node_modules/@xterm/addon-fit/lib/addon-fit.mjs",
           "pdfjs-dist": "../../packages/renderer/node_modules/pdfjs-dist/build/pdf.mjs"

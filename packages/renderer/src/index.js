@@ -70,16 +70,15 @@ export {
 export { ShellView } from './shell-view.js';
 export { GnuplotView } from './gnuplot-view.js';
 export { createHistory } from './gnuplot-history.js';
+// The SVG editor (M-x svg-edit): importing it registers the bundled
+// <svg-editor-view> custom element so the element-view mounts it by tag
+// with an empty :module.
 export { SvgEditorView, TOOLS as SVG_EDITOR_TOOLS } from './svg-editor-view.js';
-export {
-  NotebookView,
-  serializeCells,
-  cellsFromSource,
-  topLevelForms,
-  shouldForwardChord,
-  badgeForState,
-  moveItem,
-} from './notebook-view.js';
+// The Architecture-A cell notebook (M-x notebook-cells): all cells in ONE real
+// editor over a unified buffer. Importing it registers the bundled
+// <notebook-cells-view> custom element so the element-view mounts it by tag
+// with an empty :module.
+export { NotebookCellsView } from './notebook-cells-view.js';
 export { ViewListView, kindLabel, fileLabel } from './view-list-view.js';
 export { RecoverView, formatAge, recoverFileLabel } from './recover-view.js';
 export {
@@ -185,6 +184,7 @@ export {
 } from './math-preview-providers.js';
 export {
   typesetMath,
+  isMathErrorNode,
   isMathJaxReady,
   whenMathJaxReady,
   cacheKey,
@@ -202,3 +202,8 @@ export {
   planSegments,
   detectLeave,
 } from './math-preview.js';
+export {
+  createMathTooltip,
+  placeAbove,
+  chooseRender,
+} from './math-tooltip.js';

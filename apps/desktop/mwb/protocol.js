@@ -150,11 +150,63 @@ export const MSG = Object.freeze({
   // commands by name — the M-x dispatch of a client-owned command. The client
   // runs it in the renderer interpreter (where the spec is computed).
   RUN_CLIENT_COMMAND: 'run-client-command',
+  // down: a general "client directive" — the server tells a chosen set of
+  // windows to perform a renderer-side action (close-window, toggle a fold,
+  // re-theme, …). A server command picks WHICH windows by emitting an explicit
+  // id list (via this-window-id / other-window-ids / all-window-ids); the
+  // server posts this only to those ports, so each recipient simply applies it.
+  // Carries `{ directive: { name, args } }` — structured-clone-safe, no raw Lisp
+  // values. The general form of RUN_CLIENT_COMMAND, with multi-window targeting:
+  // a keystroke in one window (e.g. C-x 5 1) can drive an action in others.
+  CLIENT_DIRECTIVE: 'client-directive',
   // up: the renderer's `open-element-view!` asks the server to create an
   // `element` DATA-SOURCE from a computed spec ({ tag, moduleUrl, attrs, fit,
   // keyboard, noFocus, name }). The server holds it like any data-source (a
   // pane slot + restore); the client mounts <element-view> from the spec.
   OPEN_ELEMENT_SOURCE: 'open-element-source',
+  // up: a browser VIEW navigated to a new URL (a link click / the URL bar /
+  // an in-page route). Carries `{ sourceId, url }`; the server QUIETLY updates
+  // that browser data-source's `state.url` (no fan-out — a browser source isn't
+  // shared across panes) so the page is tracked for session-restore and any
+  // rebuild-from-wire reflects where the user actually browsed to.
+  BROWSER_NAVIGATED: 'browser-navigated',
+  // up (B4 project Stage 3): the renderer's native directory dialog / project
+  // chooser picked a project directory. Carries `{ path }`; the server routes it
+  // to spine.openProjectAt → a NEW project window. The keyboard path (find-project)
+  // delivers via the minibuffer instead; this is the dialog/chooser's way in.
+  PROJECT_OPEN: 'project-open',
+  // up (B4 face-info): the renderer's reply to a `tree-sitter-query` directive —
+  // the focused buffer's tree-sitter info at point: `{ lang, captures: [[start,
+  // end, face],…], node: {type,start,end,ancestors}|null }`. tree-sitter is WASM
+  // in the renderer, so the spine asks for it and resumes the suspended C-h F /
+  // C-h C-f command (deliverTreeSitterInfo → tree-sitter-info-delivered). The
+  // reverse of NOTEBOOK_EVAL (renderer→spine→reply).
+  TREE_SITTER_INFO: 'tree-sitter-info',
+  // (B2.2b removed CUSTOMIZE_SYNC: customize is server-authoritative now — the
+  // spine applies + persists the change and pushes the resulting chrome to every
+  // window via CLIENT_DIRECTIVE, so there is no per-window re-apply relay.)
+  // down: the result of a JS notebook cell evaluated in the spine's Node context
+  // (the renderer can't eval — CSP forbids unsafe-eval). Carries `{ reqId,
+  // result }` where result is a SERIALIZABLE { state, descriptor, logs, error };
+  // the client matches reqId to the pending run and materializes the descriptor.
+  NOTEBOOK_RESULT: 'notebook-result',
+  // The REPL's Lisp eval result (L5): the spine evaluated the typed source and
+  // replies `{ reqId, result }` where result is `{ ok, text, location? }` — the
+  // writeString'd value, or the error message + source location. Pairs by reqId.
+  REPL_RESULT: 'repl-result',
+  // The hover-doc tooltip reply: the spine resolved the symbol under the hovered
+  // offset (against the active buffer) and its doc summary. Carries `{ reqId,
+  // result }` where result is `{ kind, name, source? } | null` — kind is
+  // 'manifest' (a pre-built page) or 'live' (only a docstring, in `source`);
+  // null when no documented symbol is under the offset. Pairs by reqId.
+  DOC_HOVER_RESULT: 'doc-hover-result',
+  // down (debug): the spine tells a client to turn its renderer op-trace ON/OFF
+  // (`{ on }`). Sent to each client at attach when the spine booted with
+  // GODOT_TRACE set. The client then forwards its local scroll/follow ops to the
+  // spine as `{ type: '__trace__' }` messages, which the spine writes into the
+  // single trace file alongside the wire traffic it already sees. Off by default;
+  // zero cost when off (the renderer's `globalThis.__godotTrace` hook is null).
+  TRACE: 'trace',
 });
 
 /** Intent kinds the client sends up. The client sends WHAT IT WANTS,
@@ -164,6 +216,11 @@ export const INTENT = Object.freeze({
   DELETE_BACKWARD: 'delete-backward', // backspace
   POINT: 'point', // set the cursor offset (window-state)
   KEY: 'key', // a named key string routed through the Lisp keymap
+  // A command to run by EXACT name — the native app-menu / mode-menu click.
+  // The server routes it like M-x's exact branch: a renderer-owned element-view
+  // command goes back DOWN via RUN_CLIENT_COMMAND; anything else runs on the
+  // spine. (Menu clicks used to eval against the inert renderer interpreter.)
+  RUN_COMMAND: 'run-command',
   // Minibuffer round-trip (the command spine). When a server-side command
   // prompts (e.g. M-x, find-file), the server sends a VIEW message whose
   // `minibuffer` is active; the client shows the prompt and the user's
@@ -181,6 +238,11 @@ export const INTENT = Object.freeze({
   // directory-view (directory-tree / directory-columns). The server runs the
   // same `visitFile` find-file opens use; `path` is the absolute file path.
   VISIT_FILE: 'visit-file',
+  // Markdown-preview INVERSE search: a ⌘/Ctrl-click in the preview iframe maps
+  // to a source line (the sync.js bridge's data-source-line lookup); the client
+  // sends the 1-based `line` and the server moves the active buffer's point
+  // there (spine.gotoLine). See plans/JMARKDOWN-PREVIEW-SYNC.md.
+  GOTO_LINE: 'goto-line',
   // Generic picker round-trip (the command spine, G0b). When a server-side
   // command suspends on a PICKER (open-picker! → a PICKER down-message),
   // the client renders the interactive list and the user's choice/cancel
@@ -202,6 +264,54 @@ export const INTENT = Object.freeze({
   // document's point + re-syncs the client. The view never mutates its own copy;
   // it re-renders from the fanned-out state, exactly as it forwards key intents.
   BOOKMARK_OP: 'bookmark-op',
+  // Sub-navigation from the customize VIEW (a 'customize' data-source). The
+  // view's model + value/face edits run client-side (the client's interpreter
+  // holds the defcustom/face registry it renders from); only opening another
+  // SCOPE — a subgroup / variable / face — needs the server, which owns the
+  // leaf. The view sends `{ scope }` ({group|variable|face}); the server
+  // find-or-creates that scope's customize leaf and switches this client to it
+  // (mirror of openScope flag-off). Like BOOKMARK_OP: the view never owns the
+  // pane structure, it just requests it.
+  CUSTOMIZE_OP: 'customize-op',
+  // A customize SETTING changed (Apply / Save / Reset / face edit) in this
+  // window. The spine applies it, persists custom.lisp / faces.json, and pushes
+  // the resulting chrome (theme / faces / highlight / css-knobs) to EVERY window
+  // via CLIENT_DIRECTIVE (B2.2 — server-authoritative customize). Carries
+  // `{ op, name?, valueSrc?, face?, attr? }`.
+  CUSTOMIZE_CHANGED: 'customize-changed',
+  // A buffer's sticky notes changed in this window (create / edit / move / resize
+  // / delete / collapse). The server owns the file + its `.godot-metadata` sidecar
+  // under Model B, so the renderer ships the whole notes array up; the spine
+  // updates the buffer's metadata + persists. Carries `{ bufferId, notes }` (notes
+  // are clone-safe records: id/anchor/x/y/width/height/source/collapsed). B4.
+  NOTES_CHANGED: 'notes-changed',
+  // A JS notebook cell wants to run. The renderer can't eval (CSP forbids
+  // unsafe-eval), so the source is sent to the spine, which evaluates it in its
+  // Node context and replies with MSG.NOTEBOOK_RESULT. Carries `{ reqId, source }`
+  // — reqId pairs the async reply to the awaiting cell.
+  NOTEBOOK_EVAL: 'notebook-eval',
+  // The REPL (utility dock) asks the spine to evaluate a line of Lisp in the
+  // REAL spine world (the renderer interpreter is inert). Carries `{ reqId,
+  // source }`; the spine replies MSG.REPL_RESULT. Like NOTEBOOK_EVAL but Lisp,
+  // not a JS cell. (L5; plans/B5-B7-TEARDOWN-AUDIT.md.)
+  REPL_EVAL: 'repl-eval',
+  // The doc-view hover tooltip asks the spine to resolve the Lisp symbol under a
+  // buffer OFFSET (against the live active buffer) and its doc summary — the
+  // renderer interpreter can't (its buffer is idle in server mode). Carries
+  // `{ reqId, offset }`; the spine replies MSG.DOC_HOVER_RESULT. The companion
+  // DOC_OPEN runs `(open-doc name)` when the tooltip's link is clicked.
+  DOC_HOVER: 'doc-hover',
+  // Click-through from the hover tooltip (or `C-h .`-style open): open the
+  // documentation page for NAME. Fire-and-forget — the spine runs `(open-doc
+  // name)`, which opens/reuses the doc-view; no reply. Carries `{ name }`.
+  DOC_OPEN: 'doc-open',
+  // Inverse SyncTeX: an Option-click in a pdf-view. The renderer sends the
+  // 1-based `page`, the clicked PDF point `x`/`y` (SyncTeX top-origin points),
+  // and the clicked PDF's `pdfPath`. The spine runs `synctex edit` (the real
+  // latex-synctex-inverse) and reveals the source file:line in a source pane —
+  // the renderer interpreter can't (its pane model is idle in server mode).
+  // Fire-and-forget; the reveal's pane focus / scroll fan back as usual.
+  SYNCTEX_INVERSE: 'synctex-inverse',
 });
 
 /**
@@ -292,11 +402,18 @@ export function renderModeline(parts) {
   // A single-glyph dirty indicator: ● = unsaved edits, – = saved/clean.
   const flag = parts.modified ? '●' : '–';
   const name = parts.name || 'untitled';
-  const line = Number.isFinite(parts.line) ? parts.line : 1;
-  const column = Number.isFinite(parts.column) ? parts.column : 0;
-  const pos = `L${line}:C${column}`;
-  const mode = parts.mode ? `  (${parts.mode})` : '';
-  return `${flag}  ${name}   ${pos}${mode}`;
+  // A view with no text cursor (an element / media data-source — e.g. the
+  // notebook) passes `noPosition: true` so the modeline doesn't show a frozen,
+  // meaningless `L1:C0`.
+  let pos = '';
+  if (parts.noPosition !== true) {
+    const line = Number.isFinite(parts.line) ? parts.line : 1;
+    const column = Number.isFinite(parts.column) ? parts.column : 0;
+    pos = `L${line}:C${column}`;
+  }
+  const mode = parts.mode ? `(${parts.mode})` : '';
+  const tail = [pos, mode].filter(Boolean).join('  ');
+  return `${flag}  ${name}${tail ? `   ${tail}` : ''}`;
 }
 
 /**

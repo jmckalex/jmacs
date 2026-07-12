@@ -78,6 +78,12 @@
    refreshes as the buffer is edited."
   (markdown-preview!))
 
+(defcommand markdown-preview-sync ()
+  "Scroll the live preview to the cursor's location and flash the spot
+   (forward search). Bound to C-c C-v — an explicit request, independent of
+   the preview-follows-cursor setting (which scrolls silently, no flash)."
+  (markdown-preview-sync!))
+
 ;; --- preview styling ---------------------------------------------------
 ;; The preview renders into an isolated iframe, so it can carry its own
 ;; CSS without affecting (or being affected by) the editor chrome.
@@ -93,6 +99,24 @@
 (defcustom *markdown-preview-default-style* #t :boolean
   :group 'godot
   :doc "Link the built-in Markdown-preview stylesheet in the preview iframe. Turn off to let your own *markdown-preview-css* fully control the preview's appearance.")
+
+;; --- preview <-> source sync (forward search) --------------------------
+;; With the live preview open, following the cursor scrolls the preview to the
+;; block under point as you move (forward search, via the sync.js bridge). Some
+;; prefer a still preview; turn this off to stop the auto-scroll. Inverse search
+;; (Command-click the preview to jump the source) is unaffected by this.
+(defcustom *markdown-preview-follow-cursor* #t :boolean
+  :group 'godot
+  :doc "Scroll the Markdown/JMarkdown live preview to follow the editor cursor (forward search). Off keeps the preview still; Command-click inverse search still works.")
+
+;; With the live preview open, the buffer is mirrored to a hidden shadow the
+;; preview server watches, so the render refreshes on a typing pause WITHOUT an
+;; explicit save (the real file is untouched). This is the debounce: how long to
+;; wait after the last edit before pushing the buffer to the preview. Lower feels
+;; more live but rebuilds more often; higher is calmer. Read live by the renderer.
+(defcustom *markdown-preview-debounce-ms* 400 :number
+  :group 'godot
+  :doc "Milliseconds to wait after the last edit before refreshing the open Markdown/JMarkdown live preview (a save-free update). Lower is more live but rebuilds more often.")
 
 ;; --- live inline math preview -----------------------------------------
 ;; Markdown gets the same live MathJax typesetting LaTeX does, built on
@@ -172,6 +196,7 @@
    "6" 'markdown-heading-6
    "m" 'toggle-math-mode
    "v" 'markdown-preview
+   "C-v" 'markdown-preview-sync
    "C-p" 'toggle-markdown-math-preview})
 
 ;; markdown-mode-map is declared empty in modes.lisp; fill it in here.

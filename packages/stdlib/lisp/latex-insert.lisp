@@ -754,4 +754,4 @@
                 "C-s" 'latex-insert-section)
          "C-f" latex-font-map))
 
-(set! latex-mode-map {"C-c" latex-c-c-map})
+(set! latex-mode-map (assoc latex-mode-map "C-c" latex-c-c-map)) ;; extend, never replace (see latex.lisp)

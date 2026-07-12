@@ -40,6 +40,19 @@ test('single-line captures are dropped — nothing to fold there', () => {
   assert.deepEqual(foldRanges(text, captures), []);
 });
 
+test('foldRanges drops a fold whose header line is blank (post-metadata section)', () => {
+  // A `.jmd` top: a metadata block, a BLANK line, then a heading.
+  // Lines: 0:'---' 1:'Title: x' 2:'---' 3:'' (blank) 4:'## H' 5:'body'
+  const text = '---\nTitle: x\n---\n\n## H\nbody';
+  const captures = [
+    { start: 17, end: 26 }, // a section tree-sitter starts on the blank line 3 → dropped
+    { start: 18, end: 26 }, // the real heading section on line 4 ('## H')   → kept
+  ];
+  assert.deepEqual(foldRanges(text, captures), [
+    { startLine: 4, endLine: 5 },
+  ]);
+});
+
 test('foldRanges sorts the ranges by startLine', () => {
   const text = 'a\nb\nc\nd\ne\nf\n';
   // Two captures out of order.

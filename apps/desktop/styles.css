@@ -949,11 +949,14 @@ mjx-assistive-mml[display='block'] {
 }
 
 /* A pinned content header — reuses `.editor-line` for byte-identical text +
-   highlighting; the opaque background masks the code scrolling beneath it,
-   and `right: 0` stretches the row (otherwise shrink-to-fit) so the whole
-   width is a click target and a clean mask. */
+   highlighting; the opaque background masks the code scrolling beneath it, and
+   `right` stretches the row (otherwise shrink-to-fit) so the whole width is a
+   click target and a clean mask. The negative right runs the row — background,
+   hairlines and all — across the editor's right padding to the pane edge
+   (matches `.editor`'s `padding: 0 22px 18px 0`), so the separator reaches the
+   scrollbar AND no scrolling text leaks through the gap beside the header. */
 .editor-sticky-line {
-  right: 0;
+  right: -22px;
   background: var(--bg-editor);
   pointer-events: auto;
   cursor: pointer;
@@ -1527,8 +1530,12 @@ body.markdown-preview-hidden #preview-splitter {
 }
 
 .markdown-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   flex: 0 0 auto;
-  padding: 6px 14px;
+  padding: 4px 6px 4px 14px;
   font-size: 11.5px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1537,6 +1544,48 @@ body.markdown-preview-hidden #preview-splitter {
   border-bottom: 1px solid #00000040;
   user-select: none;
 }
+
+/* The "PREVIEW <filename>" label. Truncates with an ellipsis when narrow. */
+.markdown-preview-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The file name keeps its real case (the label is uppercased) and is a touch
+   brighter than the dim label. */
+.markdown-preview-filename {
+  text-transform: none;
+  letter-spacing: 0;
+  color: color-mix(in srgb, var(--fg) 70%, transparent);
+}
+
+.markdown-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+
+/* Header icon buttons (pop-out, close). Transparent until hovered. */
+.markdown-preview-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--fg-dim);
+  cursor: pointer;
+  padding: 4px 3px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1;
+}
+.markdown-preview-btn:hover {
+  background: color-mix(in srgb, var(--fg) 14%, transparent);
+  color: var(--fg);
+}
+/* The close X matches the rest of the header text (--fg-dim) — it inherits the
+   .markdown-preview-btn colour, no override. */
 
 /* The preview renders into an isolated iframe; its inner styling comes
    from markdown-preview.css (and the user's *markdown-preview-css*), not
@@ -4272,6 +4321,43 @@ minimap-view,
   font-family: system-ui, sans-serif;
   font-size: 12px;
 }
+/* Plot-thumbnail strip — shown instead of the canvas when the minimap target is
+   a gnuplot view: a scrollable column of scaled plot previews, click to jump. */
+.minimap-plot-strip {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  box-sizing: border-box;
+}
+.minimap-plot-thumb {
+  flex: 0 0 auto;
+  width: 100%;
+  cursor: pointer;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--bg-chrome) 85%, #000);
+}
+.minimap-plot-thumb:hover {
+  border-color: color-mix(in srgb, var(--fg) 40%, transparent);
+}
+.minimap-plot-thumb svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.minimap-plots-empty {
+  padding: 12px 8px;
+  text-align: center;
+  color: var(--fg-dim);
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+}
 /* Off-screen probe used to resolve `.tok-*` face colours via
    getComputedStyle — kept rendered (not display:none) so colour computes. */
 .minimap-probe {
@@ -4955,13 +5041,6 @@ directory-columns-view,
   border: none;
   background: none;
   cursor: pointer;
-}
-
-.colour-picker-preview {
-  width: 32px;
-  height: 32px;
-  border-radius: 4px;
-  box-shadow: inset 0 0 0 1px #ffffff44, 0 0 0 1px #00000066;
 }
 
 .colour-picker-value {
@@ -5692,219 +5771,6 @@ gnuplot-view,
   color: var(--fg);
 }
 
-/* --- notebook view ----------------------------------------------------- */
-/* A `notebook`-kind buffer is shown as a reactive Lisp notebook: a column
-   of cells, each a name field + a multi-line expression editor + a live
-   result panel + a state badge. Editing any cell recomputes everything
-   downstream. */
-
-notebook-view,
-.notebook-view {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  outline: none;
-  background: var(--bg-editor);
-  color: var(--fg);
-  font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-  font-size: 13px;
-  overflow: hidden;
-}
-
-.notebook-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid #ffffff14;
-  color: var(--fg-dim);
-  font-family: system-ui, sans-serif;
-  font-size: 12px;
-}
-
-.notebook-header-label {
-  overflow-wrap: anywhere;
-}
-
-/* The notebook picker — switches which open notebook is shown. */
-.notebook-select {
-  background: var(--bg-chrome, #2a2f3a);
-  color: var(--fg);
-  border: 1px solid #ffffff1f;
-  border-radius: 4px;
-  padding: 2px 6px;
-  font: inherit;
-  font-size: 12px;
-  max-width: 40ch;
-  cursor: pointer;
-}
-.notebook-select:hover {
-  border-color: var(--accent);
-}
-
-/* Rename: a ✎ button that swaps the picker for a text field. */
-.notebook-rename-btn {
-  background: transparent;
-  color: var(--fg-dim);
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.notebook-rename-btn:hover {
-  color: var(--fg);
-  border-color: var(--accent);
-}
-.notebook-rename-field {
-  background: var(--bg-chrome, #2a2f3a);
-  color: var(--fg);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font: inherit;
-  font-size: 12px;
-  max-width: 32ch;
-}
-
-.notebook-add-cell {
-  margin-left: auto;
-  background: var(--bg-chrome, #2a2f3a);
-  color: var(--fg);
-  border: 1px solid #ffffff1f;
-  border-radius: 4px;
-  padding: 2px 8px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.notebook-add-cell:hover {
-  border-color: var(--accent);
-}
-
-/* The scrolling column of cells. `min-height: 0` lets it shrink inside
-   the flex column. */
-.notebook-cells {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* One cell: [ gutter badge ] [ body: name + expr + result ] [ × ]. */
-.notebook-cell {
-  display: grid;
-  grid-template-columns: 18px 1fr auto;
-  gap: 8px;
-  align-items: start;
-  padding: 8px 10px;
-  border: 1px solid #ffffff14;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--fg) 3%, transparent);
-}
-
-.notebook-cell[data-state='error'] {
-  border-color: color-mix(in srgb, var(--error, #e06c75) 55%, transparent);
-}
-
-.notebook-cell-gutter {
-  display: flex;
-  justify-content: center;
-  padding-top: 3px;
-}
-
-.notebook-badge {
-  font-size: 12px;
-  line-height: 1;
-  user-select: none;
-}
-.notebook-badge-ok { color: var(--ok, #7ed491); }
-.notebook-badge-stale { color: var(--fg-dim); opacity: 0.6; }
-.notebook-badge-error { color: var(--error, #e06c75); }
-.notebook-badge-cycle { color: var(--ansi-yellow, #e2b340); }
-
-.notebook-cell-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.notebook-cell-name {
-  align-self: flex-start;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid transparent;
-  color: var(--accent);
-  font: inherit;
-  font-weight: 600;
-  padding: 0 0 1px;
-  outline: none;
-  /* Width follows the `size` attribute the view keeps in sync with the
-     name, so long names ("circumference") aren't clipped. */
-  min-width: 4ch;
-}
-.notebook-cell-name:focus {
-  border-bottom-color: color-mix(in srgb, var(--accent) 60%, transparent);
-}
-
-.notebook-cell-expr {
-  background: transparent;
-  border: none;
-  color: var(--fg);
-  font: inherit;
-  resize: none;
-  outline: none;
-  padding: 0;
-  width: 100%;
-  overflow: hidden;
-  white-space: pre;
-}
-
-.notebook-cell-result {
-  color: var(--fg-dim);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  min-height: 1em;
-}
-.notebook-cell[data-state='error'] .notebook-cell-result {
-  color: var(--error, #e06c75);
-}
-
-/* A cell that returned an inline graphic (SVG) draws it here. */
-.notebook-cell-result.notebook-cell-graphic {
-  margin-top: 4px;
-}
-.notebook-cell-graphic svg {
-  max-width: 100%;
-  height: auto;
-}
-
-.notebook-cell-delete {
-  background: transparent;
-  border: none;
-  color: var(--fg-dim);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 2px 4px;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-.notebook-cell:hover .notebook-cell-delete {
-  opacity: 0.7;
-}
-.notebook-cell-delete:hover {
-  color: var(--error, #e06c75);
-  opacity: 1;
-}
-
 /* --- Project Chooser (Nova-style launcher modal) --------------------- */
 
 .project-chooser-overlay {
@@ -6249,4 +6115,463 @@ svg-editor-view.svg-editor-view {
 }
 .svg-editor-handle {
   pointer-events: all;
+/* Workspace restore chooser: lay each row out as a 3-column table —
+   label (wide, no early wrap) | windows | date — so the columns line up down
+   the list. Scoped to the workspace picker; other pickers keep the flex flow. */
+.mwb-picker--workspace .mwb-picker-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7em 6em;
+  align-items: baseline;
+  column-gap: 14px;
+  padding-right: 30px; /* clear of the × delete affordance (absolute, right:6px) */
+}
+.mwb-picker--workspace .mwb-picker-row-label {
+  min-width: 0;            /* let the column, not the text, drive width */
+  white-space: nowrap;     /* no wrapping after a single word */
+  overflow: hidden;
+  text-overflow: ellipsis; /* a very long name ellipsizes (full text on hover) */
+}
+.mwb-picker--workspace .mwb-picker-row-meta,
+.mwb-picker--workspace .mwb-picker-row-detail {
+  flex-basis: auto;        /* drop the flex `flex-basis:100%` that squeezed the label */
+  white-space: nowrap;
+}
+
+/* ── JavaScript notebook (M-x notebook-js) ──────────────────────────────
+   The <notebook-js-view> element-view: a column of JS cells. Styled to the
+   editor chrome — theme variables + color-mix overlays (theme-agnostic, like
+   .customize), so it reads on dark and light themes alike. */
+notebook-js-view {
+  display: block;
+  height: 100%;
+}
+.nbjs-view {
+  height: 100%;
+  overflow: auto;
+  padding: 20px 26px;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+}
+
+.nbjs-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+}
+.nbjs-header .fa-flask {
+  color: var(--accent);
+  opacity: 0.85;
+}
+.nbjs-title {
+  flex: 1 1 auto;
+  font-size: 15px;
+  font-weight: 600;
+}
+.nbjs-run-all,
+.nbjs-add-cell {
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.nbjs-run-all:hover,
+.nbjs-add-cell:hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
+.nbjs-cells {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.nbjs-cell {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+
+.nbjs-gutter {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  /* Drop the run/badge to the code row — the name field sits above the editor
+     in the body, so top-aligning the gutter would float ▶ beside the name. */
+  padding-top: 30px;
+}
+.nbjs-badge {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-dim);
+}
+.nbjs-badge-running { color: var(--accent); }
+.nbjs-badge-ok { color: #5fb87f; }
+.nbjs-badge-error { color: var(--error); }
+.nbjs-run {
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.nbjs-run:hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
+.nbjs-cell-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.nbjs-name {
+  align-self: flex-start;
+  max-width: 240px;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+}
+.nbjs-name::placeholder {
+  color: color-mix(in srgb, var(--fg) 35%, transparent);
+}
+
+.nbjs-editor {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  tab-size: 2;
+}
+.nbjs-editor:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.nbjs-logs {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.nbjs-log-warn { color: color-mix(in srgb, var(--fg) 55%, #e0c060); }
+.nbjs-log-error { color: var(--error); }
+
+.nbjs-output {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.nbjs-output-empty { display: none; }
+.nbjs-output-error { color: var(--error); }
+
+.nbjs-table {
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.nbjs-table th,
+.nbjs-table td {
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  text-align: left;
+}
+.nbjs-table th {
+  color: var(--fg-dim);
+  font-weight: 600;
+}
+
+.nbjs-trunc {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+/* --- notebook-cells (Architecture A): one editor, chrome as block widgets - */
+.nbc-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-editor);
+  color: var(--fg);
+}
+.nbc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+}
+.nbc-toolbar-icon { color: var(--accent); opacity: 0.85; }
+.nbc-toolbar-title { flex: 1 1 auto; font-size: 13px; font-weight: 600; }
+.nbc-toolbar-btn {
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.nbc-toolbar-btn:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); }
+
+/* The embedded editor fills the rest of the pane and scrolls internally.
+   `height: auto` overrides the global `text-view { height: 100% }` so flex
+   (not the full-pane height) sizes it below the toolbar. */
+.nbc-view text-view {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+/* No line-number gutter in the notebook — it shows cells, not a code file. */
+.nbc-view .editor-gutter,
+.nbc-view .editor-gutter-sticky {
+  display: none;
+}
+
+/* Left breathing room for cell content (the now-hidden gutter used to supply
+   it). Padding on `.editor` shifts the content box, which `offsetFromPoint`
+   measures against — so click-to-position stays correct. */
+.nbc-view .editor {
+  padding-left: 18px;
+}
+
+/* Per-cell header bar (block widget over the cell's `{` scaffolding line). */
+.nbc-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--fg) 9%, transparent);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  font-family: system-ui, sans-serif;
+}
+.nbc-badge { font-size: 12px; line-height: 1; color: var(--fg-dim); }
+.nbc-badge-running { color: var(--accent); }
+.nbc-badge-ok { color: #5fb87f; }
+.nbc-badge-error { color: var(--error); }
+.nbc-label {
+  flex: 1 1 auto;
+  font-size: 11px;
+  color: var(--fg-dim);
+  letter-spacing: 0.02em;
+}
+.nbc-run {
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.nbc-run:hover { background: color-mix(in srgb, var(--fg) 10%, transparent); }
+.nbc-cell-add {
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.nbc-cell-add:hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  color: var(--fg);
+}
+
+/* Per-cell output region (block widget over the cell's `}` scaffolding line). */
+.nbc-output {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 10px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 9%, transparent);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--fg);
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* nbc chrome rides the block-widget layer, but unlike display math it must be
+   full-width and LEFT-aligned (not centred), with no block margin — otherwise
+   `.math-block { text-align: center; margin: 0.2lh 0 }` centres the output and
+   the margin overflows the reserved row height. */
+.math-widget.math-block:has(> .nbc-header),
+.math-widget.math-block:has(> .nbc-output) {
+  display: block;
+  width: 100%;
+  margin: 0;
+  text-align: left;
+  cursor: default;
+}
+.nbc-output-empty { padding: 0; border-bottom: none; }
+.nbc-output-running { color: var(--accent); }
+.nbc-output-error { color: var(--error); }
+.nbc-log { color: var(--fg-dim); }
+.nbc-log-warn { color: color-mix(in srgb, var(--fg) 55%, #e0c060); }
+.nbc-log-error { color: var(--error); }
+.nbc-result-json { color: var(--fg); }
+
+.nbc-table { border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; }
+.nbc-table th,
+.nbc-table td {
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  text-align: left;
+}
+.nbc-table th { color: var(--fg-dim); font-weight: 600; }
+.nbc-trunc { color: var(--fg-dim); font-style: italic; }
+
+/* The live math tooltip — floats above a math construct while the cursor is
+ * inside it (math-preview-mode), showing the MathJax render of what is being
+ * edited. Mirrors the hover-doc tooltip's chrome. */
+.math-tooltip {
+  /* Absolutely positioned INSIDE the editor's scrolling content, so it rides
+   * the native scroll on the compositor (no JS-tracking lag) and is clipped by
+   * the editor's overflow when the construct scrolls out of view. */
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  max-width: 70vw;
+  padding: 8px 11px;
+  /* Lift the panel off the editor background for contrast: blend the editor
+   * background toward the foreground, so it reads as a raised surface in both
+   * light and dark themes. */
+  --math-tip-bg: color-mix(in srgb, var(--bg-editor) 82%, var(--fg) 18%);
+  --math-tip-border: color-mix(in srgb, var(--fg) 34%, transparent);
+  background: var(--math-tip-bg);
+  border: 1px solid var(--math-tip-border);
+  border-radius: 7px;
+  box-shadow: 0 8px 26px #00000078;
+  color: var(--fg);
+  /* The preview size is the *math-tooltip-scale* defcustom; the renderer sets
+   * --math-tooltip-scale from the config snapshot (default 1.5 = 150%). */
+  font-size: calc(var(--math-tooltip-scale, 1.5) * 1rem);
+  pointer-events: none;
+  user-select: none;
+}
+
+.math-tooltip-body {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0.75em;
+  min-height: 1em;
+  overflow-x: auto;
+}
+
+.math-tooltip-body mjx-container {
+  margin: 0 !important;
+}
+
+/* Nothing valid to show yet (e.g. a just-opened, still-empty `$$`). */
+.math-tooltip-empty .math-tooltip-body::before {
+  content: "…";
+  color: var(--fg-dim);
+}
+
+/* Syntax-error indicator: a red circled-X above the words "syntax error",
+ * centred below the (kept) last valid render. Toggled to `flex` by the
+ * controller only while the current body fails to typeset. */
+.math-tooltip-error {
+  /* display is inline-controlled (none / flex) by the controller. */
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  text-align: center;
+}
+
+.math-tooltip-error-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35em;
+  height: 1.35em;
+  border-radius: 50%;
+  background: var(--error);
+  color: #fff;
+  font-size: 0.8em;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.math-tooltip-error-text {
+  color: var(--error);
+  font-size: 0.55em;
+  letter-spacing: 0.03em;
+  /* Keep "syntax error" on one line even under a narrow expression — it sets a
+   * small minimum width for the tooltip rather than wrapping to two lines. */
+  white-space: nowrap;
+}
+
+/* The arrow is a rotated square (diamond) centred on the tooltip's bottom
+ * edge: its upper half is covered by the tooltip body (same background), and
+ * its two lower edges carry the tooltip's border — so the tail is bordered to
+ * match the rest of the tooltip. Flips to point up when placed below. */
+.math-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 11px;
+  height: 11px;
+  background: var(--math-tip-bg);
+  border: 1px solid transparent;
+  border-right-color: var(--math-tip-border);
+  border-bottom-color: var(--math-tip-border);
+  border-bottom-right-radius: 2px;
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.math-tooltip-below::after {
+  top: 0;
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  border-top-color: var(--math-tip-border);
+  border-left-color: var(--math-tip-border);
+  border-bottom-right-radius: 0;
+  border-top-left-radius: 2px;
 }

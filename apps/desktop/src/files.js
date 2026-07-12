@@ -4,7 +4,7 @@
  * reached over IPC (see `preload.mjs`).
  */
 
-import { app, dialog, ipcMain, shell } from 'electron';
+import { dialog, ipcMain, shell } from 'electron';
 import {
   existsSync,
   readdirSync,
@@ -24,6 +24,7 @@ import {
   recoveryFileName,
   parseRecoveryRecord,
 } from './recovery.js';
+import { configHomePath } from './config-home.js';
 
 // Tracks the on-disk (mtime, size) of files we have read or written, so a
 // save can refuse to silently clobber a file another program changed
@@ -125,7 +126,6 @@ const VIDEO_SUFFIXES = new Set([
  *  symmetry with the audio / video sets; the renderer's `isPdfName`
  *  twin lives in `packages/renderer/src/pdf-view.js`. */
 const PDF_SUFFIXES = new Set(['.pdf']);
-const NOTEBOOK_SUFFIXES = new Set(['.rxlisp']);
 
 /** The image MIME type for a path, by its suffix, or `null` when the
  *  path is not a recognised image. The renderer's `mimeTypeForImage`
@@ -182,7 +182,7 @@ async function readImageDataUrl(filePath, mime) {
  *  bare filename (no path separators), resolved against that directory. */
 function configPath(name) {
   if (typeof name !== 'string' || !/^[\w.-]+$/.test(name)) return null;
-  return join(app.getPath('userData'), name);
+  return join(configHomePath(), name);
 }
 
 /** Where the splitter pane sizes are persisted — a small JSON file in
@@ -190,7 +190,7 @@ function configPath(name) {
  *  is host UI state, not a Lisp customisation: the renderer reads it
  *  before the standard library is even loaded. */
 function panesPath() {
-  return join(app.getPath('userData'), 'panes.json');
+  return join(configHomePath(), 'panes.json');
 }
 
 /** Where the persistent-session payload is written. A bare filename
@@ -198,13 +198,13 @@ function panesPath() {
  *  and init.lisp. */
 const sessionFileName = 'session.json';
 function sessionPath() {
-  return join(app.getPath('userData'), sessionFileName);
+  return join(configHomePath(), sessionFileName);
 }
 
 /** The directory holding crash-recovery snapshots — one JSON file per
  *  dirty buffer, inside the per-user data directory. */
 function recoveryDir() {
-  return join(app.getPath('userData'), RECOVERY_DIR_NAME);
+  return join(configHomePath(), RECOVERY_DIR_NAME);
 }
 
 /** Refuse to base64 an image larger than this into the renderer as a
@@ -229,7 +229,7 @@ function projectStatePath(root) {
  *  (most-recently-opened first). It holds no project state itself; it is
  *  the future Project Chooser's catalogue. */
 function projectIndexPath() {
-  return join(app.getPath('userData'), 'projects-index.json');
+  return join(configHomePath(), 'projects-index.json');
 }
 
 /**
@@ -315,15 +315,10 @@ async function readPathAsBuffer(path) {
     };
   }
   const content = await readFile(path, 'utf8');
-  // Record the on-disk baseline for these savable text/notebook buffers,
-  // so a later save can detect an external change. (Re-opening the same
-  // path — e.g. a reload — re-notes it and clears any stale conflict.)
+  // Record the on-disk baseline for these savable text buffers, so a later
+  // save can detect an external change. (Re-opening the same path — e.g. a
+  // reload — re-notes it and clears any stale conflict.)
   await changeTracker.note(path);
-  if (NOTEBOOK_SUFFIXES.has(extname(path).toLowerCase())) {
-    // A reactive Lisp notebook (.rxlisp) — opens as a `notebook` view,
-    // not a text editor. Its `(cell …)` source is the content.
-    return { path, name: basename(path), content, notebookKind: true };
-  }
   return { path, name: basename(path), content };
 }
 
@@ -537,13 +532,13 @@ export function registerFileHandlers() {
     }
   });
 
-  // The per-user data directory, synchronously — preload resolves it
-  // once at startup and exposes it as `host.userDataDirectory`. The
-  // snippet engine reads `<userData>/snippets`. `app.getPath('userData')`
-  // is only available in the main process, hence this bridge.
+  // The config home, synchronously — preload resolves it once at startup and
+  // exposes it as `host.userDataDirectory`. The snippet engine reads
+  // `<configHome>/snippets`. The path is computed in the main process (the
+  // renderer is sandboxed), hence this bridge.
   ipcMain.on('userdata:dir-sync', (event) => {
     try {
-      event.returnValue = app.getPath('userData');
+      event.returnValue = configHomePath();
     } catch {
       event.returnValue = '';
     }

@@ -314,10 +314,26 @@
 
 ;; --- error navigation -------------------------------------------------
 
+(define (-latex-resolve-diag-file file)
+  "Resolve a diagnostic's FILE to an absolute path. TeX engines report paths
+   RELATIVE to the build directory (e.g. `./paper.tex`), so a bare/`./`-prefixed
+   path is resolved against the master file's directory; an already-absolute
+   path is returned unchanged, and a nil FILE stays nil. Without this the
+   `file-exists?` guard fails on the relative path and the jump never happens."
+  (cond
+    ((nil? file) nil)
+    ((string-prefix? "/" file) file)
+    (else
+      (let ((master (latex-master-file)))
+        (if (nil? master)
+            file
+            (path-resolve (path-dirname master) file))))))
+
 (define (-latex-visit-diag diag)
   "Open DIAG's file and jump to its line, echoing the message. A diag
-   with no file or no line is reported but not jumped to."
-  (let ((file (get diag :file nil))
+   with no file or no line is reported but not jumped to. The file is
+   resolved against the build directory (TeX reports relative paths)."
+  (let ((file (-latex-resolve-diag-file (get diag :file nil)))
         (line (get diag :line nil))
         (msg (get diag :message "")))
     (when (and (not (nil? file)) (file-exists? file))
@@ -381,4 +397,4 @@
                 "C-v" 'latex-view)
          "`" 'latex-next-error))
 
-(set! latex-mode-map {"C-c" latex-c-c-map})
+(set! latex-mode-map (assoc latex-mode-map "C-c" latex-c-c-map)) ;; extend, never replace (see latex.lisp)

@@ -7,11 +7,14 @@
   "Describe the command bound to the next key pressed (C-h k). When
    the bound command has a documentation page (see `docs.lisp`),
    opens the page in a doc buffer; otherwise prints the docstring
-   to the REPL."
+   to the REPL. Resolves through the current buffer's full keymap
+   chain — minor modes, then the major mode, then the global map —
+   so it reports what the key will actually run HERE (a mode binding
+   like latex-mode's M-q shadows the global one)."
   (println "Describe key — press a key:")
   (read-next-key
     (lambda (key)
-      (let ((binding (get the-keymap key nil)))
+      (let ((binding (lookup-in-chain key (keymap-chain))))
         (cond
           ((nil? binding)
            (println (str "  " key " is unbound")))

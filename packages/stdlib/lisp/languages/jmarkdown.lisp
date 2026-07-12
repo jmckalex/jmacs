@@ -20,7 +20,13 @@
 (define-mode jmarkdown-mode
   :name "JMarkdown"
   :highlight :jmarkdown
-  :keymap 'jmarkdown-mode-map)
+  :keymap 'jmarkdown-mode-map
+  ;; auto-fill-mode's continuation indenter (auto-fill.lisp's
+  ;; :fill-indent-function seam). Stored as a symbol so it resolves live
+  ;; and load order doesn't matter — the procedure is defined below. Kept
+  ;; on the mode map (not set! after register-mode) so the registered
+  ;; copy carries it. See `jmarkdown-fill-indent`.
+  :fill-indent-function 'jmarkdown-fill-indent)
 
 (register-mode ".jmd" jmarkdown-mode)
 
@@ -138,10 +144,199 @@
         (string-prefix? "@begin(" content)
         (string-prefix? "@end(" content)
         (string-prefix? ":::" content)
+        ;; A flush-right / centred line (>> …) bounds an ordinary
+        ;; paragraph; the aligned block is filled by its own plan branch.
+        (string-prefix? ">>" content)
         (string-prefix? "#" content)
         (string-prefix? "```" content)
         (string-prefix? "~~~" content)
         (-jmd-dash-rule? content))))
+
+;; --- structural prefixes: lists, ordered lists, blockquotes, definitions -
+;; A paragraph's first line may open a list item (`- `, `* `, `+ `), an
+;; ordered item (`1. `, `2) `), a description-list definition (`: `), or a
+;; blockquote (`> `, nested `> > `). When such a paragraph is re-wrapped
+;; (M-q) or auto-filled, the CONTINUATION lines want a hanging indent —
+;; the list/definition marker replaced by spaces so the text stays
+;; aligned, but a blockquote's `>` markers repeated verbatim. These pure
+;; helpers compute that; `jmarkdown-fill-paragraph` and
+;; `jmarkdown-fill-indent` share them so M-q and auto-fill agree.
+
+(define (-jmd-space? c)
+  "Whether the one-character string C is a space or tab. PURE."
+  (or (equal? c " ") (equal? c "\t")))
+
+(define (-jmd-count-spaces s i)
+  "Index past the run of spaces/tabs in S starting at I. PURE."
+  (if (and (< i (string-length s)) (-jmd-space? (substring s i (+ i 1))))
+      (-jmd-count-spaces s (+ i 1))
+      i))
+
+(define (-jmd-count-digits s i)
+  "Index past the run of decimal digits in S starting at I. PURE."
+  (if (and (< i (string-length s))
+           (string-contains? "0123456789" (substring s i (+ i 1))))
+      (-jmd-count-digits s (+ i 1))
+      i))
+
+(define (-jmd-blockquote-walk s i)
+  "Index past the blockquote run in S starting at I (`>` then optional
+   spaces, repeated). PURE."
+  (cond
+    ((>= i (string-length s)) i)
+    ((equal? (substring s i (+ i 1)) ">")
+     (-jmd-blockquote-walk s (-jmd-count-spaces s (+ i 1))))
+    (else i)))
+
+(define (-jmd-blockquote-len s)
+  "Length of the leading blockquote run in S (`>` characters each with
+   optional trailing spaces, repeated) — S must have no leading
+   whitespace. 0 when S is not a blockquote. PURE."
+  (-jmd-blockquote-walk s 0))
+
+(define (-jmd-ordered-marker-len s)
+  "Length of an ordered-list marker (`digits` then `.` or `)` then at
+   least one space, plus the spaces) at the start of S, or 0. PURE."
+  (let ((d (-jmd-count-digits s 0)))
+    (if (and (> d 0)
+             (< (+ d 1) (string-length s))
+             (member (substring s d (+ d 1)) (list "." ")"))
+             (-jmd-space? (substring s (+ d 1) (+ d 2))))
+        (-jmd-count-spaces s (+ d 1))
+        0)))
+
+(define (-jmd-marker-len s)
+  "Length of a leading list / ordered / definition marker (with its
+   trailing spaces) in S — S having no leading whitespace or blockquote.
+   0 when S opens no such marker. Bullets: `- ` `* ` `+ `; ordered:
+   `1. ` `2) `; description-list definition: `: `. PURE."
+  (cond
+    ((< (string-length s) 2) 0)
+    ((and (member (substring s 0 1) (list "-" "*" "+"))
+          (-jmd-space? (substring s 1 2)))
+     (-jmd-count-spaces s 1))
+    ;; `: ` opens a definition; `::`/`:::` are directives (handled as
+    ;; boundaries elsewhere), and the space test excludes them here.
+    ((and (equal? (substring s 0 1) ":") (-jmd-space? (substring s 1 2)))
+     (-jmd-count-spaces s 1))
+    (else (-jmd-ordered-marker-len s))))
+
+(define (-jmd-structural-prefixes line)
+  "For LINE, the pair (first-prefix . cont-prefix). FIRST-PREFIX is the
+   leading whitespace + blockquote markers + the list/definition marker
+   verbatim — what the first wrapped line keeps. CONT-PREFIX keeps the
+   whitespace + blockquote markers but replaces the list/definition
+   marker with spaces of equal width (the hanging indent for continuation
+   lines). For a plain line both are just the leading indentation. PURE."
+  (let* ((lead (-jmd-line-indent line))
+         (rest (substring line (string-length lead)))
+         (bq (-jmd-blockquote-len rest))
+         (bq-str (substring rest 0 bq))
+         (after-bq (substring rest bq))
+         (mk (-jmd-marker-len after-bq)))
+    (cons (str lead bq-str (substring after-bq 0 mk))
+          (str lead bq-str (string-repeat " " mk)))))
+
+(define (-jmd-strip-quote line)
+  "LINE with its leading whitespace and any blockquote markers stripped —
+   the raw text of a continuation line, ready for word collapsing. PURE."
+  (let ((l (drop-leading-blanks line)))
+    (drop-leading-blanks (substring l (-jmd-blockquote-len l)))))
+
+;; --- aligned blocks: flush-right (>>) and centred (>> … <<) --------------
+;; JMarkdown's two line-oriented alignment forms (docs/syntax-adjustments):
+;; a line prefixed with the `>>` token is pushed flush right; a line that
+;; ALSO ends with the `<<` token is centred (the trailing `<<` is what
+;; distinguishes the two, and its column is free to pad). `>>` and `<<` are
+;; whitespace-delimited TOKENS — `>> <<` is an aligned pair, `> > < <` is
+;; not (docs/extensions-simple) — so detection requires whitespace after
+;; `>>` and before `<<`, which also keeps them distinct from a `> `
+;; blockquote. M-q reflows an aligned block like a blockquote: the run's
+;; text is re-wrapped to the fill column, `>> ` kept on every line and (for
+;; centred) `<<` re-aligned to the column.
+
+(define (-jmd-rtrim-walk s n)
+  (if (and (> n 0) (-jmd-space? (substring s (- n 1) n)))
+      (-jmd-rtrim-walk s (- n 1))
+      (substring s 0 n)))
+
+(define (-jmd-rtrim s)
+  "S without trailing spaces/tabs. PURE."
+  (-jmd-rtrim-walk s (string-length s)))
+
+(define (-jmd-aligned-line? line)
+  "Whether LINE is an aligned line: after its leading whitespace it opens
+   with the `>>` token (>> then whitespace, or >> alone). PURE."
+  (let ((c (drop-leading-blanks line)))
+    (and (string-prefix? ">>" c)
+         (or (= (string-length c) 2)
+             (-jmd-space? (substring c 2 3))))))
+
+(define (-jmd-centred-line? line)
+  "Whether LINE is a CENTRED aligned line: aligned and ending with the
+   `<<` token (a space then `<<` at the end). PURE."
+  (and (-jmd-aligned-line? line)
+       (string-suffix? " <<" (-jmd-rtrim (drop-leading-blanks line)))))
+
+(define (-jmd-strip-align line centred?)
+  "The inner text of an aligned LINE: the `>>` opener (and following
+   whitespace) removed, and for a CENTRED line the trailing `<<` (and the
+   whitespace before it) too. PURE."
+  (let ((after (drop-leading-blanks (substring (drop-leading-blanks line) 2))))
+    (if centred?
+        (let ((rt (-jmd-rtrim after)))
+          (if (string-suffix? "<<" rt)
+              (-jmd-rtrim (substring rt 0 (- (string-length rt) 2)))
+              rt))
+        (-jmd-rtrim after))))
+
+(define (-jmd-aligned-content-line? line)
+  "An aligned line that carries body text — not a bare `>>` / `>> <<`
+   paragraph separator (which bounds sub-paragraphs like a blank line). PURE."
+  (and (-jmd-aligned-line? line)
+       (not (equal? (-jmd-strip-align line (-jmd-centred-line? line)) ""))))
+
+(define (-jmd-centre-pad line fill-column)
+  "Pad the `>> …` LINE with spaces and append `<<` so the closing marker
+   lands at FILL-COLUMN, with at least one space before it. PURE."
+  (let ((pad (- (- fill-column 2) (string-length line))))
+    (str line (string-repeat " " (if (> pad 1) pad 1)) "<<")))
+
+(define (-jmd-aligned-wrap words lead centred? fill-column)
+  "Reflow WORDS as an aligned block at indent LEAD: `>> ` on every line,
+   wrapped to FILL-COLUMN. For CENTRED, wrap shorter and append a
+   column-aligned `<<`. PURE."
+  (let ((prefix (str lead ">> ")))
+    (if centred?
+        (map (lambda (l) (-jmd-centre-pad l fill-column))
+             (-jmd-wrap2 words prefix prefix (- fill-column 3)))
+        (-jmd-wrap2 words prefix prefix fill-column))))
+
+;; --- the metadata frontmatter (where syntax extensions are defined) ------
+;; A JMarkdown document opens with a `---`-fenced metadata header carrying
+;; Title:, Bibliography:, and multi-line `Extension …:` definitions (whose
+;; indented replacement-HTML lines are whitespace-significant). Reflowing
+;; any of that corrupts it, so fill never touches the frontmatter.
+
+(define (-jmd-find-dash lines i)
+  (cond
+    ((nil? lines) -1)
+    ((-jmd-dash-rule? (drop-leading-blanks (car lines))) i)
+    (else (-jmd-find-dash (cdr lines) (+ i 1)))))
+
+(define (-jmd-frontmatter-end lines)
+  "If LINES opens with a `---` metadata fence (line 0 a dash rule), the
+   index of its closing dash-rule line; else -1. PURE."
+  (if (and (not (nil? lines))
+           (-jmd-dash-rule? (drop-leading-blanks (car lines))))
+      (-jmd-find-dash (cdr lines) 1)
+      -1))
+
+(define (-jmd-in-frontmatter? lines index)
+  "Whether line INDEX sits strictly inside the `---` metadata frontmatter.
+   The fence lines themselves are dash-rule boundaries already. PURE."
+  (let ((end (-jmd-frontmatter-end lines)))
+    (and (>= end 0) (> index 0) (< index end))))
 
 ;; --- small list/line helpers (the dialect's Lisp has no list-ref) ------
 
@@ -179,23 +374,64 @@
   (filter (lambda (w) (not (equal? w "")))
           (string-split (-jmd-collapse-walk s 0 "" #t) " ")))
 
-(define (-jmd-wrap-walk words current indent fill-column acc)
+(define (-jmd-wrap2-walk words current cont-prefix fill-column acc)
   (cond
     ((nil? words) (reverse (cons current acc)))
     (else
      (let ((candidate (str current " " (car words))))
        (if (> (string-length candidate) fill-column)
-           (-jmd-wrap-walk (cdr words) (str indent (car words))
-                           indent fill-column (cons current acc))
-           (-jmd-wrap-walk (cdr words) candidate indent fill-column acc))))))
+           (-jmd-wrap2-walk (cdr words) (str cont-prefix (car words))
+                            cont-prefix fill-column (cons current acc))
+           (-jmd-wrap2-walk (cdr words) candidate cont-prefix fill-column acc))))))
 
-(define (-jmd-wrap words indent fill-column)
-  "WORDS greedily wrapped into lines at FILL-COLUMN, every line prefixed
-   with INDENT; an over-long word keeps its own line. PURE."
+(define (-jmd-wrap2 words first-prefix cont-prefix fill-column)
+  "WORDS greedily wrapped at FILL-COLUMN, the first line prefixed with
+   FIRST-PREFIX and every continuation line with CONT-PREFIX; an over-long
+   word keeps its own line. When the two prefixes are equal this is a
+   plain indented wrap. PURE."
   (if (nil? words)
       (list)
-      (-jmd-wrap-walk (cdr words) (str indent (car words))
-                      indent fill-column (list))))
+      (-jmd-wrap2-walk (cdr words) (str first-prefix (car words))
+                       cont-prefix fill-column (list))))
+
+(define (-jmd-para-body para first-prefix)
+  "PARA (a paragraph's line list) as one string with structural prefixes
+   removed: the first line loses FIRST-PREFIX, each continuation line its
+   leading whitespace and blockquote markers — ready for -jmd-words. PURE."
+  (-jmd-join
+    (cons (substring (car para) (string-length first-prefix))
+          (map -jmd-strip-quote (cdr para)))))
+
+(define (-jmd-aligned-edge lines index delta)
+  "The last aligned-CONTENT line index reachable from INDEX by DELTA
+   (+1/-1) without crossing a non-content line (a separator, a plain line,
+   or the buffer edge). PURE."
+  (let ((next (+ index delta)))
+    (if (or (< next 0)
+            (nil? (-jmd-nth lines next))
+            (not (-jmd-aligned-content-line? (-jmd-nth lines next))))
+        index
+        (-jmd-aligned-edge lines next delta))))
+
+(define (-jmd-aligned-body block centred?)
+  "BLOCK (an aligned-line list) joined into one text string, each line's
+   `>>` (and `<<`) sigils stripped. PURE."
+  (-jmd-join (map (lambda (l) (-jmd-strip-align l centred?)) block)))
+
+(define (-jmd-aligned-plan lines cursor fill-column)
+  "Plan the reflow of the flush-right / centred block at line CURSOR.
+   Returns nil (nothing to do) or (start end . replacement-lines). PURE."
+  (let* ((centred? (-jmd-centred-line? (-jmd-nth lines cursor)))
+         (start (-jmd-aligned-edge lines cursor -1))
+         (end (-jmd-aligned-edge lines cursor 1))
+         (block (-jmd-slice lines start end))
+         (lead (-jmd-line-indent (-jmd-nth lines cursor)))
+         (wrapped (-jmd-aligned-wrap
+                   (-jmd-words (-jmd-aligned-body block centred?))
+                   lead centred? fill-column)))
+    (if (equal? wrapped block)
+        nil
+        (cons start (cons end wrapped)))))
 
 ;; --- the @begin(...) line treatment --------------------------------------
 
@@ -297,22 +533,31 @@
   (let ((line (-jmd-nth lines cursor)))
     (cond
       ((nil? line) nil)
+      ;; The metadata frontmatter (syntax-extension definitions etc.) is
+      ;; whitespace-significant and never filled.
+      ((-jmd-in-frontmatter? lines cursor) nil)
       ((-jmd-in-fence? lines cursor) nil)
       ((-jmd-begin-line? line)
        (let ((replacement (-jmd-wrap-begin line fill-column step)))
          (if (nil? replacement)
              nil
              (cons cursor (cons cursor replacement)))))
-      ;; Any other structural line (@end, :::, heading, fence, rule,
-      ;; blank): nothing to fill.
+      ;; A flush-right (>>) / centred (>> … <<) block reflows like a
+      ;; blockquote, keeping its sigils on every line.
+      ((-jmd-aligned-content-line? line)
+       (-jmd-aligned-plan lines cursor fill-column))
+      ;; Any other structural line (@end, :::, heading, fence, rule, a bare
+      ;; >> / >> << separator, blank): nothing to fill.
       ((-jmd-fill-boundary? line) nil)
       (else
        (let* ((start (-jmd-para-edge lines cursor -1))
               (end (-jmd-para-edge lines cursor 1))
               (para (-jmd-slice lines start end))
-              (indent (-jmd-line-indent (car para)))
-              (wrapped (-jmd-wrap (-jmd-words (-jmd-join para))
-                                  indent fill-column)))
+              (prefixes (-jmd-structural-prefixes (car para)))
+              (wrapped (-jmd-wrap2 (-jmd-words
+                                    (-jmd-para-body para (car prefixes)))
+                                   (car prefixes) (cdr prefixes)
+                                   fill-column)))
          (if (equal? wrapped para)
              nil
              (cons start (cons end wrapped))))))))
@@ -362,6 +607,59 @@
           (goto! from)
           (insert! (-jmd-join replacement)))))))
 
+;; --- fill-indent-function: the auto-fill continuation indenter -----------
+;; auto-fill-mode (auto-fill.lisp) breaks a too-long line and then calls
+;; the major mode's :fill-indent-function with point at the start of the
+;; new continuation line. For JMarkdown that means: reproduce the broken
+;; line's *continuation* prefix (list/definition marker → hanging spaces,
+;; blockquote `>` markers repeated, plain prose → its indent), so a
+;; wrapped list item stays aligned under its text and a blockquote keeps
+;; its `>`. The same -jmd-structural-prefixes M-q uses, so they agree.
+
+(define (-jmd-bol-before offset)
+  "The beginning-of-line offset for OFFSET: scan back to just after the
+   previous newline (or buffer start). Reads the buffer."
+  (cond
+    ((<= offset 0) 0)
+    ((equal? (buffer-substring (- offset 1) offset) "\n") offset)
+    (else (-jmd-bol-before (- offset 1)))))
+
+(define (jmarkdown-fill-indent)
+  "auto-fill-mode's :fill-indent-function for JMarkdown. Point is at the
+   start of the freshly-broken continuation line; indent it with the
+   paragraph's hanging prefix, read from the line just above."
+  (let ((ls (line-start)))
+    (when (> ls 0)
+      (let* ((prev (buffer-substring (-jmd-bol-before (- ls 1)) (- ls 1)))
+             (cont (cdr (-jmd-structural-prefixes prev))))
+        (unless (equal? cont "")
+          (insert! cont))))))
+
+;; --- TAB / S-TAB: indent / dedent the selection -------------------------
+;; With a region active, TAB indents and S-TAB outdents the lines it
+;; touches (the same `indent-region` / `outdent-region` as M-] / M-[, on
+;; the Tab keys). Snippet navigation must still win: an active snippet
+;; field is usually SELECTED, so we defer to `snippet-tab` /
+;; `snippet-shift-tab` whenever a snippet is active — those also handle
+;; trigger-expansion and the plain `insert-tab` fallback, so non-selection
+;; TAB behaviour is unchanged.
+
+(defcommand jmarkdown-tab ()
+  "TAB — indent the selected lines by one level when a region is active
+   (and no snippet is running), else the normal TAB (snippet field /
+   expand / insert-tab)."
+  (if (and (region-active?) (not (snippet-active?)))
+      (indent-region)
+      (snippet-tab)))
+
+(defcommand jmarkdown-backtab ()
+  "S-TAB — outdent the selected lines by one level when a region is
+   active (and no snippet is running), else step to the previous snippet
+   field (a no-op when no snippet is active)."
+  (if (and (region-active?) (not (snippet-active?)))
+      (outdent-region)
+      (snippet-shift-tab)))
+
 ;; --- the jmarkdown-mode keymap ------------------------------------------
 ;; C-c is the prefix, mirroring markdown-mode's map for the shared
 ;; commands and adding the dialect's own.
@@ -392,13 +690,17 @@
    "6" 'markdown-heading-6
    "m" 'toggle-math-mode
    "v" 'markdown-preview
+   "C-v" 'markdown-preview-sync
    "C-p" 'toggle-jmarkdown-math-preview})
 
 ;; M-q overrides keymap.lisp's global generic fill with the
 ;; JMarkdown-aware one (the latex-mode-map does the same).
 (set! jmarkdown-mode-map
       {"C-c" jmarkdown-c-c-map
-       "M-q" 'jmarkdown-fill-paragraph})
+       "M-q" 'jmarkdown-fill-paragraph
+       ;; TAB / S-TAB indent / dedent the selection (snippets still win).
+       "tab" 'jmarkdown-tab
+       "S-tab" 'jmarkdown-backtab})
 
 ;; --- the jmarkdown-mode menu --------------------------------------------
 
@@ -432,6 +734,147 @@
                 (cons "Heading 4" 'markdown-heading-4)
                 (cons "Heading 5" 'markdown-heading-5)
                 (cons "Heading 6" 'markdown-heading-6)))
+    (cons "Preview & Math"
+          (list (cons "Toggle Preview Pane" 'markdown-preview)
+                (cons "Toggle Math Preview" 'toggle-jmarkdown-math-preview)
+                (cons "Toggle Math Symbols" 'toggle-math-mode)))))
+
+;; ============================================================================
+;; The JMarkdown authoring layer ("AUCTeX for JMarkdown")
+;; ============================================================================
+;; The compile/insert/navigate/reference commands are defined in the top-level
+;; files jmarkdown-compile / -insert / -nav / -ref (loaded before this language
+;; file). Here — in the ONE place `jmarkdown-mode-map` exists — we bind them
+;; AUCTeX-style under C-c, add the font/toggle sub-maps and M-enter, and extend
+;; the mode menu. Bindings are added by `assoc` (returns a new map), never a
+;; wholesale `{…}` replace, so nothing already on the map is dropped. See
+;; plans/JMARKDOWN-AUCTEX.md.
+
+;; The C-c C-f font sub-map (AUCTeX letter + C-letter forms → the existing
+;; JMarkdown emphasis commands). `*` is intense, single `*` bold — the
+;; commands already emit the right JMarkdown syntax.
+(define jmarkdown-font-map
+  {"b" 'markdown-bold      "C-b" 'markdown-bold
+   "i" 'markdown-italic    "C-i" 'markdown-italic
+   "e" 'jmarkdown-intense  "C-e" 'jmarkdown-intense
+   "u" 'jmarkdown-underline "C-u" 'jmarkdown-underline
+   "h" 'markdown-highlight "C-h" 'markdown-highlight
+   "c" 'markdown-code      "C-c" 'markdown-code})
+
+;; The C-c C-t toggle sub-map.
+(define jmarkdown-toggle-map
+  {"p" 'markdown-preview            "C-p" 'markdown-preview
+   "m" 'toggle-math-mode            "C-m" 'toggle-math-mode
+   "x" 'toggle-jmarkdown-math-preview "C-x" 'toggle-jmarkdown-math-preview})
+
+;; Extend the C-c prefix map with the authoring chords (existing single-letter
+;; b/i/e/u/c/h/l/k/f/r/a/d/@/t/g/q/-/1-6/m/v and C-v/C-p are untouched).
+(set! jmarkdown-c-c-map
+  (let* ((m jmarkdown-c-c-map)
+         (m (assoc m "C-c" 'jmarkdown-compile))       ; compile (format prompt)
+         (m (assoc m "C-o" 'jmarkdown-view-output))   ; open built artifact
+         (m (assoc m "`"   'jmarkdown-next-error))    ; next diagnostic
+         (m (assoc m "C-w" 'jmarkdown-show-output))   ; show output dock
+         (m (assoc m "C-e" 'jmarkdown-environment))   ; @begin picker
+         (m (assoc m "C-m" 'jmarkdown-directive))     ; ::: picker
+         (m (assoc m "C-s" 'jmarkdown-insert-section)) ; heading
+         (m (assoc m "C-f" jmarkdown-font-map))       ; font sub-map
+         (m (assoc m "C-t" jmarkdown-toggle-map))     ; toggle sub-map
+         (m (assoc m "C-n" 'jmarkdown-next-section))  ; next heading
+         (m (assoc m "C-u" 'jmarkdown-previous-section)) ; previous heading
+         (m (assoc m "C-j" 'jmarkdown-goto-matching)) ; @begin<->@end
+         (m (assoc m "("   'jmarkdown-label))         ; RefTeX: label
+         (m (assoc m ")"   'jmarkdown-reference))     ; RefTeX: reference
+         (m (assoc m "["   'jmarkdown-citation))      ; RefTeX: citation
+         (m (assoc m "="   'jmarkdown-toc))           ; RefTeX: outline
+         (m (assoc m "/"   'jmarkdown-index)))        ; RefTeX: index
+    m))
+
+;; Re-install: point the mode map's C-c at the extended sub-map and add M-enter
+;; (continue-list). M-q / tab / S-tab already set above are preserved.
+(set! jmarkdown-mode-map
+  (let* ((m jmarkdown-mode-map)
+         (m (assoc m "C-c" jmarkdown-c-c-map))
+         (m (assoc m "M-enter" 'jmarkdown-insert-item)))
+    m))
+
+;; The extended mode menu (replaces the registration above — a later call for
+;; the same mode name wins). Adds Compile/Navigate/References/Extensions groups
+;; and enriches Insert; keeps Format/Headings/Preview.
+(register-mode-menu! "JMarkdown"
+  (list
+    (cons "Compile & View"
+          (list (cons "Compile" 'jmarkdown-compile)
+                (cons "Compile to HTML" 'jmarkdown-compile-html)
+                (cons "Compile to LaTeX" 'jmarkdown-compile-latex)
+                (cons "Compile to PDF" 'jmarkdown-compile-pdf)
+                (cons "View Output" 'jmarkdown-view-output)
+                (cons "Next Error" 'jmarkdown-next-error)
+                (cons "Previous Error" 'jmarkdown-previous-error)
+                (cons "Show Output" 'jmarkdown-show-output)))
+    (cons "Format"
+          (list (cons "Bold" 'markdown-bold)
+                (cons "Italic" 'markdown-italic)
+                (cons "Intense" 'jmarkdown-intense)
+                (cons "Underline" 'jmarkdown-underline)
+                (cons "Highlight" 'markdown-highlight)
+                (cons "Inline Code" 'markdown-code)
+                (cons "Fill Paragraph" 'jmarkdown-fill-paragraph)))
+    (cons "Insert"
+          (list (cons "Environment (completing)" 'jmarkdown-environment)
+                (cons "Directive (completing)" 'jmarkdown-directive)
+                (cons "Environment (@begin, quick)" 'jmarkdown-insert-environment)
+                (cons "Directive (:::, quick)" 'jmarkdown-insert-directive)
+                (cons "Heading" 'jmarkdown-insert-section)
+                (cons "Link" 'markdown-insert-link)
+                (cons "Footnote" 'markdown-insert-footnote)
+                (cons "Inline Comment" 'jmarkdown-comment-region)))
+    (cons "Insert Block"
+          (list (cons "Table" 'jmarkdown-insert-table)
+                (cons "Figure" 'jmarkdown-insert-figure)
+                (cons "Table (float)" 'jmarkdown-insert-table-float)
+                (cons "Listing" 'jmarkdown-insert-listing)
+                (cons "Code Block" 'jmarkdown-insert-code-block)
+                (cons "Math" 'jmarkdown-insert-math)
+                (cons "Alert" 'jmarkdown-insert-alert)
+                (cons "TiKZ Diagram" 'jmarkdown-insert-tikz)
+                (cons "Mermaid Diagram" 'jmarkdown-insert-mermaid)
+                (cons "Strategic-form Game" 'jmarkdown-insert-game)
+                (cons "Description Item" 'jmarkdown-insert-description-item)
+                (cons "Task Item" 'jmarkdown-insert-task-item)
+                (cons "Blockquote" 'markdown-blockquote)
+                (cons "List Item" 'markdown-list-item)))
+    (cons "References"
+          (list (cons "Label" 'jmarkdown-label)
+                (cons "Reference" 'jmarkdown-reference)
+                (cons "Citation" 'jmarkdown-citation)
+                (cons "Index Mark" 'jmarkdown-index)
+                (cons "Anchor" 'jmarkdown-insert-anchor)
+                (cons "Table of Contents" 'jmarkdown-insert-toc)
+                (cons "List of Figures" 'jmarkdown-insert-list-of-figures)
+                (cons "List of Tables" 'jmarkdown-insert-list-of-tables)
+                (cons "List of Listings" 'jmarkdown-insert-list-of-listings)
+                (cons "Index Block" 'jmarkdown-insert-index-block)
+                (cons "Bibliography" 'jmarkdown-insert-bibliography)))
+    (cons "Navigate"
+          (list (cons "Next Heading" 'jmarkdown-next-section)
+                (cons "Previous Heading" 'jmarkdown-previous-section)
+                (cons "Goto Matching @begin/@end" 'jmarkdown-goto-matching)
+                (cons "Outline / TOC" 'jmarkdown-toc)
+                (cons "Continue List" 'jmarkdown-insert-item)))
+    (cons "Headings"
+          (list (cons "Heading 1" 'markdown-heading-1)
+                (cons "Heading 2" 'markdown-heading-2)
+                (cons "Heading 3" 'markdown-heading-3)
+                (cons "Heading 4" 'markdown-heading-4)
+                (cons "Heading 5" 'markdown-heading-5)
+                (cons "Heading 6" 'markdown-heading-6)))
+    (cons "Advanced"
+          (list (cons "File Include" 'jmarkdown-insert-include)
+                (cons "Simple Extension" 'jmarkdown-insert-extension)
+                (cons "Script Block" 'jmarkdown-insert-script-block)
+                (cons "Reuse Target" 'jmarkdown-insert-target)
+                (cons "Reuse Source" 'jmarkdown-insert-source)))
     (cons "Preview & Math"
           (list (cons "Toggle Preview Pane" 'markdown-preview)
                 (cons "Toggle Math Preview" 'toggle-jmarkdown-math-preview)

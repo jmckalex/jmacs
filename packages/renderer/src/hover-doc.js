@@ -29,18 +29,19 @@ const PREVIEW_LIMIT = 240;
  * @param {object} options
  * @param {(x: number, y: number) => number} options.offsetFromPoint -
  *   The buffer offset for a viewport pixel.
- * @param {(offset: number) => string | null} options.symbolAtOffset -
- *   The Lisp symbol straddling a buffer offset, or null.
- * @param {(symbol: string) => HoverDocSummary | null} options.summarise -
- *   What the tooltip should show, or null when there's no doc.
+ * @param {(offset: number) => ({ symbol: string, summary: HoverDocSummary } | null
+ *   | Promise<{ symbol: string, summary: HoverDocSummary } | null>)}
+ *   options.resolveHover - The symbol straddling a buffer offset together with
+ *   what the tooltip should show, or null when there's no documented symbol. May
+ *   be async (server mode resolves it on the spine); the result is awaited and a
+ *   stale reply — superseded by a newer hover — is dropped.
  * @param {(name: string) => void} options.openDoc - Called on click.
  * @returns {{ destroy(): void, hide(): void }}
  */
 export function createHoverDoc(editorEl, options) {
   const doc = editorEl.ownerDocument;
   const offsetFromPoint = options.offsetFromPoint;
-  const symbolAtOffset = options.symbolAtOffset;
-  const summarise = options.summarise;
+  const resolveHover = options.resolveHover;
   const openDoc = options.openDoc;
 
   const tooltip = doc.createElement('div');
@@ -54,6 +55,9 @@ export function createHoverDoc(editorEl, options) {
   let showTimer = null;
   let lastClientX = 0;
   let lastClientY = 0;
+  // Monotonic tag for the in-flight `resolveHover` (it may be async). A reply
+  // whose seq is stale — a newer hover bumped it — is ignored.
+  let resolveSeq = 0;
 
   function clearShowTimer() {
     if (showTimer !== null) {
@@ -134,12 +138,9 @@ export function createHoverDoc(editorEl, options) {
    *  the click-to-open link. Cancelling the pending show-timer is
    *  enough: a visible tooltip persists until the user clicks
    *  (anywhere) or scrolls. */
-  editorEl.addEventListener('mousedown', hide);
-  editorEl.addEventListener('wheel', hide, { passive: true });
-  editorEl.addEventListener('scroll', hide, { passive: true });
-  editorEl.addEventListener('mouseleave', () => clearShowTimer());
-
-  editorEl.addEventListener('mousemove', (event) => {
+  const onHideEvent = () => hide();
+  const onMouseLeave = () => clearShowTimer();
+  const onMouseMove = (event) => {
     // Skip when the cursor is over a UI overlay (sticky notes etc.).
     // They live inside the editor element but carry their own
     // tooltips / handlers.
@@ -151,41 +152,77 @@ export function createHoverDoc(editorEl, options) {
     lastClientX = event.clientX;
     lastClientY = event.clientY;
     clearShowTimer();
-    showTimer = setTimeout(() => {
+    showTimer = setTimeout(async () => {
       showTimer = null;
       const offset = offsetFromPoint(lastClientX, lastClientY);
       if (offset === null) {
         hide();
         return;
       }
-      const symbol = symbolAtOffset(offset);
-      if (!symbol) {
+      // `resolveHover` may be async (server mode resolves on the spine). Tag this
+      // request so a slow reply that a newer hover has superseded is dropped.
+      const seq = ++resolveSeq;
+      let result;
+      try {
+        result = await resolveHover(offset);
+      } catch {
+        result = null;
+      }
+      if (seq !== resolveSeq) return; // a newer hover started while we awaited
+      if (!result || !result.symbol || !result.summary) {
         hide();
         return;
       }
-      if (symbol === currentSymbol && tooltip.style.display !== 'none') {
+      if (result.symbol === currentSymbol && tooltip.style.display !== 'none') {
         positionAt(lastClientX, lastClientY);
         return;
       }
-      let summary;
-      try {
-        summary = summarise(symbol);
-      } catch {
-        summary = null;
-      }
-      if (!summary) {
-        hide();
-        return;
-      }
-      currentSymbol = symbol;
-      show(summary, lastClientX, lastClientY);
+      currentSymbol = result.symbol;
+      show(result.summary, lastClientX, lastClientY);
     }, HOVER_DELAY_MS);
-  });
+  };
+
+  // The hover listeners live on the ACTIVE editor element. Under Model B the
+  // visible editor is a per-leaf `<text-view>` that is swapped on a pane / buffer
+  // switch (and the first server mount can land AFTER this component is created),
+  // so the host re-points us at the live element via `setEditorEl` — exactly as
+  // inline-eval is re-pointed via `setOverlayLayer`. Without this, the listeners
+  // would stay on whatever element existed at construction and never fire.
+  let boundEl = null;
+  function setEditorEl(el) {
+    if (!el || el === boundEl) return;
+    if (boundEl) {
+      boundEl.removeEventListener('mousedown', onHideEvent);
+      boundEl.removeEventListener('wheel', onHideEvent);
+      boundEl.removeEventListener('scroll', onHideEvent);
+      boundEl.removeEventListener('mouseleave', onMouseLeave);
+      boundEl.removeEventListener('mousemove', onMouseMove);
+    }
+    hide();
+    boundEl = el;
+    el.addEventListener('mousedown', onHideEvent);
+    el.addEventListener('wheel', onHideEvent, { passive: true });
+    el.addEventListener('scroll', onHideEvent, { passive: true });
+    el.addEventListener('mouseleave', onMouseLeave);
+    el.addEventListener('mousemove', onMouseMove);
+  }
+  setEditorEl(editorEl);
 
   return {
     hide,
+    // Re-point the hover listeners at the now-active `<text-view>` (server-mode
+    // pane / buffer switch). A no-op for the same element.
+    setEditorEl,
     destroy() {
       hide();
+      if (boundEl) {
+        boundEl.removeEventListener('mousedown', onHideEvent);
+        boundEl.removeEventListener('wheel', onHideEvent);
+        boundEl.removeEventListener('scroll', onHideEvent);
+        boundEl.removeEventListener('mouseleave', onMouseLeave);
+        boundEl.removeEventListener('mousemove', onMouseMove);
+        boundEl = null;
+      }
       tooltip.remove();
     },
   };

@@ -79,6 +79,39 @@ test('a split pushes a fresh PANE_TREE', () => {
   assert.equal(log.paneTrees[log.paneTrees.length - 1], 0); // for client 0
 });
 
+test('list-bookmarks (C-x r l) TOGGLES the bookmark outline open and closed', () => {
+  const { spine } = makeSpine();
+  spine.runCommand('list-bookmarks'); // open
+  let leaves = wireLeaves(spine.paneSnapshot(0));
+  assert.equal(leaves.length, 2, 'the outline opened beside the document');
+  assert.ok(leaves.some((l) => l.viewKind === 'bookmark'), 'a leaf is the bookmark outline');
+
+  spine.runCommand('list-bookmarks'); // toggle closed
+  assert.equal(
+    wireLeaves(spine.paneSnapshot(0)).length, 1,
+    'a second C-x r l closed the outline, leaving just the document'
+  );
+
+  spine.runCommand('list-bookmarks'); // toggle open again
+  assert.equal(wireLeaves(spine.paneSnapshot(0)).length, 2, 're-opens after a close');
+});
+
+test('C-x r l also CLOSES a PINNED outline (no duplicate after a restore)', () => {
+  const { spine } = makeSpine();
+  spine.runCommand('list-bookmarks'); // open a following outline
+  const outline = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'bookmark');
+  assert.ok(outline, 'the outline opened');
+  spine.applyBookmarkOp(outline.bufferId, { op: 'pin' }); // pin it (as a restore would)
+
+  // C-x r l on a window showing only a PINNED outline must CLOSE it, not spawn a
+  // second (following) one beside it.
+  spine.runCommand('list-bookmarks');
+  assert.equal(
+    wireLeaves(spine.paneSnapshot(0)).length, 1,
+    'the pinned outline closed, leaving just the document (no duplicate)'
+  );
+});
+
 // --- C-x o: other-window cycles focus ----------------------------------
 
 test('C-x o (other-window) cycles focus between the two panes', () => {
@@ -271,10 +304,13 @@ test('splitting a tabline leaf keeps the original tabline; the new leaf is plain
   assert.equal(tab.text, undefined, 'no static text for a same-buffer tabline leaf');
 });
 
-test('a close-tab pane intent un-curates a tab (buffer survives in the pool) (Step 3c)', () => {
+test('a close-tab pane intent un-curates a tab (buffer survives in the pool) (Step 3c, opt-out)', () => {
   const files = { '/x.js': { text: 'x', name: 'x.js' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
   const seedId = spine.currentBufferIdOf(0);
+  // The default is now KILL-on-close; opt out so this exercises the un-curate
+  // path (the buffer survives in the pool / C-x C-b).
+  spine.interpreter.evaluate('(set! *close-tab-kills-view* #f)');
   spine.runCommand('toggle-tabline');
   const xId = spine.visitFile('/x.js'); // tabs: seed, x (x active)
 
@@ -371,4 +407,73 @@ test('focus-pane-direction needs the reported host rect (the geometry coupling)'
   // Drive focus-pane-left via the real command (focus-pane-left → focus-pane-direction! 'left).
   spine.runCommand('focus-pane-left');
   assert.equal(wireFocusedLeafId(spine.paneSnapshot(0)), leftId);
+});
+
+// --- add-pane: the visual macro's server half (C-x +) -----------------
+
+test('add-pane asks THIS window to show the overlay (enter-add-pane-mode directive)', () => {
+  const dirs = [];
+  const spine = createSpine({ initialText: 'hi', name: 'a.txt' }, {
+    onClientDirective: (ids, name, args) => dirs.push({ ids, name, args }),
+  });
+  spine.runCommand('add-pane');
+  assert.deepEqual(dirs, [{ ids: [0], name: 'enter-add-pane-mode', args: [] }]);
+});
+
+test('an add-at-border PANE_INTENT wraps the layout + focuses the new pane + re-pushes', () => {
+  const { spine, log } = makeSpine();
+  const before = log.paneTrees.length;
+  assert.equal(spine.applyPaneIntent(0, { op: 'add-at-border', side: 'right' }), true);
+  const snap = spine.paneSnapshot(0);
+  assert.equal(snap.kind, 'split');
+  assert.equal(wireLeaves(snap).length, 2);
+  assert.equal(wireFocusedLeafId(snap), snap.second.id); // new leaf on the right, focused
+  assert.ok(log.paneTrees.length > before, 'a fresh PANE_TREE was pushed');
+});
+
+test('an add-at-splitter PANE_INTENT inserts a third sibling into the split', () => {
+  const { spine } = makeSpine();
+  cx(spine, '3'); // one split, two leaves
+  const splitId = spine.paneSnapshot(0).id;
+  assert.equal(spine.applyPaneIntent(0, { op: 'add-at-splitter', paneId: splitId }), true);
+  assert.equal(wireLeaves(spine.paneSnapshot(0)).length, 3);
+});
+
+test('a malformed add-pane intent is rejected (no tree change)', () => {
+  const { spine } = makeSpine();
+  assert.equal(spine.applyPaneIntent(0, { op: 'add-at-border', side: 'nope' }), false);
+  assert.equal(spine.applyPaneIntent(0, { op: 'add-at-splitter', paneId: 'no-such' }), false);
+  assert.equal(wireLeaves(spine.paneSnapshot(0)).length, 1);
+});
+
+// --- move-views: swap-views / permute-views server half --------------
+
+test('swap-views/permute-views ask THIS window to show the badge overlay', () => {
+  const dirs = [];
+  const spine = createSpine({ initialText: 'hi', name: 'a.txt' }, {
+    onClientDirective: (ids, name, args) => dirs.push({ ids, name, args }),
+  });
+  spine.runCommand('swap-views'); // one pane → refused (status only, no directive)
+  spine.applyPaneIntent(0, { op: 'split-right' }); // now two panes
+  spine.runCommand('swap-views');
+  spine.runCommand('permute-views');
+  assert.deepEqual(dirs, [
+    { ids: [0], name: 'enter-move-views-mode', args: ['swap'] },
+    { ids: [0], name: 'enter-move-views-mode', args: ['permute'] },
+  ]);
+});
+
+test('a move-views PANE_INTENT moves the leaves structurally + re-pushes PANE_TREE', () => {
+  const { spine, log } = makeSpine();
+  cx(spine, '3'); // two leaves
+  const [l0, l1] = wireLeaves(spine.paneSnapshot(0));
+  const before = log.paneTrees.length;
+  assert.equal(
+    spine.applyPaneIntent(0, { op: 'move-views', slotOrder: [l0.id, l1.id], occupants: [l1.id, l0.id] }),
+    true
+  );
+  const [n0, n1] = wireLeaves(spine.paneSnapshot(0));
+  assert.equal(n0.id, l1.id); // the leaf ids swapped slots (content rode along)
+  assert.equal(n1.id, l0.id);
+  assert.ok(log.paneTrees.length > before);
 });

@@ -21,34 +21,16 @@ import {
   createSplitPane,
   computeRects,
   computeSplitterEdges,
-  findPaneById,
-  insertAtRootBorder,
-  insertAtSplit,
   leafPanes,
-  paneInDirection,
   parentOf,
   replacePane,
   siblingOf,
-  swapLeaves,
-  permuteLeaves,
   spiralOrder,
   bumpIdCounterPast,
   SPLIT_HORIZONTAL,
   SPLIT_VERTICAL,
 } from '@editor/pane';
-import {
-  applyProcedure,
-  arrayToList,
-  cons,
-  createInterpreter,
-  keyword,
-  LispError,
-  listToArray,
-  NIL,
-  sym,
-  Sym,
-  writeString,
-} from '@editor/lisp';
+import { keyword, writeString } from '@editor/lisp/values.js';
 import {
   AudioView,
   BrowserView,
@@ -63,21 +45,16 @@ import {
   ImageView,
   JukeboxView,
   PdfView,
-  createMarkdownPreview,
-  buildPreviewHead,
   createMinibuffer,
   createReplView,
   createUtilityDock,
   createOutputPanel,
   createCompletionsPanel,
+  createDocPanel,
   ShellView,
   GnuplotView,
-  NotebookView,
   ViewListView,
   RecoverView,
-  createReftexSelectPanel,
-  createReftexCiteFormatPanel,
-  createReftexCitePanel,
   PlaceholderView,
   cloneTargetForKind,
   isPlaceholderView,
@@ -85,14 +62,10 @@ import {
   createSplitter,
   createTreeSitterHighlighter,
   VideoView,
-  findArt,
   formBoundsAtPoint,
   formBoundsBeforePoint,
-  fuzzyFilter,
   highlightLine,
-  isAudioFile,
   keyEventToString,
-  altComposedInsert,
   languageForFilename,
   loadLanguageHighlighters,
   createHighlightOverrideStore,
@@ -106,29 +79,26 @@ import {
   registerCslStyle,
   parseCitationsLenient,
   createMathPreview,
+  createMathTooltip,
+  typesetMath,
+  isMathErrorNode,
+  isMathJaxReady,
   mathPreviewProviderForMode,
   TextView,
   TablineView,
   ElementView,
 } from '@editor/renderer';
-import {
-  createBufferPrimitives,
-  createLatexPrimitives,
-  createPanePrimitives,
-  createViewPrimitives,
-  loadStdlib,
-  pathDirname,
-} from '@editor/stdlib';
+// path-resolve.js directly, NOT @editor/stdlib's index — its index re-exports
+// createBufferPrimitives etc., which import @editor/lisp's interpreter; the
+// subpath keeps the renderer's only Lisp dependency the pure value model (B7).
 import { createAudioController } from './audio.js';
+import { writeFaceStyleElement } from './face-styles.js';
 import {
-  emptyOverrides,
-  jsonToLispOverrides,
-  lispToJsonFacesFile,
-  jsonToLispUserFaces,
-  jsonToLispHighlightRules,
-} from './face-overrides.js';
-import { applyFaceStyles, BASE_FACE_NAME } from './face-styles.js';
-import { resolveElementModuleUrl, normalizeFit } from './element-spec.js';
+  resolveElementModuleUrl,
+  normalizeFit,
+  elementViewKinds,
+  elementViewOpenPayload,
+} from './element-spec.js';
 import {
   isMathPreviewActive,
   bufferMajorModeName,
@@ -163,7 +133,7 @@ import { MSG } from '../mwb/protocol.js';
 // down (defers to the server) in server-mode once the server view is mounted —
 // focus-independent, so the dual-dispatch undo bell can't ring. No-op flag-off
 // (serverMode false → always returns false → the router runs as today).
-import { shouldGlobalRouterDefer } from './server-router-gate.js';
+import { shouldGlobalRouterDefer, shouldSwallowPreMount } from './server-router-gate.js';
 // (The leaf-flip retired the G2 overlay container, so the stale-<text-view>
 // sweep `clearStaleServerViews` is no longer imported — the bound leaf reuses
 // one instance across buffer switches; nothing accumulates. The module +
@@ -178,22 +148,6 @@ import { createPickerPanel } from '../mwb/picker-panel.js';
 // the serverMode pane-layout reconcile below.
 import { createClientBuffer } from '../mwb/client-buffer.js';
 
-/**
- * Build a Lisp hash-map (a JS `Map` with interned-keyword keys) from a
- * plain object — the shape the host's citation / synctex primitives
- * return. (latex-primitives.js keeps its own copy for its own scope; this
- * is the app.js-scope equivalent, used by the citation primitives.)
- *
- * @param {Record<string, *>} fields
- * @returns {Map<*, *>}
- */
-function record(fields) {
-  const map = new Map();
-  for (const [key, value] of Object.entries(fields)) {
-    map.set(keyword(key), value);
-  }
-  return map;
-}
 
 const WELCOME = `
 
@@ -234,27 +188,6 @@ const SCRATCH = `;; scratch.lisp — a buffer for evaluating Lisp.
 (define greeting "hello, world")
 `;
 
-/** The header of the machine-written custom.lisp settings file. */
-const CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
-;;;
-;;; jmacs writes this file; edits made by hand will be overwritten the
-;;; next time a setting is saved. For free-form configuration, use
-;;; init.lisp instead.
-
-`;
-
-/** The commented init.lisp written into the config directory on first run. */
-const INIT_TEMPLATE = `;;; init.lisp — your Godot configuration.
-;;;
-;;; This file is evaluated at startup, after the standard library and
-;;; your saved customisations. It is the Godot equivalent of .emacs:
-;;; ordinary Lisp, so anything goes — set variables, define commands,
-;;; bind keys.
-;;;
-;;; Examples:
-;;;   (custom-apply! '*markdown-interpreter* "pandoc -f markdown -t html")
-;;;   (define (insert-divider) (insert! "\\n---\\n"))
-`;
 
 // --- views --------------------------------------------------------------
 //
@@ -350,6 +283,25 @@ function bufferMatchesSaved(buffer) {
   return text.length === base.length && hashText(text) === base.hash;
 }
 
+/** B0 config cache (plans/B5-B7-TEARDOWN-AUDIT.md): the renderer-consumed
+ *  defcustom values, kept as plain JS so the renderer reads config WITHOUT its
+ *  (soon-to-be-deleted) interpreter. Seeded with the defcustom defaults, then
+ *  refreshed by the spine's `config-snapshot` directive on connect (and on any
+ *  chrome change), and by `config-apply` on a live customize edit. Declared
+ *  high (before the readers below) so an early read never hits a TDZ. Until B7
+ *  the interpreter still loads custom.lisp at boot — the same values, read here
+ *  interpreter-free. */
+const rendererConfig = {
+  '*markdown-interpreter*': 'marked',
+  '*pdf-restore-default*': true,
+  '*autosave-recovery*': true,
+  '*autosave-recovery-interval*': 1000,
+  '*jukebox-track-format*': '"{title}", {artist}, {album}',
+  '*directory-tree-open-target*': 'editing-pane',
+  '*pane-focus-border*': 'auto',
+  '*markdown-preview-follow-cursor*': true,
+};
+
 /** The autosave / crash-recovery controller: snapshots every dirty
  *  buffer to `<userData>/recovery/` (debounced on edit, immediate on
  *  blur), drops a buffer's snapshot when it is saved, and clears them
@@ -358,25 +310,13 @@ function bufferMatchesSaved(buffer) {
 const recovery = createRecovery({
   getDirtyBuffers: () => dirtyBuffers,
   host: window.host,
-  // Live-read the Lisp defcustoms (see system.lisp) so a user can
-  // toggle autosave or retune the interval from Lisp without a restart.
-  // Both default safely (on, 1000ms) before the stdlib has loaded.
-  isEnabled: () => {
-    if (!keymapReady) return true;
-    try {
-      return interpreter.evaluate('*autosave-recovery*') !== false;
-    } catch {
-      return true;
-    }
-  },
+  // Read the config cache (seeded with the safe defaults on/1000ms, refreshed by
+  // the spine's config-snapshot/config-apply pushes) so a user can toggle
+  // autosave or retune the interval from customize without a restart.
+  isEnabled: () => rendererConfig['*autosave-recovery*'] !== false,
   getDebounceMs: () => {
-    if (!keymapReady) return 1000;
-    try {
-      const v = interpreter.evaluate('*autosave-recovery-interval*');
-      return typeof v === 'number' && v > 0 ? v : 1000;
-    } catch {
-      return 1000;
-    }
+    const v = rendererConfig['*autosave-recovery-interval*'];
+    return typeof v === 'number' && v > 0 ? v : 1000;
   },
 });
 
@@ -477,51 +417,6 @@ function nextGnuplotSessionId() {
   return `gnuplot-${gnuplotSessionCounter}-${Date.now()}`;
 }
 
-/** Monotonic id source for notebook views. The reactive engine keys its
- *  per-notebook record (cell values, dep graph) off this id. */
-let notebookCounter = 0;
-function nextNotebookId() {
-  notebookCounter += 1;
-  return `notebook-${notebookCounter}-${Date.now()}`;
-}
-
-/** Rename the notebook with NOTEBOOK-ID to NAME (its display + buffer
- *  name; the file on disk is unchanged). Keyed by id, not by "current
- *  view", so it's robust to focus moving during a minibuffer prompt. */
-function renameNotebookById(id, name) {
-  const n = String(name ?? '').trim();
-  if (n === '') return;
-  const view = views.find((v) => v.kind === 'notebook' && v.notebookId === id);
-  if (!view) return;
-  view.name = n;
-  if (view.buffer) view.buffer.name = n;
-  updateModeline();
-  notifyViewsChanged();
-  // Refresh every notebook view's header picker so the new name shows in
-  // the dropdown — the inline ✎ button refreshes its own, but the M-x
-  // command path (rename-notebook-by-id!) has no view handle, so do it for
-  // all notebook elements here.
-  for (const el of document.querySelectorAll('notebook-view')) {
-    if (typeof el.refreshHeader === 'function') el.refreshHeader();
-  }
-}
-
-/** Switch to the next (DELTA +1) or previous (-1) open notebook, wrapping
- *  around. If the current view isn't a notebook, jump to the first/last. */
-function cycleNotebook(delta) {
-  const notebooks = views.filter((v) => v.kind === 'notebook');
-  if (notebooks.length === 0) return;
-  const current = views[currentViewIndex];
-  const here = current && current.kind === 'notebook' ? notebooks.indexOf(current) : -1;
-  const next =
-    here === -1
-      ? delta > 0
-        ? 0
-        : notebooks.length - 1
-      : (here + delta + notebooks.length) % notebooks.length;
-  switchToViewIndex(views.indexOf(notebooks[next]));
-}
-
 /** A change to the view list or the current index. Refreshes the
  *  tabline and schedules a debounced session save. Both targets are
  *  wired in later (the tabline and session controller depend on the
@@ -582,59 +477,6 @@ function nextNonPlaceholderIndex(from, delta) {
 const nameEl = document.getElementById('modeline-name');
 const positionEl = document.getElementById('modeline-position');
 
-function updateModeline() {
-  // In server-mode the modeline is driven by the server's VIEW message (the
-  // G2 chrome paints nameEl/positionEl from the spine's renderModeline); the
-  // in-renderer editor is idle behind the overlay, so its modeline must stand
-  // down or it would fight the server's. Flag-off this guard is never taken.
-  if (window.host && window.host.serverMode) return;
-  const shown = views[currentViewIndex];
-  // A placeholder chooser pane shows its label and no count — never a
-  // `9/7`-style index (it isn't part of the user-visible view list).
-  if (isPlaceholderView(shown)) {
-    const label = shown.name || '(choose a view)';
-    nameEl.textContent = label;
-    positionEl.textContent = '';
-    document.title = `${label} — Godot`;
-    return;
-  }
-  // The user-visible count excludes placeholders, and the index is the
-  // current view's position among the *real* views (so a split that
-  // dropped a placeholder doesn't push the count past the list — the
-  // `9/7` hazard). Falls back to no count when only one real view.
-  const realViews = views.filter((v) => !isPlaceholderView(v));
-  const realIndex = shown ? realViews.indexOf(shown) : -1;
-  const count =
-    realViews.length > 1 && realIndex >= 0
-      ? `  ${realIndex + 1}/${realViews.length}`
-      : '';
-  // A non-text view (image, doc, shell, customize, ...) has no point
-  // and no mode — show just the view name.
-  if (shown && shown.kind !== 'text') {
-    nameEl.textContent = shown.name + count;
-    positionEl.textContent = '';
-    document.title = `${shown.name} — Godot`;
-    return;
-  }
-  const buffer = currentTextBuffer;
-  const mark = dirtyBuffers.has(buffer) ? '● ' : '';
-  const mode = keymapReady
-    ? `   ${interpreter.call('major-mode-name')}` +
-      interpreter.call('minor-mode-line')
-    : '';
-  // The snippet indicator (e.g. "[snippet: 2/4]") appears while a snippet
-  // is being navigated; the Lisp getter returns "" when none is active.
-  const snippet = keymapReady
-    ? interpreter.call('snippet-modeline-indicator')
-    : '';
-  const snippetTag = snippet ? `   ${snippet}` : '';
-  nameEl.textContent = mark + buffer.name + mode + snippetTag + count;
-  const { line, column } = buffer.positionAt(buffer.point);
-  positionEl.textContent = `Ln ${line + 1}, Col ${column + 1}`;
-  // Reflect the current view in the OS window title.
-  document.title = `${mark}${buffer.name} — Godot`;
-}
-
 /** Make BUFFER the current text buffer AND re-point the dirty / autosave
  *  watch at it. Every path that changes which buffer is current must go
  *  through this, not a bare `currentTextBuffer = …` assignment —
@@ -672,36 +514,13 @@ function watchCurrentBuffer() {
         recovery.save();
       }
       dismissSplash();
-      // Keep the Markdown preview pane in step with the buffer.
-      refreshMarkdownPreview();
-      // While a snippet is active, reflow the active field's extent and
-      // the trailing offsets after each edit. A no-op when no snippet is
-      // active (guarded in Lisp).
-      if (keymapReady) {
-        try {
-          interpreter.call('snippet-after-edit!');
-        } catch {
-          // A reflow error must not break editing; the snippet simply
-          // stops tracking. Surfaced lazily on the next command.
-        }
-      }
+      // The Markdown preview (when open) tracks the SAVED file via its own
+      // `jmarkdown watch` server, so an edit needs no renderer-side refresh —
+      // the preview updates on save (C-x C-s), not per keystroke.
+      // (Snippet field reflow is server-side now — snippets.lisp runs in the
+      // spine; the renderer interpreter holds no snippet state.)
     }
-    updateModeline();
   });
-}
-
-/** Give the current text view's buffer a major mode if it has none
- *  yet. A no-op when the current view has no buffer (image, shell). */
-function ensureMajorMode() {
-  if (!keymapReady) return;
-  const view = session.currentView;
-  const buffer = view ? view.buffer : null;
-  if (!buffer || buffer.majorMode !== null) return;
-  try {
-    interpreter.call('choose-major-mode!');
-  } catch (error) {
-    repl.appendError(`mode selection failed: ${error.message}`);
-  }
 }
 
 // --- pane tree ----------------------------------------------------------
@@ -724,6 +543,15 @@ const editorHostEl = /** @type {HTMLElement} */ (
  *  mountKindView are wired up — at construction the leaf points to
  *  the initial current view. */
 let rootPane = createLeafPane({ view: views[currentViewIndex] ?? null });
+
+/** The visual add-pane (`add-pane-mode.js`) / move-views (`move-view-mode.js`)
+ *  overlays, when active. Held so a second entry toggles the overlay off, and a
+ *  picked target / committed move can clear it. Null when no overlay is up.
+ *  The overlays are renderer UI driven server-side: the `add-pane` /
+ *  `swap-views` / `permute-views` commands emit an `enter-*-mode` directive; a
+ *  pick sends a PANE_INTENT back that the server applies to the pane model. */
+let addPaneModeHandle = null;
+let moveViewsModeHandle = null;
 
 /** Map from each live leaf-pane id to the `<div class="pane">` element
  *  that mirrors it. The map is rebuilt whenever the tree changes (phase
@@ -772,16 +600,7 @@ function editorPaneElement() {
 /** Pending requestAnimationFrame id for a coalesced relayout, or 0. */
 let relayoutHandle = 0;
 
-/** Live handle for an active add-pane overlay (the visual macro that
- *  highlights splitters + outer borders). `null` when the mode is off.
- *  Re-entering the chord toggles it; a successful click or Escape
- *  clears it via the `exit` shim installed at entry. */
-let addPaneHandle = null;
 
-/** Live handle for an active move-views overlay (swap-views /
- *  permute-views), or `null` when off. Same toggle/clear lifecycle as
- *  `addPaneHandle`. */
-let moveViewHandle = null;
 
 
 /** Recompute the layout of every leaf pane against the current editor-
@@ -834,15 +653,12 @@ queueMicrotask(relayoutPanes);
 const editorHostResizeObserver = new ResizeObserver(() => scheduleRelayout());
 editorHostResizeObserver.observe(editorHostEl);
 
-// Module state read by the pane-focus machinery below. These are hoisted
-// here because the initial focus paint (further down) calls into
-// `refreshPaneFocusIndicators` / `isNoFocusPane`, which read `keymapReady`
-// and `activeProjectPath` — declaring those at their original (much later)
-// positions left them in the temporal dead zone at first paint, throwing a
-// ReferenceError that aborted the whole boot. They are reassigned later
-// where they're used (stdlib-load sets keymapReady; openProject sets the
-// project pointers).
-let keymapReady = false;
+// Module state read by the pane-focus machinery below. Hoisted here because the
+// initial focus paint (further down) calls into `refreshPaneFocusIndicators` /
+// `isNoFocusPane`, which read `activeProjectPath` — declaring it at its original
+// (much later) position left it in the temporal dead zone at first paint,
+// throwing a ReferenceError that aborted the whole boot. Reassigned later where
+// it's used (openProject sets the project pointers).
 /** Absolute root of the open project, or null when in the home session. */
 let activeProjectPath = null;
 /** The per-project session controller while a project is open, else null. */
@@ -872,16 +688,10 @@ function currentPane() {
   return null;
 }
 
-/** The `*pane-focus-border*` setting ('auto | 'on | 'off), read from Lisp
- *  on demand. Falls back to 'auto before the stdlib is loaded, or if the
- *  read fails. */
+/** The `*pane-focus-border*` setting ('auto | 'on | 'off), from the config
+ *  cache (seeded 'auto, refreshed by the spine's config-snapshot push). */
 function paneFocusBorderMode() {
-  if (!keymapReady) return 'auto';
-  try {
-    return symbolNameOf(interpreter.call('pane-focus-border-setting')) || 'auto';
-  } catch {
-    return 'auto';
-  }
+  return rendererConfig['*pane-focus-border*'] || 'auto';
 }
 
 /** How many panes are focusable — the 'auto focus-border mode draws the
@@ -1039,7 +849,6 @@ function setCurrentPaneId(nextId) {
       editorView = instance;
     }
   }
-  updateModeline();
 }
 
 // Paint the initial focus indicator. With one pane this just adds the
@@ -1157,17 +966,6 @@ function cloneViewForPlaceholder(originView) {
           extras: { sessionId, ended: false, spawned: false },
         });
       }
-      if (originView.kind === 'notebook') {
-        const notebookId = nextNotebookId();
-        const seq = views.filter((v) => v.kind === 'notebook').length + 1;
-        const name = seq === 1 ? '*notebook*' : `*notebook*<${seq}>`;
-        return createView({
-          kind: 'notebook',
-          name,
-          buffer: { text: '', filePath: null, name },
-          extras: { notebookId },
-        });
-      }
       // directory-tree / directory-columns: a fresh view at the same
       // root. Build a NEW instance directly (not the ensure-helpers,
       // which reuse an existing view for a path — that would put one
@@ -1228,7 +1026,6 @@ function replacePlaceholder(leaf, newView) {
   mountKindView(newView);
   refreshPaneFocusIndicators();
   scheduleRelayout();
-  updateModeline();
   notifyViewsChanged();
 }
 
@@ -1273,13 +1070,11 @@ function fillPlaceholderViaOpen(leaf) {
  *  lands here. Afterwards the placeholder is spliced out. */
 function fillPlaceholderViaCommand(leaf, text) {
   const placeholder = leaf.view;
-  try {
-    interpreter.evaluate(`(run-command (quote ${text}))`);
-  } catch (error) {
-    repl.appendError(formatLispError(error));
-  }
-  // A view-opening command replaced `leaf.view` via switchToViewIndex;
-  // a non-view command (or a failure) leaves the placeholder in place.
+  // Run the typed command server-side — the placeholder's pane is focused, so a
+  // view-opening command lands here. (The in-renderer run-command is gone with
+  // the interpreter — B7. The server-mode placeholder chooser doesn't surface
+  // today, so this is a defensive route, not a live path.)
+  if (serverViewClient) serverViewClient.runCommand(text);
   if (leaf.view !== placeholder) splicePlaceholderFromViews(placeholder);
 }
 
@@ -1406,20 +1201,6 @@ function splitPaneAtLeaf(targetLeaf, orientation, ratio, side = 'after') {
   return splitPaneAtLeafWith(targetLeaf, orientation, ratio, side, placeholder);
 }
 
-/** The bare name of a Lisp symbol/keyword/string argument (a Sym and a
- *  Keyword both carry a `.name`), with any leading `:` stripped, or null
- *  when ARG isn't symbol-like. Mirrors pane-primitives' `sideFromArg` /
- *  `coerceEdge` coercion so `open-file-in-split!` reads its
- *  orientation/side args the same way the split primitives read theirs. */
-function symbolNameOf(arg) {
-  let name = null;
-  if (typeof arg === 'string') name = arg;
-  else if (arg && typeof arg === 'object' && typeof arg.name === 'string') {
-    name = arg.name;
-  }
-  if (name === null) return null;
-  return name.startsWith(':') ? name.slice(1) : name;
-}
 
 /** Programmatically split the focused pane and open FILEPATH directly in
  *  the new sibling pane — no placeholder, no chooser. The split runs at
@@ -1460,54 +1241,7 @@ async function splitAndOpenFile(filePath, orientation, side = 'after', persist =
   return view;
 }
 
-/** Insert a fresh leaf "in the gap" of the split node with id SPLIT_ID.
- *  The new leaf gets a *placeholder* chooser (remembering the focused
- *  view as the clone origin) and becomes the focused pane. Returns the
- *  inserted leaf, or `null` when the split id isn't in the tree. */
-function addPaneAtSplitterId(splitId) {
-  if (typeof splitId !== 'string') return null;
-  const splitNode = findPaneById(rootPane, splitId);
-  if (!splitNode || splitNode.kind !== 'split') return null;
-  const sourceView =
-    (currentPane()?.view) ?? views[currentViewIndex] ?? null;
-  const placeholder = buildPlaceholderForSplit(sourceView);
-  const newLeaf = createLeafPane({ view: placeholder });
-  rootPane = insertAtSplit(rootPane, splitNode, newLeaf);
-  syncPaneElements();
-  setCurrentPaneId(newLeaf.id);
-  hideInactiveRendererViews(placeholder.kind);
-  mountKindView(placeholder);
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-  return newLeaf;
-}
 
-/** Insert a fresh leaf at SIDE of the root pane (`'top'`/`'bottom'`/
- *  `'left'`/`'right'`). Wraps the whole existing tree in a new outer
- *  split, with the fresh leaf on that side. Returns the inserted leaf
- *  or `null` for an unrecognised side. */
-function addPaneAtRootBorder(side) {
-  if (
-    side !== 'top' && side !== 'bottom' &&
-    side !== 'left' && side !== 'right'
-  ) {
-    return null;
-  }
-  const sourceView =
-    (currentPane()?.view) ?? views[currentViewIndex] ?? null;
-  const placeholder = buildPlaceholderForSplit(sourceView);
-  const newLeaf = createLeafPane({ view: placeholder });
-  rootPane = insertAtRootBorder(rootPane, side, newLeaf);
-  syncPaneElements();
-  setCurrentPaneId(newLeaf.id);
-  hideInactiveRendererViews(placeholder.kind);
-  mountKindView(placeholder);
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-  return newLeaf;
-}
 
 /** Implementation of `delete-pane!`. Collapses TARGET's parent split
  *  into TARGET's sibling, drops a layer of the tree. No-op when TARGET
@@ -1564,155 +1298,19 @@ function deletePaneInTree(targetLeaf) {
   refreshPaneFocusIndicators();
   refreshSplitterHandles();
   scheduleRelayout();
-  updateModeline();
   // If the removed leaf was a minimap's target, the reconcile drops the now
   // orphaned minimap; otherwise it just rebinds survivors. Deferred, so it
   // runs after this deletion's tree surgery is complete.
   scheduleMinimapReconcile();
 }
 
-/** Implementation of `delete-other-panes!`. Makes TARGET fill the
- *  whole editor area, disposing every other leaf's editor-view
- *  instance (text leaves only). */
-function deleteOtherPanesInTree(targetLeaf) {
-  if (!targetLeaf || targetLeaf.kind !== 'leaf') return;
-  if (rootPane === targetLeaf) return;
-  // Dispose every editor-view instance for leaves that are about to
-  // disappear (text leaves only — non-text singletons aren't per-pane).
-  // A placeholder pane among them leaves no residue: splice it out.
-  for (const leaf of leafPanes(rootPane)) {
-    if (leaf === targetLeaf) continue;
-    disposeEditorViewForLeaf(leaf);
-    if (isPlaceholderView(leaf.view)) splicePlaceholderFromViews(leaf.view);
-  }
-  rootPane = targetLeaf;
-  syncPaneElements();
-  if (currentPaneId !== targetLeaf.id) {
-    currentPaneId = targetLeaf.id;
-    const view = targetLeaf.view;
-    if (view) {
-      const idx = views.indexOf(view);
-      if (idx >= 0) currentViewIndex = idx;
-      if (view.kind === 'text' && view.buffer) {
-        if (typeof view.buffer.bindCursor === 'function') {
-          view.buffer.bindCursor(view);
-        }
-        setCurrentTextBuffer(view.buffer);
-      }
-      const instance = editorViewByPaneId.get(targetLeaf.id);
-      if (instance) editorView = instance;
-    }
-  }
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-  updateModeline();
-}
 
-/** Set of every leaf-kind view that is currently *visible* in some
- *  pane other than EXCLUDE. "Visible" means: the active child of a
- *  tabline-view, or the direct view of a plain leaf. Hidden tabs
- *  (inactive children of a tabline-view) are *not* visible. Used by
- *  the C-x b picker (Q4) so it can drop candidates that are already
- *  showing on screen elsewhere.
- *
- *  A nested tabline-view's active child is also collected (nested
- *  tablines, Q10).
- *
- *  @param {*} exclude - The pane to skip (typically the focused pane).
- *  @returns {Set<import('@editor/view').View>}
- */
-function viewsVisibleInOtherPanes(exclude) {
-  const visible = new Set();
-  for (const leaf of leafPanes(rootPane)) {
-    if (leaf === exclude) continue;
-    let v = leaf.view;
-    while (v && isTablineView(v)) {
-      const child = tablineActiveChild(v);
-      if (!child) break;
-      visible.add(child);
-      v = child; // walk through nested tablines
-    }
-    if (v && !isTablineView(v)) visible.add(v);
-  }
-  return visible;
-}
 
-/** Cycle focus to the next leaf in display order (depth-first).
- *  Returns the new current pane handle. */
-function focusNextPane() {
-  const leaves = leafPanes(rootPane);
-  if (leaves.length <= 1) return currentPane();
-  const i = leaves.findIndex((l) => l.id === currentPaneId);
-  const start = i < 0 ? 0 : i;
-  // Cycle to the next *focusable* pane — skip passive sidebars (the tree /
-  // bookmark in a project, the minimap, …) so C-x o stays among editing panes.
-  for (let step = 1; step <= leaves.length; step += 1) {
-    const cand = leaves[(start + step) % leaves.length];
-    if (cand.id === currentPaneId) continue;
-    if (isNoFocusPane(cand.id)) continue;
-    setCurrentPaneId(cand.id);
-    return cand;
-  }
-  return currentPane();
-}
 
-/** Focus a *specific* leaf pane by its handle (the absolute counterpart
- *  to `focusNextPane` / `focusPaneByDirection`, which move focus
- *  relatively). Used by features that already hold the pane they want
- *  focused — e.g. inverse SyncTeX, which focuses the pane showing the
- *  resolved source file instead of landing in whatever pane the PDF
- *  click stole focus to. Returns the focused leaf, or null when PANE
- *  isn't a leaf currently in the tree (a split node, a stale handle).
- *  Re-focusing the already-current pane is a no-op that still returns
- *  the leaf. */
-function focusPaneHandle(pane) {
-  if (!pane || typeof pane !== 'object' || pane.kind !== 'leaf') return null;
-  const leaf = leafPanes(rootPane).find((l) => l.id === pane.id);
-  if (!leaf) return null;
-  setCurrentPaneId(leaf.id);
-  return leaf;
-}
 
-/** Spatial pane navigation: focus the leaf adjacent to the current one
- *  in DIRECTION. Returns the new current pane handle, or null when
- *  there's no neighbour on that side. */
-function focusPaneByDirection(direction) {
-  const hostRect = editorHostEl.getBoundingClientRect();
-  const rects = computeRects(rootPane, {
-    width: hostRect.width,
-    height: hostRect.height,
-  });
-  const targetId = paneInDirection(rects, currentPaneId, direction);
-  if (targetId === null) return null;
-  setCurrentPaneId(targetId);
-  return leafPanes(rootPane).find((l) => l.id === targetId) ?? null;
-}
 
-/** Reset every split node's ratio to 0.5. The tree is structurally
- *  shared by the splits; the ratios are mutable fields on each node, so
- *  we walk and write in place. A relayout follows. */
-function balancePanesInTree() {
-  walkAndBalance(rootPane);
-  refreshSplitterHandles();
-  scheduleRelayout();
-}
 
-function walkAndBalance(node) {
-  if (!node || node.kind !== 'split') return;
-  node.ratio = 0.5;
-  walkAndBalance(node.first);
-  walkAndBalance(node.second);
-}
 
-/** Set a split node's ratio in place (the layout reads the live ratio
- *  each frame). RATIO is assumed already clamped by the caller. */
-function setSplitRatioOnNode(splitNode, ratio) {
-  if (!splitNode || splitNode.kind !== 'split') return;
-  splitNode.ratio = ratio;
-  refreshSplitterHandles();
-  scheduleRelayout();
-}
 
 // --- splitter handle DOM + drag ----------------------------------------
 //
@@ -1975,7 +1573,7 @@ function hideInactiveSingletons() {
   hideInactiveDocs();
   hideInactivePlaceholders();
   hideInactiveElementHosts();
-  hideInactiveShells();
+  hideInactiveProcViews();
 }
 
 /** Switch to the view at INDEX: dispatch through mountKindView to
@@ -2012,7 +1610,6 @@ function switchToViewIndex(index) {
       tabIndex = tlv.tabs.length - 1;
     }
     activateTabInTabline(tlv, tabIndex);
-    updateModeline();
     notifyViewsChanged();
     return view;
   }
@@ -2043,7 +1640,6 @@ function switchToViewIndex(index) {
   }
   hideInactiveRendererViews(view.kind);
   mountKindView(view);
-  updateModeline();
   notifyViewsChanged();
   return view;
 }
@@ -2207,14 +1803,12 @@ function killViewAtIndex(target) {
       currentViewIndex = activeChild !== null
         ? views.indexOf(activeChild)
         : -1;
-      updateModeline();
       notifyViewsChanged();
     } else if (focused
                && focused.kind === 'leaf'
                && focused.view !== victim) {
       // Auto-collapsed: deletePaneInTree pointed focus at a sibling
       // and set currentViewIndex inside its branch. Just refresh.
-      updateModeline();
       notifyViewsChanged();
     } else {
       const next = Math.min(target, views.length - 1);
@@ -2223,132 +1817,10 @@ function killViewAtIndex(target) {
     }
   } else if (target < currentViewIndex) {
     currentViewIndex -= 1;
-    updateModeline();
     notifyViewsChanged();
   } else {
-    updateModeline();
     notifyViewsChanged();
   }
-}
-
-/** Kill the (first) view with NAME, if any. */
-function killViewByName(name) {
-  killViewAtIndex(views.findIndex((v) => v.name === name));
-}
-
-/** Join DIR and NAME with a single slash. Tiny helper used to build
- *  the absolute path for each jukebox track. */
-function joinPath(dir, name) {
-  const trimmed = typeof dir === 'string' && dir.endsWith('/')
-    ? dir.slice(0, -1)
-    : String(dir ?? '');
-  return `${trimmed}/${name}`;
-}
-
-/** Ask Lisp to format the display label for PATH using the current
- *  `*jukebox-track-format*` template. A failure (interpreter not
- *  ready, format-track not yet defined, anything thrown from the
- *  template) falls back to the bare filename — one bad tag must not
- *  break the whole listing. */
-function formatTrackLabel(path) {
-  if (!keymapReady) return basenameOf(path);
-  try {
-    const result = interpreter.call('format-track', path);
-    if (typeof result === 'string' && result !== '') return result;
-  } catch {
-    /* fall through */
-  }
-  return basenameOf(path);
-}
-
-/** The bare filename component of PATH. */
-function basenameOf(path) {
-  const slash = String(path).lastIndexOf('/');
-  return slash >= 0 ? path.slice(slash + 1) : path;
-}
-
-/** Refresh the labels of every open jukebox view. Called by the
- *  `*jukebox-track-format*` :on-change hook so a user customising the
- *  format string sees the change apply to already-open jukeboxes. */
-function refreshAllJukeboxLabels() {
-  let touched = false;
-  for (const view of views) {
-    if (view.kind !== 'jukebox' || !Array.isArray(view.tracks)) continue;
-    view.labels = view.tracks.map((track) =>
-      formatTrackLabel(joinPath(view.dir, track))
-    );
-    touched = true;
-  }
-  // Re-mount the current view so the change is visible immediately
-  // (a view's labels are read in setBuffer). switchToViewIndex with
-  // currentViewIndex forces a re-mount; we only do it when the
-  // current view is a jukebox so other views aren't disturbed.
-  if (touched && currentViewIndex >= 0 &&
-      views[currentViewIndex].kind === 'jukebox') {
-    const i = currentViewIndex;
-    currentViewIndex = -1;
-    switchToViewIndex(i);
-  }
-}
-
-/** Build a fresh tracks/art listing for DIR and create-or-refresh the
- *  matching jukebox buffer. Reusing an existing buffer by name keeps
- *  the user's switch history sane — `(jukebox "/m")` twice does not
- *  pile up two entries.
- *
- *  The host owns the filesystem; the view never touches it. This
- *  function is the bridge.
- */
-function openJukeboxForDirectory(dir) {
-  let entries;
-  try {
-    entries = window.host.listDirectorySync(dir);
-  } catch (error) {
-    repl.appendError(`jukebox: ${error.message}`);
-    return;
-  }
-  if (entries === null) {
-    repl.appendError(`jukebox: cannot read directory ${dir}`);
-    return;
-  }
-  const tracks = entries.filter(isAudioFile);
-  const art = findArt(entries);
-  // Format the display label for each track via the Lisp helper.
-  // Doing this up front (rather than per-row) keeps the renderer free
-  // of IPC chatter when the buffer mounts. A formatting error per
-  // file degrades to the bare filename — one malformed tag must not
-  // break the whole listing.
-  const labels = tracks.map((track) =>
-    formatTrackLabel(joinPath(dir, track))
-  );
-  const name = `*Jukebox: ${dir}*`;
-  let index = views.findIndex(
-    (v) => v.kind === 'jukebox' && v.name === name
-  );
-  // The jukebox view carries two callbacks the renderer invokes: a
-  // refresh (re-read the dir and rebuild) and a quit (stop, kill the
-  // view, restore the previous one).
-  const extras = {
-    dir,
-    tracks,
-    labels,
-    art,
-    refresh: () => openJukeboxForDirectory(dir),
-    quit: () => {
-      audio.stop();
-      killViewByName(name);
-    },
-  };
-  if (index >= 0) {
-    // Reuse the slot — keep the View handle stable but refresh its
-    // kind-specific fields. The renderer's setBuffer rebuilds from
-    // the new fields.
-    Object.assign(views[index], extras);
-  } else {
-    views.push(createView({ kind: 'jukebox', name, extras }));
-    index = views.length - 1;
-  }
-  switchToViewIndex(index);
 }
 
 /** Find or create the customisation view named `name`, switch to it. */
@@ -2383,28 +1855,6 @@ function escapeHtml(text) {
     .replace(/"/g, '&quot;');
 }
 
-/** Render NAME's docstring as Markdown and show it in a doc buffer.
- *  Reuses any existing doc buffer for the same NAME. This is the
- *  live path — for user-defined procedures whose documentation
- *  isn't in the pre-built manifest. */
-async function openDocstringBuffer(docName, source) {
-  let body;
-  try {
-    body = await renderMarkdownHtml(source);
-  } catch (error) {
-    repl.appendError(`doc render failed: ${error.message}`);
-    return;
-  }
-  // Frame the rendered body in the same `article.doc-page[data-node-id]`
-  // shape the built pages use, so the doc-view lifts it correctly. This
-  // node isn't in the manifest tree, so the view shows it with minimal
-  // chrome (Contents stays reachable; Prev/Up/Next are disabled).
-  const html =
-    `<article class="doc-page docstring-page" data-node-id="${escapeHtml(docName)}">` +
-    `<h3 class="doc-name"><code>${escapeHtml(docName)}</code></h3>\n` +
-    `<div class="doc-docstring">${body}</div></article>`;
-  showDocInPane(docName, html, docName);
-}
 
 // --- audio playback (jukebox mode) --------------------------------------
 // A single shared HTMLAudioElement, driven by the Lisp jukebox. The
@@ -2417,10 +1867,6 @@ const audio = createAudioController();
  *  and dispatch directly from the renderer, so they need the same
  *  expansion at their own entry. */
 const HOME = window.host?.homeDirectory ?? '';
-/** The editor's per-user data directory (where init.lisp, custom.lisp,
- *  faces.json live). Used by the snippet engine to find
- *  `<userData>/snippets`. Empty when the host can't resolve it. */
-const USER_DATA_DIR = window.host?.userDataDirectory ?? '';
 function expandTilde(path) {
   if (typeof path !== 'string' || HOME === '') return path;
   if (path === '~') return HOME;
@@ -2488,11 +1934,7 @@ async function openFileInteractive() {
  *  read fails — so a missing/broken setting never makes a transient doc
  *  sticky. */
 function pdfRestoreDefault() {
-  try {
-    return interpreter.evaluate('*pdf-restore-default*') === true;
-  } catch {
-    return false;
-  }
+  return rendererConfig['*pdf-restore-default*'] === true;
 }
 
 /** Route an open-file IPC result to its matching non-text view, when
@@ -2550,22 +1992,6 @@ function openAsMediaViewIfRecognised(result, { switch: shouldSwitch = true } = {
       kind: 'pdf',
       name: result.name,
       extras: { filePath: result.path, src: result.src, persist: pdfRestoreDefault() },
-    }));
-    return finalise();
-  }
-  // A `.rxlisp` file is a reactive Lisp notebook: open it through the
-  // notebook view, its `(cell …)` source backing `buffer.text` so the
-  // generic save path round-trips it.
-  if (result.notebookKind === true) {
-    views.push(createView({
-      kind: 'notebook',
-      name: result.name,
-      buffer: {
-        text: result.content ?? '',
-        filePath: result.path,
-        name: result.name,
-      },
-      extras: { notebookId: nextNotebookId() },
     }));
     return finalise();
   }
@@ -2739,59 +2165,6 @@ async function openFileByPath(filePath, {
 // `session.js` can consume it directly, without the legacy
 // buffer-record adapter shims.
 
-async function saveBufferInteractive() {
-  const view = session.currentView;
-  const buffer = view ? view.buffer : null;
-  if (buffer === null) {
-    repl.appendError('save: no buffer to save in this view');
-    return;
-  }
-  try {
-    let result = await window.host.saveFile(buffer.filePath ?? null, buffer.text);
-    if (result === null) return;
-    // The file changed on disk since we read it — another program rewrote
-    // it. Don't silently clobber that change: ask first. Cancelling is
-    // non-destructive (the buffer keeps its edits, the disk keeps its
-    // version), so the user can reload or diff before deciding.
-    if (result.conflict) {
-      const overwrite = window.confirm(
-        `"${result.name}" has changed on disk since you opened it.\n\n` +
-          'OK = overwrite it with your version.\n' +
-          'Cancel = write nothing and keep editing ' +
-          '(re-open the file to load the disk version).'
-      );
-      if (!overwrite) {
-        repl.appendError(
-          `save: "${result.name}" changed on disk — not overwritten. ` +
-            'Re-open the file to load the disk version.'
-        );
-        return;
-      }
-      result = await window.host.saveFile(buffer.filePath ?? null, buffer.text, {
-        force: true,
-      });
-      if (result === null || result.conflict) return;
-    }
-    buffer.filePath = result.path;
-    buffer.name = result.name;
-    // Mirror the rename onto the view (text views derive their
-    // display name from the buffer).
-    view.name = result.name;
-    dirtyBuffers.delete(buffer);
-    // The saved text is the new clean baseline, so a later undo back to
-    // it (or a re-edit) is measured against what's actually on disk.
-    markBufferSaved(buffer);
-    // The buffer is on disk now — drop its crash-recovery snapshot.
-    recovery.forget(buffer);
-    updateModeline();
-    notifyViewsChanged();
-    // Persist sticky notes alongside the file — this also covers a
-    // first save, when the buffer has only just gained a file path.
-    await flushMetadata(buffer);
-  } catch (error) {
-    repl.appendError(`save failed: ${error.message}`);
-  }
-}
 
 // --- sticky-note metadata ----------------------------------------------
 // Sticky notes persist to a `<file>.jmacs-metadata` companion file.
@@ -2839,6 +2212,18 @@ async function quitInteractive() {
   ) {
     return;
   }
+  await performShutdown();
+}
+
+/**
+ * The shutdown ritual, separated from the unsaved-changes check so it can run
+ * after EITHER path has decided to quit: the client-side `quitInteractive`
+ * (its own dirty confirm) OR the server-driven `quit` directive (P2c — the
+ * spine already walked the unsaved buffers across all windows, so it must NOT
+ * be re-checked here). Offers the workspace-remember prompt, flushes metadata,
+ * clears the recovery snapshots, and asks the host to quit.
+ */
+async function performShutdown() {
   // C2 (server mode): offer to REMEMBER this workspace — the ARRANGEMENT
   // (windows / panes / files / cursors / geometry), NOT the documents — before
   // quitting. Type a name to save a named workspace (it then shows in the launch
@@ -2872,408 +2257,13 @@ async function quitInteractive() {
 
 const minibuffer = createMinibuffer(document.getElementById('minibuffer-host'));
 
-/** Run an incremental forward search in the minibuffer. */
-function startSearch(initialDirection) {
-  const buffer = currentTextBuffer;
-  const origin = buffer.point;
-  let direction = initialDirection;
-  let lastMatch = -1;
-
-  /** Select the match at `index` so the editor highlights it. */
-  function showMatch(index, query) {
-    buffer.moveTo(index);
-    buffer.moveTo(index + query.length, { extend: true });
-    lastMatch = index;
-  }
-
-  /** Find `query` from offset `from` in `dir`. */
-  function find(query, from, dir) {
-    return dir === 'forward'
-      ? buffer.text.indexOf(query, from)
-      : buffer.text.lastIndexOf(query, from);
-  }
-
-  minibuffer.prompt(
-    initialDirection === 'forward' ? 'I-search: ' : 'I-search backward: ',
-    {
-      onChange(query) {
-        lastMatch = -1;
-        if (query === '') {
-          buffer.moveTo(origin);
-          minibuffer.setStatus('');
-          return;
-        }
-        const from = direction === 'forward' ? origin : Math.max(origin - 1, 0);
-        const index = find(query, from, direction);
-        if (index >= 0) {
-          showMatch(index, query);
-          minibuffer.setStatus('');
-        } else {
-          minibuffer.setStatus('no match');
-        }
-      },
-      onKey(key, query) {
-        // C-s / C-r advance to the next match, forward or backward.
-        if ((key === 'C-s' || key === 'C-r') && query !== '') {
-          direction = key === 'C-s' ? 'forward' : 'backward';
-          const base = lastMatch >= 0 ? lastMatch : origin;
-          const from = direction === 'forward' ? base + 1 : base - 1;
-          const index = find(query, from, direction);
-          if (index >= 0) {
-            showMatch(index, query);
-            minibuffer.setStatus('');
-          } else {
-            minibuffer.setStatus('no more matches');
-          }
-          return true;
-        }
-        return false;
-      },
-      onSubmit() {
-        buffer.clearMark(); // keep the cursor at the match
-        editorView.focus();
-      },
-      onCancel() {
-        buffer.moveTo(origin);
-        editorView.focus();
-      },
-    }
-  );
-}
 
 // --- incremental regexp search ----------------------------------------
 
-/**
- * Compile a JS RegExp from a source string, with the global flag for
- * forward scanning. Returns `null` for an invalid source — the regex
- * isearch swallows mid-typing errors silently.
- */
-function compileRegexpSource(source, flags = 'g') {
-  if (source === '') return null;
-  try {
-    return new RegExp(source, flags);
-  } catch {
-    return null;
-  }
-}
 
-/**
- * Expand REPLACEMENT against a regex match, honouring `$N` (capture
- * group N), `$&` (the whole match), and `$$` (a literal `$`). Anything
- * else is left alone — so `$x` becomes literal `$x`. This is the
- * standard JS String.replace replacement-string semantics, isolated so
- * the regex-replace and query-replace paths share the same expansion.
- *
- * `match` is the args object the RegExp.replace callback receives:
- * `[wholeMatch, group1, group2, ..., offset, fullString, groupsObj?]`.
- */
-function expandReplacement(replacement, match) {
-  return replacement.replace(/\$([\d&$])/g, (token, ch) => {
-    if (ch === '$') return '$';
-    if (ch === '&') return match[0];
-    const n = Number(ch);
-    const captured = match[n];
-    return captured === undefined ? '' : captured;
-  });
-}
 
-/**
- * The first regexp match in `text` at or after `from`. Returns
- * `{ start, end }` or `null`. The supplied RegExp must carry the `g`
- * flag (we drive `lastIndex` ourselves).
- */
-function regexpForwardMatch(text, regexp, from) {
-  regexp.lastIndex = Math.max(0, from);
-  const match = regexp.exec(text);
-  if (match === null) return null;
-  // Skip zero-length matches at the same position; they would loop.
-  if (match[0].length === 0) {
-    regexp.lastIndex = match.index + 1;
-    const retry = regexp.exec(text);
-    if (retry === null || retry[0].length === 0) return null;
-    return { start: retry.index, end: retry.index + retry[0].length };
-  }
-  return { start: match.index, end: match.index + match[0].length };
-}
 
-/**
- * The last regexp match in `text` strictly before `from` (so a backward
- * search past an existing match advances). Returns `{ start, end }` or
- * `null`.
- */
-function regexpBackwardMatch(text, regexp, from) {
-  regexp.lastIndex = 0;
-  const limit = Math.max(0, from);
-  let last = null;
-  let match;
-  while ((match = regexp.exec(text)) !== null) {
-    if (match.index >= limit) break;
-    last = { start: match.index, end: match.index + match[0].length };
-    // Guard against zero-length matches stalling lastIndex.
-    if (match[0].length === 0) regexp.lastIndex += 1;
-  }
-  return last;
-}
 
-/** Run an incremental regexp search in the minibuffer. */
-function startRegexpSearch(initialDirection) {
-  const buffer = currentTextBuffer;
-  const origin = buffer.point;
-  let direction = initialDirection;
-  let lastMatch = null; // { start, end } or null
-
-  /** Show a match by selecting it (the editor renders that). */
-  function showMatch(match) {
-    buffer.moveTo(match.start);
-    buffer.moveTo(match.end, { extend: true });
-    lastMatch = match;
-  }
-
-  /** Find the next match for `source` from `from` in `dir`. */
-  function find(source, from, dir) {
-    const regexp = compileRegexpSource(source);
-    if (regexp === null) return null;
-    return dir === 'forward'
-      ? regexpForwardMatch(buffer.text, regexp, from)
-      : regexpBackwardMatch(buffer.text, regexp, from);
-  }
-
-  minibuffer.prompt(
-    initialDirection === 'forward'
-      ? 'I-search regexp: '
-      : 'I-search regexp backward: ',
-    {
-      onChange(query) {
-        lastMatch = null;
-        if (query === '') {
-          buffer.moveTo(origin);
-          minibuffer.setStatus('');
-          return;
-        }
-        const from = direction === 'forward' ? origin : Math.max(origin, 0);
-        const match = find(query, from, direction);
-        if (match !== null) {
-          showMatch(match);
-          minibuffer.setStatus('');
-        } else {
-          minibuffer.setStatus('no match');
-        }
-      },
-      onKey(key, query) {
-        // C-M-s / C-M-r advance to the next match in either direction.
-        if ((key === 'C-M-s' || key === 'C-M-r') && query !== '') {
-          direction = key === 'C-M-s' ? 'forward' : 'backward';
-          const base = lastMatch !== null
-            ? (direction === 'forward' ? lastMatch.end : lastMatch.start)
-            : origin;
-          const from = direction === 'forward' ? base : base;
-          const match = find(query, from, direction);
-          if (match !== null) {
-            showMatch(match);
-            minibuffer.setStatus('');
-          } else {
-            minibuffer.setStatus('no more matches');
-          }
-          return true;
-        }
-        return false;
-      },
-      onSubmit() {
-        buffer.clearMark();
-        editorView.focus();
-      },
-      onCancel() {
-        buffer.moveTo(origin);
-        editorView.focus();
-      },
-    }
-  );
-}
-
-// --- command palette (M-x) ---------------------------------------------
-
-/** Run the apropos-doc fuzzy search in the minibuffer. */
-function startDocSearch() {
-  let names;
-  try {
-    names = listToArray(interpreter.call('doc-manifest')).map(String);
-  } catch (error) {
-    repl.appendError(
-      `apropos-doc: ${error.lispMessage ?? error.message}`
-    );
-    return;
-  }
-  if (names.length === 0) {
-    repl.appendOutput(
-      'apropos-doc: no docs are loaded — run `pnpm run docs` and reload.'
-    );
-    return;
-  }
-  minibuffer.prompt('Doc: ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        minibuffer.setStatus('no matching doc');
-        return;
-      }
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      try {
-        interpreter.evaluate(`(open-doc ${JSON.stringify(chosen)})`);
-      } catch (error) {
-        repl.appendError(
-          error.lispMessage ?? error.message ?? String(error)
-        );
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/** Run the command palette in the minibuffer. */
-function startCommandPalette() {
-  const names = [...new Set(listToArray(interpreter.call('command-names')))];
-
-  minibuffer.prompt('M-x ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        minibuffer.setStatus('no matching command');
-        return;
-      }
-      // The first match runs on Enter; show it bracketed.
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      try {
-        interpreter.evaluate(`(run-command (quote ${chosen}))`);
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/**
- * Switch to a buffer chosen by name, with completion, in the
- * minibuffer. A name that matches no open buffer creates a new one —
- * the minibuffer status shows when a submit would create rather than
- * switch.
- *
- * Phase 3b (Q4): the picker source is the global view list minus
- * (a) the current view (so the bracketed suggestion is always a
- * different view) and (b) any view currently *visible* in some other
- * pane — the user can't switch to a view that's already on screen in
- * another pane. The auto-duplicate path on `open-file-path!` covers
- * the "two views of the same file" workflow instead.
- */
-function startBufferSwitcher() {
-  const focused = currentPane();
-  const elsewhere = viewsVisibleInOtherPanes(focused);
-  const names = views
-    .filter((view, index) => index !== currentViewIndex && !elsewhere.has(view))
-    .map((v) => v.name);
-
-  minibuffer.prompt('Buffer: ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        const trimmed = query.trim();
-        minibuffer.setStatus(trimmed === '' ? '' : `[new view: ${trimmed}]`);
-        return;
-      }
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const trimmed = query.trim();
-      // An exact name switches; otherwise the best fuzzy match does.
-      // A blank Enter accepts whatever the bracketed suggestion is —
-      // the first fuzzy match against the empty query, i.e. the first
-      // candidate alphabetically.
-      const exact =
-        trimmed === ''
-          ? -1
-          : views.findIndex((v) => v.name === trimmed);
-      if (exact >= 0) {
-        switchToViewIndex(exact);
-        return;
-      }
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen !== undefined) {
-        switchToViewIndex(views.findIndex((v) => v.name === chosen));
-        return;
-      }
-      if (trimmed === '') return; // nothing to switch to, nothing to create.
-      // No open view matches the typed name — create a fresh text view.
-      views.push(createView({
-        kind: 'text',
-        buffer: createBuffer('', { name: trimmed }),
-      }));
-      switchToViewIndex(views.length - 1);
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
-
-/** Pick a command in the minibuffer and show its documentation. */
-function startDescribeCommand() {
-  const names = [...new Set(listToArray(interpreter.call('command-names')))];
-
-  minibuffer.prompt('Describe command: ', {
-    onChange(query) {
-      const matches = fuzzyFilter(query, names);
-      if (matches.length === 0) {
-        minibuffer.setStatus('no matching command');
-        return;
-      }
-      const shown = matches.slice(0, 6);
-      minibuffer.setStatus(
-        `[${shown[0]}]` +
-          (shown.length > 1 ? '  ' + shown.slice(1).join('  ') : '')
-      );
-    },
-    onSubmit(query) {
-      editorView.focus();
-      const chosen = fuzzyFilter(query, names)[0];
-      if (chosen === undefined) return;
-      try {
-        interpreter.call('describe-named-command', chosen);
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
-    },
-    onCancel() {
-      editorView.focus();
-    },
-  });
-}
 
 // --- Lisp interpreter and REPL -----------------------------------------
 
@@ -3337,6 +2327,72 @@ function displayCompletionsPanel(items, directory) {
   }
 }
 
+// Reusable doc-panel tabs in the utility dock. describe-key (C-h k) /
+// describe-command (C-h f) refill "Help"; apropos (C-h a) refills "Apropos".
+// Both are server-driven (the show-help / show-apropos directives) and use the
+// Completions-tab refill idiom so repeated lookups don't pile up tabs.
+const HELP_TAB_ID = 'help-view';
+const APROPOS_TAB_ID = 'apropos-view';
+
+/** Open (or refill in place) a reusable doc-panel tab in the utility dock. BODY
+ *  is rendered as Markdown and framed under HEADING in the doc-page shape the
+ *  `<doc-view>` lifts; an empty body shows the EMPTY placeholder. The dock is
+ *  revealed and the tab brought forward, but focus stays in the editor (click
+ *  the panel to scroll / press `q` to dismiss).
+ *
+ *  @param {{id: string, title: string, icon: string, heading: string,
+ *    body: string, empty?: string}} spec
+ */
+async function displayDocPanel({ id, title, icon, heading, body, empty }) {
+  let rendered;
+  try {
+    rendered = await renderMarkdownHtml(
+      typeof body === 'string' && body.length > 0 ? body : (empty ?? '_Nothing to show._')
+    );
+  } catch (error) {
+    repl.appendError(`${title} render failed: ${error.message}`);
+    return;
+  }
+  const html =
+    `<article class="doc-page docstring-page" data-node-id="${escapeHtml(heading)}">` +
+    `<h3 class="doc-name">${escapeHtml(heading)}</h3>\n` +
+    `<div class="doc-docstring">${rendered}</div></article>`;
+  const panel = utilityDock.hasTab(id) ? utilityDock.getPanel(id) : null;
+  if (panel && typeof panel.setHtml === 'function') {
+    panel.setHtml(html);
+  } else {
+    utilityDock.openUtilityPanel({
+      id,
+      title,
+      icon,
+      focus: false,
+      makePanel: () => createDocPanel({
+        html,
+        title,
+        icon,
+        openDoc: openDocInPane,
+        closeBuffer: () => utilityDock.closeUtilityTab(id),
+      }),
+    });
+  }
+  utilityDock.showUtilityDock();
+  utilityDock.activateUtilityTab(id);
+  // activateUtilityTab focuses the active tab's panel — but these help panels
+  // are focus:false by design (you keep typing in the editor). The key router
+  // only forwards keys while the editing surface is focused, so without this
+  // the NEXT chord (another C-h k) is dropped until you click back into the
+  // pane. Return focus to the editor next frame (after the dock's focus
+  // settles), unless a minibuffer prompt is up (don't steal its focus). Same
+  // shape as refocusServerView, which can't be reached from this scope.
+  requestAnimationFrame(() => {
+    if (minibuffer.isOpen()) return;
+    const v = serverViewClient && serverViewClient.getView();
+    if (v && typeof v.focus === 'function') {
+      try { v.focus(); } catch { /* ignore */ }
+    }
+  });
+}
+
 /** Double-click in the completions panel = activate (file-browser idiom): a
  *  file OPENS (submit the prompt — drops the panel, delivers the path); a
  *  directory is ENTERED — re-running TAB completion so its contents list and
@@ -3344,14 +2400,12 @@ function displayCompletionsPanel(items, directory) {
 function activateFromPanel(name) {
   const full = completionsDirectory + name;
   if (name.endsWith('/')) {
-    let next = full;
-    try {
-      const result = interpreter.call('minibuffer-tab-complete', full);
-      if (typeof result === 'string') next = result;
-    } catch (error) {
-      repl.appendError(`tab-complete: ${error.lispMessage ?? error.message}`);
-    }
-    minibuffer.setValue(next);
+    // A directory: descend — fill the input and ask the SERVER to complete it
+    // (the reply refreshes the panel via showCompletions), mirroring the
+    // minibuffer TAB path. (Was a renderer `minibuffer-tab-complete` against the
+    // idle interpreter — broken in server mode; this is the rehome.)
+    minibuffer.setValue(full);
+    if (serverViewClient) serverViewClient.requestMinibufferComplete(full);
   } else {
     minibuffer.submit(full);
   }
@@ -3381,2169 +2435,47 @@ function registerUtilityPanelFactory(name, makePanel) {
 registerUtilityPanelFactory('output', (handle, opts) =>
   createOutputPanel({ title: opts?.title, onClose: handle.close }));
 
-/** Cached doc-page names from `docs/build/manifest.json`. The
- *  `load-doc-manifest!` primitive returns this; populated near
- *  startup once the host has read the file. `null` means unknown
- *  / not loaded; `[]` means the manifest existed but is empty. */
-let docManifestNames = null;
 
-/** Cached face-overrides loaded from `faces.json` at startup. Lisp
- *  reads this via `load-face-overrides!` and installs it before the
- *  first paint, so any user overrides are present from the start.
- *  `null` until the file has been read (it may be missing entirely
- *  on first launch — that case fills it with `emptyOverrides()`). */
-let faceOverridesCache = null;
 
-/** The persisted user highlight rules, as the Lisp store shape
- *  (scope-key -> list of (pattern . face)) — built from faces.json at
- *  startup, or `null` when none were persisted. Installed via
- *  `installHighlightRules` after each stdlib (re)load. */
-let highlightRulesCache = null;
 
-/** The persisted user-created faces, as the Lisp `*user-faces*` map —
- *  built from faces.json at startup, `null` when none. Re-installed via
- *  `set-user-faces!` after each stdlib (re)load (a fresh stdlib drops
- *  the registry). */
-let userFacesCache = null;
 
-/** The Sym / Keyword constructors face-overrides.js needs to build
- *  Lisp-shaped maps. Passed in so that module stays free of a hard
- *  dependency on `@editor/lisp` (the unit tests use stand-ins). */
-const lispFactories = { keyword, sym };
 
-/** The pane-host the Lisp pane-primitives operate through. Phase 3a:
- *  the split / delete / navigate methods land here, backed by the
- *  immutable-replace tree helpers in `@editor/pane`. The host mutates
- *  `rootPane` (rebinding the module-level binding when a split or
- *  delete swaps a subtree) and reschedules a layout pass; the DOM and
- *  editor-view instances follow. */
-const paneHost = {
-  currentPane: () => currentPane(),
-  splitHorizontal: (pane, ratio, side) =>
-    splitPaneAtLeaf(pane, SPLIT_HORIZONTAL, ratio, side),
-  splitVertical: (pane, ratio, side) =>
-    splitPaneAtLeaf(pane, SPLIT_VERTICAL, ratio, side),
-  addPaneAtSplitter: (splitId) => addPaneAtSplitterId(splitId),
-  addPaneAtBorder: (side) => addPaneAtRootBorder(side),
-  deletePane: (pane) => deletePaneInTree(pane),
-  deleteOtherPanes: (pane) => deleteOtherPanesInTree(pane),
-  otherPane: () => focusNextPane(),
-  focusPaneDirection: (direction) => focusPaneByDirection(direction),
-  focusPane: (pane) => focusPaneHandle(pane),
-  balancePanes: () => balancePanesInTree(),
-  setSplitRatio: (pane, ratio) => setSplitRatioOnNode(pane, ratio),
-  // Phase 3b tabline-view operations. Implementations sit further
-  // down the file with the rest of the tabline mount machinery —
-  // these closures forward; the host pickle-shape is what
-  // pane-primitives.js depends on.
-  currentTabline: () => currentTablineView(),
-  promoteToTabline: (pane) => promoteToTablineOnPane(pane),
-  demoteTabline: (tlv) => demoteTablineView(tlv),
-  addTab: (tlv, view, index) => addTabToTabline(tlv, view, index),
-  removeTab: (tlv, index) => {
-    removeTabInTabline(tlv, index);
-    return tlv;
-  },
-  activateTab: (tlv, index) => {
-    activateTabInTabline(tlv, index);
-    return tlv;
-  },
-  setTablineEdge: (tlv, edge) => setTablineEdgeOnTabline(tlv, edge),
-  // Cross-tabline tab move + pane-view swap. Cover the workflows the
-  // user spelled out: "move a view from one pane to another" + "close
-  // a pane while keeping the view alive". (The latter is what
-  // `delete-pane!` already does; the move primitives below close the
-  // gap on the former.)
-  moveTab: (srcTlv, srcIdx, dstTlv, dstIdx) =>
-    moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx),
-  // swap-views / permute-views move the *frames* (swap leaf positions in
-  // the tree, relayout repositions the divs) so view DOM never moves and
-  // webview/pdf/shell panes survive. See plans/PANES-SWAP-PERMUTE.md.
-  swapPanes: (paneA, paneB) => swapPaneFrames(paneA, paneB),
-  permutePanes: (dests) => permutePaneFrames(dests),
-  panesInSpiralOrder: () => spiralOrderedLeaves(),
-};
 
-/** The view-host the Lisp view-primitives operate through. Every
- *  closure reads `views`/`currentViewIndex` live, so the host stays
- *  truthful as the editor switches and kills views.
- *
- *  Phase 2 of plans/PANES.md: `currentView` now resolves through the
- *  focused leaf pane (`paneHost.currentPane()?.view`). With one leaf
- *  this is identical to `views[currentViewIndex]`; the indirection
- *  matters when phase 3 introduces multiple leaves. */
-const viewHost = {
-  currentView: () => {
-    const pane = paneHost.currentPane();
-    if (pane && pane.kind === 'leaf' && pane.view) {
-      // Phase 3b focus-resolution shift: when the focused pane holds a
-      // tabline-view, the user is editing its active child — peel
-      // through (possibly several layers, Q10 nested tablines).
-      return peelTabline(pane.view);
-    }
-    // Fallback for the (vanishingly rare) no-pane / no-view case —
-    // keep the legacy index-based lookup so the editor never lands
-    // with a null current view during early startup.
-    return views[currentViewIndex] ?? null;
-  },
-  viewList: () => views.slice(),
-  // Toggle a minimap companion beside the focused leaf. SIDE ('left'|'right')
-  // and WIDTHFRACTION come from the `*minimap-*` defcustoms (the command
-  // reads them and passes them through).
-  toggleMinimap: (side, widthFraction) =>
-    toggleMinimapForFocusedLeaf(side, widthFraction),
-  switchToView: (target) => switchToView(target),
-  newView: (name) => {
-    const finalName = name ?? `untitled-${views.length + 1}`;
-    const view = createView({
-      kind: 'text',
-      buffer: createBuffer('', { name: finalName }),
-    });
-    views.push(view);
-    switchToViewIndex(views.length - 1);
-    return view;
-  },
-  killView: (target) => {
-    const idx = views.indexOf(target);
-    killViewAtIndex(idx);
-  },
-  // Phase 3b (Q5): cycle the focused pane's tabs only — a tabline-view
-  // advances to the next/prev tab; a plain-leaf pane has only one
-  // view in it so cycling is a no-op (returns the view itself).
-  nextView: () => {
-    dismissSplash();
-    const focused = currentPane();
-    if (focused && isTablineView(focused.view)) {
-      const tlv = focused.view;
-      if (tlv.tabs.length === 0) return null;
-      const nextIdx = (tlv.active + 1) % tlv.tabs.length;
-      activateTabInTabline(tlv, nextIdx);
-      // Sync currentViewIndex so legacy index-based callers (modeline
-      // count `i/N`, session save's current pointer) reflect the
-      // active tab.
-      const child = tlv.tabs[nextIdx];
-      const i = views.indexOf(child);
-      if (i >= 0) currentViewIndex = i;
-      updateModeline();
-      notifyViewsChanged();
-      return child;
-    }
-    // Plain-leaf pane: one view per pane, nothing to cycle.
-    if (focused && focused.view) return focused.view;
-    if (views.length === 0) return null;
-    // Defensive fallback (no focused pane): step to the next index,
-    // skipping any transient placeholder entries.
-    const next = nextNonPlaceholderIndex(currentViewIndex, 1);
-    return next < 0 ? null : switchToViewIndex(next);
-  },
-  previousView: () => {
-    dismissSplash();
-    const focused = currentPane();
-    if (focused && isTablineView(focused.view)) {
-      const tlv = focused.view;
-      if (tlv.tabs.length === 0) return null;
-      const prevIdx =
-        (tlv.active - 1 + tlv.tabs.length) % tlv.tabs.length;
-      activateTabInTabline(tlv, prevIdx);
-      const child = tlv.tabs[prevIdx];
-      const i = views.indexOf(child);
-      if (i >= 0) currentViewIndex = i;
-      updateModeline();
-      notifyViewsChanged();
-      return child;
-    }
-    if (focused && focused.view) return focused.view;
-    if (views.length === 0) return null;
-    const prev = nextNonPlaceholderIndex(currentViewIndex, -1);
-    return prev < 0 ? null : switchToViewIndex(prev);
-  },
-  findViewByName: (name) => views.find((v) => v.name === name) ?? null,
-  // The snapshot the *Buffer List* (view-menu) renders against. One
-  // hash-map per view, with :name, :kind, :mode, :line-count, :file,
-  // :modified. The major mode's display name lives on a text view's
-  // buffer; non-text views don't carry a mode.
-  listViewRecords: () => {
-    // Phase 3b (Q12): the :pane column is the 1-based spiral position of
-    // the pane showing each view (the swap-views / permute-views badge
-    // numbering — tracks on-screen position, not an internal leaf id);
-    // views in no pane (incl. buried tabs) are nil. Placeholders are
-    // transient chooser panes — never shown here (decision 2).
-    const paneByView = panePositionByView();
-    return views.filter((view) => !isPlaceholderView(view)).map((view) => {
-      const record = new Map();
-      record.set(keyword('name'), view.name ?? '');
-      record.set(keyword('kind'), view.kind);
-      const buffer = view.buffer;
-      const major = buffer ? buffer.majorMode : null;
-      const modeName =
-        major && typeof major.get === 'function'
-          ? major.get(keyword('name')) ?? NIL
-          : NIL;
-      record.set(keyword('mode'), modeName);
-      record.set(
-        keyword('line-count'),
-        buffer && typeof buffer.lineCount === 'number' ? buffer.lineCount : 0
-      );
-      const filePath = viewFilePath(view);
-      record.set(keyword('file'), filePath ?? NIL);
-      record.set(keyword('modified'), buffer ? dirtyBuffers.has(buffer) : false);
-      record.set(keyword('pane'), paneByView.get(view) ?? NIL);
-      return record;
-    });
-  },
-};
 
-// --- general process runner (run-process!) -----------------------------
-//
-// Each `(run-process! …)` call gets a monotonic runId (a counter, not a
-// timestamp/random — deterministic and collision-free for the session).
-// The on-exit Lisp procedure is parked in `runProcessCallbacks` keyed by
-// that id; the single `onRunProcessExit` listener (wired once, below)
-// looks it up when the host reports the exit, builds the result hash-map,
-// and applies the procedure exactly once.
-let nextRunId = 0;
-/** @type {Map<string, *>} runId → the parked on-exit Lisp procedure. */
-const runProcessCallbacks = new Map();
 
-const interpreter = createInterpreter({
-  write: (text) => repl.appendOutput(text),
-  primitives: {
-    ...createBufferPrimitives(session),
-    ...createViewPrimitives(viewHost),
-    ...createPanePrimitives(paneHost),
-    ...createLatexPrimitives(),
 
-    // File commands run async work and return at once.
-    'open-file!': () => {
-      openFileInteractive();
-      return NIL;
-    },
-    // Open a file by an explicit path — no dialog. The find-file
-    // minibuffer flow drives this with the path it has gathered.
-    // Returns nil; errors are reported in the REPL.
-    'open-file-path!': (args) => {
-      const filePath = expandTilde(String(args[0] ?? ''));
-      if (filePath === '') return NIL;
-      openFileByPath(filePath);
-      return NIL;
-    },
-    // `(open-element-view! SPEC)` — open a generic element-view from a
-    // Lisp spec hash-map (:tag :module :attrs :keyboard :title :on-ready).
-    // The single `element` kind hosts any custom element; the spec says
-    // which one. The Lisp `define-element-view` macro drives this. See
-    // plans/ELEMENT-VIEWS.md.
-    'open-element-view!': (args) => {
-      const spec = args[0];
-      if (!(spec instanceof Map)) {
-        throw new LispError('open-element-view!: expected a spec hash-map');
-      }
-      const field = (name) => spec.get(keyword(name));
-      const tag = lispText(field('tag'));
-      if (tag === '') {
-        throw new LispError('open-element-view!: spec needs a :tag');
-      }
-      const keyboardRaw = field('keyboard');
-      const onReadyRaw = field('on-ready');
-      const titleRaw = field('title');
-      const extras = {
-        tag,
-        moduleUrl: resolveElementModuleUrl(lispText(field('module'))),
-        attrs: parseElementAttrs(field('attrs')),
-        fit: normalizeFit(lispText(field('fit'))),
-        // A helper/satellite view (e.g. a bibliography panel) that acts on
-        // the *active* view and must never become the focused pane itself.
-        noFocus: field('no-focus') === true,
-        keyboard:
-          keyboardRaw === undefined || keyboardRaw === null || keyboardRaw === NIL
-            ? 'grab'
-            : lispText(keyboardRaw),
-        onReady:
-          onReadyRaw === undefined || onReadyRaw === null || onReadyRaw === NIL
-            ? null
-            : onReadyRaw,
-      };
-      const name =
-        titleRaw === undefined || titleRaw === null || titleRaw === NIL
-          ? tag
-          : lispText(titleRaw);
-      // Server mode: the renderer computes the spec (here — it owns
-      // define-element-view + host primitives), but the view must live as a
-      // SERVER data-source to get a pane slot + restore. Send the plain spec up;
-      // the server holds it + switches the leaf, and the client mounts
-      // <element-view> from the PANE_TREE. (onReady is a Lisp callback that
-      // can't cross the wire — deferred; noFocus is honoured server-side later.)
-      if (window.host && window.host.serverMode) {
-        if (serverViewClient) {
-          serverViewClient.openElementView({
-            name,
-            tag: extras.tag,
-            moduleUrl: extras.moduleUrl,
-            attrs: extras.attrs,
-            fit: extras.fit,
-            keyboard: extras.keyboard,
-            noFocus: extras.noFocus,
-          });
-        }
-        return NIL;
-      }
-      // A :no-focus panel (e.g. bib-search) opens BESIDE the document in
-      // its own split, keeping the editing focus on the document — and
-      // reuses an already-open instance of the same tag rather than
-      // stacking splits. A normal element-view replaces the focused pane.
-      if (extras.noFocus) {
-        const open = views.find((v) =>
-          v && v.kind === 'element' && v.tag === extras.tag &&
-          leafPanes(rootPane).some((l) => l.view === v));
-        if (open) return NIL; // already showing
-        const view = createView({ kind: 'element', name, extras });
-        views.push(view);
-        openNoFocusViewInSplit(view);
-        return NIL;
-      }
-      views.push(createView({ kind: 'element', name, extras }));
-      switchToViewIndex(views.length - 1);
-      return NIL;
-    },
-    // `(host-file-url ABS-PATH)` — turn an absolute host path into an
-    // `app://editor/__host__/…` URL the renderer can fetch. bib-search uses
-    // it to load the active document's .bib. The path's directory must be
-    // allowlisted; opening the document allowlisted its dir and the bib
-    // resolves under it, so this covers the common case. Returns "" for a
-    // non-absolute / empty path.
-    'host-file-url': (args) => {
-      const path = String(args[0] ?? '');
-      if (path === '' || !path.startsWith('/')) return '';
-      // Vouch for this specific file's real directory so the __host__
-      // route serves it even when it (or a symlink to it) lives outside a
-      // folder the user opened — e.g. a bibliography symlinked to a shared
-      // .bib. Best-effort; the fetch still 403s gracefully if it fails.
-      try {
-        if (window.host && typeof window.host.allowHostFile === 'function') {
-          window.host.allowHostFile(path);
-        }
-      } catch { /* ignore — fall through to the URL */ }
-      return hostFileUrl(path);
-    },
-    // `(find-file-new! PATH)` — visit a path that does NOT exist yet:
-    // open an empty text buffer whose file is PATH, so the next
-    // `save-buffer` (C-x C-s) creates it. Emacs's find-file-on-a-missing-
-    // file behaviour. If a view already visits PATH, just switch to it.
-    // The file is NOT written to disk here — only on save. Returns nil.
-    'find-file-new!': (args) => {
-      const filePath = expandTilde(String(args[0] ?? ''));
-      if (filePath === '') return NIL;
-      const existing = views.findIndex((v) => viewFilePath(v) === filePath);
-      if (existing >= 0) {
-        switchToViewIndex(existing);
-        return NIL;
-      }
-      const name = filePath.slice(filePath.lastIndexOf('/') + 1) || filePath;
-      const buffer = createBuffer('', { name });
-      buffer.filePath = filePath;
-      const view = createView({ kind: 'text', buffer });
-      views.push(view);
-      notifyViewsChanged();
-      switchToViewIndex(views.length - 1);
-      return NIL;
-    },
-    // `(clipboard-text)` — the system clipboard's plain text (''
-    // when empty or unavailable). The kill ring's `yank` reads this so
-    // C-y pastes text copied in another application.
-    'clipboard-text': () => {
-      try {
-        const text = window.host.clipboardReadText();
-        return typeof text === 'string' ? text : '';
-      } catch {
-        return '';
-      }
-    },
-    // `(clipboard-set-text! TEXT)` — write TEXT to the system clipboard.
-    // The kill ring mirrors every kill/copy here so editor kills paste
-    // into other apps. Returns nil.
-    'clipboard-set-text!': (args) => {
-      try {
-        window.host.clipboardWriteText(String(args[0] ?? ''));
-      } catch {
-        // No clipboard host (e.g. headless): silently skip.
-      }
-      return NIL;
-    },
-    // Show a transient message in the minibuffer's echo area (the
-    // status line at the foot of the window). Used by the keymap to
-    // surface a mid-build chord prefix ("C-x-"), among other things.
-    'show-status!': (args) => {
-      minibuffer.setStatus(String(args[0] ?? ''));
-      return NIL;
-    },
-    // `(enter-add-pane-mode!)` — toggle the visual add-pane macro: an
-    // overlay over #editor-host that lights up every splitter and the
-    // four outer borders; click one to insert a fresh pane there. A
-    // second call (or Escape, or a click on overlay empty space)
-    // cancels without inserting. Returns nil.
-    'enter-add-pane-mode!': () => {
-      if (addPaneHandle && addPaneHandle.active) {
-        addPaneHandle.exit();
-        addPaneHandle = null;
-        return NIL;
-      }
-      addPaneHandle = enterAddPaneMode({
-        host: editorHostEl,
-        getRootPane: () => rootPane,
-        onPickSplitter: (splitId) => {
-          addPaneAtSplitterId(splitId);
-          addPaneHandle = null;
-        },
-        onPickBorder: (side) => {
-          addPaneAtRootBorder(side);
-          addPaneHandle = null;
-        },
-      });
-      // The user might dismiss via Escape — clear our handle so the
-      // next entry doesn't try to exit() a dead overlay.
-      const original = addPaneHandle.exit;
-      addPaneHandle.exit = () => {
-        original();
-        addPaneHandle = null;
-      };
-      return NIL;
-    },
-    // `(enter-move-views-mode! kind)` — enter the swap-views /
-    // permute-views overlay (KIND is 'swap or 'permute). Numbers every
-    // pane and reads digit input over the whole window (so it works with
-    // a browser pane focused); on Enter it moves the frames. Re-entering
-    // toggles the overlay off. See plans/PANES-SWAP-PERMUTE.md.
-    'enter-move-views-mode!': (args) => {
-      if (moveViewHandle && moveViewHandle.active) {
-        moveViewHandle.exit();
-        moveViewHandle = null;
-        return NIL;
-      }
-      const raw = args[0];
-      const name =
-        typeof raw === 'string'
-          ? raw
-          : raw && typeof raw === 'object' && typeof raw.name === 'string'
-            ? raw.name
-            : 'swap';
-      const mode = name === 'permute' ? 'permute' : 'swap';
-      moveViewHandle = enterMoveViewsMode({
-        mode,
-        host: editorHostEl,
-        getRootPane: () => rootPane,
-        onCommit: (assignments) => {
-          moveViewHandle = null;
-          if (mode === 'swap') {
-            const panes = spiralOrderedLeaves();
-            const a = panes[assignments[0] - 1];
-            const b = panes[assignments[1] - 1];
-            if (a && b) swapPaneFrames(a, b);
-          } else {
-            permutePaneFrames(assignments);
-          }
-        },
-      });
-      // Clear the handle on any exit (Escape / click / commit), so the
-      // next entry doesn't try to exit() a dead overlay.
-      if (moveViewHandle) {
-        const original = moveViewHandle.exit;
-        moveViewHandle.exit = () => {
-          original();
-          moveViewHandle = null;
-        };
-      }
-      return NIL;
-    },
-    // Push the *tab-width* setting onto the document root as the
-    // `--tab-width` CSS variable AND cache the value for the
-    // renderer's cursor-positioning math. `.editor-line` and the
-    // directory-columns preview line read the CSS var via
-    // `tab-size: var(--tab-width)`; the cached number is what
-    // `getTabWidth` returns to createEditorView so the cursor /
-    // selection rects line up with the rendered glyph when the line
-    // contains tabs. Called once on startup (after stdlib loads) and
-    // again from the *tab-width* defcustom's on-change hook whenever
-    // the user changes it.
-    'set-css-tab-width!': (args) => {
-      const value = Number(args[0]);
-      const width = Number.isFinite(value) && value > 0 ? value | 0 : 4;
-      document.documentElement.style.setProperty('--tab-width', String(width));
-      currentTabWidth = width;
-      return NIL;
-    },
-    // Paint the editor's line spacing onto the `--line-height` CSS var, which
-    // `.editor { line-height: var(--line-height) }` reads — so every line's
-    // `1lh`-based position reflows in step (no re-render needed). Driven by
-    // the *line-height* defcustom: once on startup, then on its on-change.
-    // Clamped to a sane multiple so a fat-fingered value can't break layout.
-    'set-css-line-height!': (args) => {
-      const value = Number(args[0]);
-      const lh = Number.isFinite(value) && value >= 1 && value <= 3 ? value : 1.35;
-      document.documentElement.style.setProperty('--line-height', String(lh));
-      return NIL;
-    },
-    'clear-status!': () => {
-      minibuffer.clearStatus();
-      return NIL;
-    },
-    // Show CANDIDATES (a list of display strings; a directory carries a
-    // trailing '/') in a transient, scrollable utility-dock tab — the
-    // home for find-file's ambiguous TAB completions, which used to be
-    // crammed into the non-scrolling inline status line. Opened with
-    // `focus: false` so the minibuffer keeps focus while the user keeps
-    // typing / TABbing. Updating an open panel reuses it in place (no
-    // re-activation) so it never steals focus mid-keystroke. The tab is
-    // removed by `clear-completions!` (on TAB progress) or when the
-    // completing minibuffer closes (see `open-completing-minibuffer!`).
-    'show-completions!': (args) => {
-      displayCompletionsPanel(listToArray(args[0] ?? NIL).map(String), String(args[1] ?? ''));
-      return NIL;
-    },
-    'clear-completions!': () => {
-      utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
-      return NIL;
-    },
-    // `(view-modified?)` — whether the current view's buffer has unsaved
-    // changes (the same dirty set the modeline ● and the quit guard
-    // read). `kill-view`'s confirm-before-kill guard asks this before
-    // destroying a buffer.
-    'view-modified?': () => {
-      const view = views[currentViewIndex];
-      const buffer = view && view.kind === 'text' ? view.buffer : null;
-      return buffer ? dirtyBuffers.has(buffer) : false;
-    },
-    // `(new-scratch-view!)` — a fresh Lisp scratch view, seeded like the
-    // first-run scratch.lisp and uniquely named (scratch.lisp,
-    // scratch-2.lisp, …). Routed through switchToViewIndex, so it joins
-    // the focused pane as a new tab when that pane holds a tabline.
-    // Needed because the startup seed views are deliberately dropped on
-    // session restore — this conjures a scratch mid-session.
-    'new-scratch-view!': () => {
-      const names = new Set(views.map((v) => v.name));
-      let name = 'scratch.lisp';
-      for (let i = 2; names.has(name); i += 1) name = `scratch-${i}.lisp`;
-      const view = createView({
-        kind: 'text',
-        buffer: createBuffer(SCRATCH, { name }),
-      });
-      views.push(view);
-      switchToViewIndex(views.length - 1);
-      return view;
-    },
-    // --- citation.js bridges -------------------------------------------
-    // The renderer-side wrapper (`packages/renderer/src/citation.js`)
-    // owns the heavy bundle. These primitives are thin string-in /
-    // string-out shells so the Lisp side never sees JS objects — a
-    // *bibliography handle* is just the CSL-JSON serialised as a
-    // string. Errors are caught and surfaced as a Lisp error message.
+// (Jukebox auto-advance was a renderer audio.onEnded → jukebox-track-ended call
+// against the idle interpreter. The jukebox is a server data-source now; if
+// playback should auto-advance in server mode, the spine drives it. Filed.)
 
-    // `(read-file-text! PATH)` — synchronously read the file at PATH
-    // (tilde-expanded by the host) and return its UTF-8 contents as a
-    // string. Returns nil on read failure. Used by `cite.lisp`'s
-    // `load-bibliography` and available to any Lisp code that needs
-    // file content inline.
-    'read-file-text!': (args) => {
-      const path = String(args[0] ?? '');
-      if (path === '') return NIL;
-      const text = window.host.readFileTextSync(path);
-      return typeof text === 'string' ? text : NIL;
-    },
-    // `(citation-parse SOURCE)` — parse a bibliographic source (BibTeX,
-    // BibLaTeX, CSL-JSON, RIS-via-csl-json, etc. — Citation.js
-    // auto-detects from content) and return the CSL-JSON serialisation
-    // of its entries. The result is the handle every other citation
-    // primitive expects.
-    'citation-parse': (args) => {
-      const source = String(args[0] ?? '');
-      if (source === '') return '';
-      try { return parseCitations(source); }
-      catch (error) {
-        throw new LispError(`citation-parse: ${error.message ?? error}`);
-      }
-    },
-    // `(citation-parse-lenient SOURCE)` — like `citation-parse`, but
-    // tolerant: a single entry Citation.js can't parse (e.g. a name field
-    // with a bare TeX accent `Fran{\c}ois`) would otherwise throw away the
-    // WHOLE bibliography. Returns a record `{:handle CSL-JSON :skipped N}`;
-    // N is how many entries were dropped. The RefTeX cite picker uses this
-    // so one bad entry never blanks the picker.
-    'citation-parse-lenient': (args) => {
-      const source = String(args[0] ?? '');
-      try {
-        const { json, skipped } = parseCitationsLenient(source);
-        return record({ handle: json, skipped });
-      } catch (error) {
-        throw new LispError(`citation-parse-lenient: ${error.message ?? error}`);
-      }
-    },
-    // `(citation-format-bibliography HANDLE [STYLE [FORMAT [LANG]]])`
-    // — render every entry in HANDLE as a bibliography. STYLE is a
-    // CSL style id (default `*citation-style*` — the Lisp side
-    // resolves it before calling here, or passes nil for `apa`).
-    // FORMAT is `'text` or `'html`. LANG is a BCP-47 locale.
-    'citation-format-bibliography': (args) => {
-      const handle = String(args[0] ?? '');
-      if (handle === '') return '';
-      const style = args[1] != null && args[1] !== NIL ? String(args[1]) : 'apa';
-      const format = args[2] != null && args[2] !== NIL ? String(args[2]) : 'text';
-      const lang = args[3] != null && args[3] !== NIL ? String(args[3]) : 'en-US';
-      try { return formatBibliography(handle, { style, format, lang }); }
-      catch (error) {
-        throw new LispError(`citation-format-bibliography: ${error.message ?? error}`);
-      }
-    },
-    // `(citation-format HANDLE [STYLE [FORMAT [LANG]]])` — render an
-    // in-text citation for the entries in HANDLE. Same arg shape as
-    // `citation-format-bibliography`.
-    'citation-format': (args) => {
-      const handle = String(args[0] ?? '');
-      if (handle === '') return '';
-      const style = args[1] != null && args[1] !== NIL ? String(args[1]) : 'apa';
-      const format = args[2] != null && args[2] !== NIL ? String(args[2]) : 'text';
-      const lang = args[3] != null && args[3] !== NIL ? String(args[3]) : 'en-US';
-      try { return formatCitation(handle, { style, format, lang }); }
-      catch (error) {
-        throw new LispError(`citation-format: ${error.message ?? error}`);
-      }
-    },
-    // `(citation-keys HANDLE)` — the BibTeX / CSL-JSON keys present in
-    // HANDLE, as a Lisp list of strings. Useful for building a picker.
-    'citation-keys': (args) => {
-      const handle = String(args[0] ?? '');
-      if (handle === '') return NIL;
-      try {
-        const keys = citationKeys(handle);
-        let acc = NIL;
-        for (let i = keys.length - 1; i >= 0; i -= 1) acc = cons(keys[i], acc);
-        return acc;
-      } catch (error) {
-        throw new LispError(`citation-keys: ${error.message ?? error}`);
-      }
-    },
-    // `(citation-entries HANDLE)` — a best-effort projection of each
-    // entry in HANDLE into a picker-friendly hash-map
-    // `{:key :author :year :title}`. `author` is the first author's
-    // family (or a "given family" join, or an institutional literal);
-    // `year` is the issued year as an integer; missing fields are nil.
-    // This drives a citation picker (downstream of this branch).
-    'citation-entries': (args) => {
-      const handle = String(args[0] ?? '');
-      if (handle === '') return NIL;
-      try {
-        const entries = citationEntries(handle);
-        const records = entries.map((e) => {
-          const map = new Map();
-          map.set(keyword('key'), e.key ?? '');
-          map.set(keyword('author'), e.author == null ? NIL : e.author);
-          map.set(keyword('year'), e.year == null ? NIL : e.year);
-          map.set(keyword('title'), e.title == null ? NIL : e.title);
-          return map;
-        });
-        return arrayToList(records);
-      } catch (error) {
-        throw new LispError(`citation-entries: ${error.message ?? error}`);
-      }
-    },
-    // `(citation-format-entries HANDLE STYLE)` — format each entry in
-    // HANDLE (a parsed-bib handle from `citation-parse`) to HTML via the
-    // CSL STYLE, returned as a list of `{:key :html}` records in entry
-    // order. The HTML carries the style's inline markup (italics,
-    // numbering) so the cite picker can show a professionally formatted
-    // reference per row; the inserted text is still `\cite{key}`. STYLE is
-    // a template id — a built-in (`apa`/`vancouver`/`harvard1`) or one
-    // registered via `citation-register-style!`. Returns nil for an empty
-    // handle.
-    'citation-format-entries': (args) => {
-      const handle = String(args[0] ?? '');
-      if (handle === '') return NIL;
-      const style = args[1] != null && args[1] !== NIL ? String(args[1]) : 'apa';
-      try {
-        const entries = formatBibliographyEntries(handle, { style });
-        return arrayToList(
-          entries.map((e) => record({ key: e.key ?? '', html: e.html ?? '' }))
-        );
-      } catch (error) {
-        throw new LispError(`citation-format-entries: ${error.message ?? error}`);
-      }
-    },
-    // `(citation-format-keys HANDLE KEYS-CSV STYLE)` — format ONLY the
-    // entries in HANDLE whose id is in the comma-separated KEYS-CSV, as a
-    // list of `{:key :html}`. The cite picker calls this for just the rows
-    // it is showing, so a large bibliography is never formatted whole
-    // (formatting is the costly step; the cheap key/author/year/title
-    // index drives filtering). Unknown keys are silently absent.
-    'citation-format-keys': (args) => {
-      const handle = String(args[0] ?? '');
-      const keysCsv = String(args[1] ?? '');
-      if (handle === '' || keysCsv === '') return NIL;
-      const style = args[2] != null && args[2] !== NIL ? String(args[2]) : 'apa';
-      try {
-        const wanted = new Set(
-          keysCsv.split(',').map((s) => s.trim()).filter(Boolean)
-        );
-        const subset = JSON.parse(handle).filter((e) => wanted.has(e.id));
-        const entries = formatBibliographyEntries(JSON.stringify(subset), { style });
-        return arrayToList(
-          entries.map((e) => record({ key: e.key ?? '', html: e.html ?? '' }))
-        );
-      } catch (error) {
-        throw new LispError(`citation-format-keys: ${error.message ?? error}`);
-      }
-    },
-    // `(citation-register-style! XML)` — register a custom CSL style from
-    // its XML and return the template id to pass as STYLE to
-    // `citation-format-entries`. Lets `*reftex-cite-style*` point at a
-    // user-supplied `.csl` file for any style beyond the three built-ins.
-    // Idempotent (re-registering a known id is a no-op).
-    'citation-register-style!': (args) => {
-      const xml = String(args[0] ?? '');
-      if (xml === '') return NIL;
-      try {
-        return registerCslStyle(xml);
-      } catch (error) {
-        throw new LispError(`citation-register-style!: ${error.message ?? error}`);
-      }
-    },
 
-    // --- LaTeX / RefTeX host primitives --------------------------------
-    // (The pure scanning + path helpers are provided by
-    // createLatexPrimitives, spread in above. These need app.js scope:
-    // the filesystem, the view list, the process runner, the pdf
-    // singleton.)
-
-    // `(file-exists? PATH)` — #t when PATH (tilde-expanded host-side)
-    // names an existing file or directory, #f otherwise. Synchronous,
-    // mirroring `read-file-text!`. RefTeX uses it to skip \input chains
-    // whose targets are absent.
-    'file-exists?': (args) => {
-      const path = String(args[0] ?? '');
-      if (path === '') return false;
-      return window.host.fileExistsSync(path) === true;
-    },
-
-    // `(view-file-path VIEW)` — the filesystem path associated with
-    // VIEW (its buffer's file, or a non-text view's own path), or nil.
-    // Thin wrapper over the `viewFilePath` derivation helper.
-    'view-file-path': (args) => {
-      const path = viewFilePath(args[0]);
-      return typeof path === 'string' ? path : NIL;
-    },
-
-    // `(set-view-persistent! VIEW BOOL)` — set whether the session
-    // restores VIEW across a relaunch. Most non-text views are ephemeral;
-    // this opts a specific one (e.g. a latexed-output PDF) back in. BOOL
-    // is Lisp-truthy (anything but #f turns it on). Returns BOOL.
-    'set-view-persistent!': (args) => {
-      const view = args[0];
-      const on = args[1] !== false;
-      if (view && typeof view === 'object' && 'kind' in view) {
-        view.persist = on;
-        activeSession().save();
-      }
-      return on;
-    },
-    // `(view-persistent? VIEW)` — #t when VIEW is flagged to survive a
-    // relaunch, #f otherwise (the default for most non-text views).
-    'view-persistent?': (args) => {
-      const view = args[0];
-      return !!(view && typeof view === 'object' && view.persist === true);
-    },
-
-    // `(view-directory VIEW)` — the directory containing VIEW's file,
-    // or nil when VIEW has no path. The compile/view loop runs the
-    // LaTeX toolchain in this directory.
-    'view-directory': (args) => {
-      const path = viewFilePath(args[0]);
-      return typeof path === 'string' ? pathDirname(path) : NIL;
-    },
-
-    // `(run-process! PROGRAM ARGS CWD ON-EXIT)` — spawn PROGRAM (a
-    // string) with ARGS (a Lisp list of strings) in CWD (a directory
-    // string, or nil for the default). ON-EXIT is a Lisp procedure
-    // called once, with one argument: a hash-map
-    // `{:stdout STR :stderr STR :code INT-OR-NIL}` (code nil when the
-    // process was killed by a signal or failed to spawn). The host
-    // spawns with NO shell interpretation. Returns the runId string.
-    'run-process!': (args) => {
-      const program = String(args[0] ?? '');
-      if (program === '') return NIL;
-      const argList = args[1] != null && args[1] !== NIL
-        ? listToArray(args[1]).map((a) => String(a))
-        : [];
-      const cwd = args[2] != null && args[2] !== NIL ? String(args[2]) : undefined;
-      const onExit = args[3];
-
-      const runId = `run-${nextRunId++}`;
-      if (onExit != null && onExit !== NIL) {
-        runProcessCallbacks.set(runId, onExit);
-      }
-      window.host.runProcess(runId, program, argList, cwd ? { cwd } : {});
-      return runId;
-    },
-
-    // `(pdf-reload! [PATH])` — reload the PDF view after a recompile.
-    // A recompile produces the SAME path with NEW bytes, which the
-    // pdf-view's same-path load guard would skip; `.reload()` bypasses
-    // it. With no PATH, reloads the singleton's current PDF; with a
-    // PATH, only reloads when the singleton is showing that file. A
-    // no-op (returns nil) when no PDF is open.
-    'pdf-reload!': (args) => {
-      const current = pdfView.buffer;
-      if (!current) return NIL;
-      const wanted = args[0] != null && args[0] !== NIL
-        ? String(args[0]) : null;
-      if (wanted !== null && viewFilePath(current) !== wanted) return NIL;
-      if (typeof pdfView.reload === 'function') pdfView.reload();
-      return NIL;
-    },
-
-    // `(pdf-current-path)` — the filesystem path of the PDF the singleton
-    // pdf-view is currently showing, or nil when no PDF is open. Inverse
-    // SyncTeX resolves the master/output PDF from this — the clicked PDF
-    // is the one on screen, and `synctex edit -o <that.pdf>` resolves the
-    // source `Input:` file itself, so no master detection is needed.
-    'pdf-current-path': () => {
-      const current = pdfView.buffer;
-      if (!current) return NIL;
-      const path = viewFilePath(current);
-      return typeof path === 'string' ? path : NIL;
-    },
-
-    // `(pdf-synctex-show! PATH PAGE X Y [W H])` — forward SyncTeX: scroll
-    // the singleton PDF (when it is showing PATH) to PAGE and flash a
-    // transient highlight at the SyncTeX-reported source spot. X/Y are the
-    // click point and W/H the optional box size, all in PDF points (PAGE
-    // 1-based). A no-op (returns nil) when no PDF is open or the singleton
-    // is showing a different file — mirrors `pdf-reload!`.
-    'pdf-synctex-show!': (args) => {
-      const current = pdfView.buffer;
-      if (!current) return NIL;
-      const wanted = args[0] != null && args[0] !== NIL ? String(args[0]) : null;
-      if (wanted !== null && viewFilePath(current) !== wanted) return NIL;
-      const page = Number(args[1]);
-      const x = Number(args[2]);
-      const y = Number(args[3]);
-      if (!Number.isFinite(page) || !Number.isFinite(x) || !Number.isFinite(y)) {
-        return NIL;
-      }
-      const w = args.length > 4 && args[4] !== NIL ? Number(args[4]) : 0;
-      const h = args.length > 5 && args[5] !== NIL ? Number(args[5]) : 0;
-      if (typeof pdfView.syncTexShow === 'function') {
-        // The box anchor is (x, y) here: latex-synctex.lisp passes the
-        // box's h/v as X/Y so the highlight covers the box, not just the
-        // click point. `h_` avoids clobbering the box-height with the
-        // anchor `h`.
-        pdfView.syncTexShow(page, x, y, { h: x, v: y, w, h_: h });
-      }
-      return NIL;
-    },
-
-    // The current user's home directory — find-file uses it as the
-    // starting point for its TAB-completion path. An empty string is
-    // returned when the host does not know the home (unlikely).
-    'home-directory': () => HOME,
-    // --- snippet support (packages/stdlib/lisp/snippets.lisp) ----------
-    // The user's snippet root directory — `<userData>/snippets`. The
-    // snippet engine searches `<root>/<mode>/` for trigger files and
-    // reads `.yas-parents` from each mode directory. Returns "" when the
-    // host can't resolve userData (then only the built-in starter set is
-    // available). The directory is not created here — a missing directory
-    // simply yields no user snippets.
-    'snippet-user-directory': () =>
-      USER_DATA_DIR === '' ? '' : `${USER_DATA_DIR}/snippets`,
-    // Format a date/time string for the built-in date snippets. KIND is
-    // "date" (YYYY-MM-DD), "datetime" (YYYY-MM-DD HH:MM) or "year"
-    // (YYYY). Snippet bodies use the backtick forms `date` / `datetime` /
-    // `year`, which the engine resolves through this primitive.
-    'snippet-date-string': (args) => {
-      const kind = String(args[0] ?? 'date');
-      const now = new Date();
-      const pad = (n) => String(n).padStart(2, '0');
-      const ymd =
-        `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-      if (kind === 'year') return String(now.getFullYear());
-      if (kind === 'datetime') {
-        return `${ymd} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
-      }
-      return ymd;
-    },
-    // Open an image file at PATH (a string) as an image-kind buffer.
-    // Mirrors `open-file!` for an explicit path; jukebox-mode uses this
-    // for M-RET on the album-art file.
-    'open-image-file!': (args) => {
-      const filePath = expandTilde(String(args[0] ?? ''));
-      if (filePath === '') return NIL;
-      openImageByPath(filePath);
-      return NIL;
-    },
-    // Open any file at PATH through the dialog-free path, routing it
-    // through the same image / audio / video / text logic the dialog
-    // uses. The smoke arm calls this to mount audio/video buffers
-    // without a dialog stub; users can call it from the REPL too.
-    'open-file-path!': (args) => {
-      const filePath = expandTilde(String(args[0] ?? ''));
-      if (filePath === '') return NIL;
-      openFileByPath(filePath);
-      return NIL;
-    },
-    // `(open-file-in-split! PATH [ORIENTATION [SIDE [PERSIST]]])` — the
-    // programmatic counterpart to the placeholder-showing `split-*!`
-    // primitives: split the focused pane and open PATH directly in the
-    // new sibling pane, with no chooser/placeholder and no orphaned-view
-    // residue (the source|PDF layout latex-view wants). ORIENTATION is a
-    // symbol/keyword `horizontal` (default) / `vertical`; SIDE is `after`
-    // (default) / `before`. PERSIST (Lisp-truthy, default #f) flags the
-    // opened view session-persistent — threaded here so latex-view can
-    // mark its output PDF without racing the async open for the handle.
-    // Fires the async open like `open-file-path!` and returns nil (the
-    // split lands once the file resolves).
-    'open-file-in-split!': (args) => {
-      const filePath = expandTilde(String(args[0] ?? ''));
-      if (filePath === '') return NIL;
-      const orientation =
-        symbolNameOf(args[1]) === 'vertical' ? SPLIT_VERTICAL : SPLIT_HORIZONTAL;
-      const side = symbolNameOf(args[2]) === 'before' ? 'before' : 'after';
-      const persist = args.length > 3 && args[3] !== false && args[3] !== NIL;
-      splitAndOpenFile(filePath, orientation, side, persist);
-      return NIL;
-    },
-    // `(set-view-text! NAME TEXT)` — replace the whole text of the text
-    // view named NAME, creating it (a fresh text view) if absent, WITHOUT
-    // changing the focused pane. The compile loop uses this to update
-    // *TeX output* / *TeX errors* in place: the old approach switched the
-    // focused pane to the view, set its text, and switched back, which
-    // (a) refused + clobbered the current buffer when the view was already
-    // shown in another pane (switchToView's guard), and (b) stole focus.
-    // A displayed view re-renders via its buffer's change notification.
-    // Returns the view, or nil (empty name, or a non-text view of that
-    // name we won't clobber).
-    'set-view-text!': (args) => {
-      const name = String(args[0] ?? '');
-      const text = String(args[1] ?? '');
-      if (name === '') return NIL;
-      const existing = views.find((v) => v.name === name);
-      if (existing) {
-        if (!existing.buffer) return NIL;
-        existing.buffer.setText(text);
-        return existing;
-      }
-      const view = createView({
-        kind: 'text',
-        buffer: createBuffer(text, { name }),
-      });
-      views.push(view);
-      if (viewListView && typeof viewListView.refresh === 'function') {
-        viewListView.refresh();
-      }
-      return view;
-    },
-    // Open a directory-tree buffer rooted at `path`. The view lists
-    // the directory's entries with FontAwesome icons; folders expand
-    // on click; files route through the same open path as the REPL.
-    // The path is resolved to a canonical absolute form via expandTilde
-    // so '~/Source' works as expected.
-    'open-directory-tree!': (args) => {
-      const rootPath = expandTilde(String(args[0] ?? ''));
-      if (rootPath === '') return NIL;
-      const view = ensureDirectoryTreeViewForPath(rootPath);
-      switchToViewIndex(views.indexOf(view));
-      return NIL;
-    },
-    // Open a file double-clicked in a directory tree-view, routing it to
-    // the pane chosen by TARGET (`*directory-tree-open-target*`): 'editing-
-    // pane (the main editing area, default), 'other-pane, or 'this-pane.
-    // The tree-view's `directory-tree-open-file` Lisp function calls this.
-    'open-file-from-tree!': (args) => {
-      const path = String(args[0] ?? '');
-      if (path === '') return NIL;
-      // TARGET is either a pane id (a string — an explicit wired leaf) or a
-      // symbol ('editing-pane / 'other-pane / 'this-pane — the heuristic).
-      const raw = args[1];
-      const target =
-        typeof raw === 'string' && raw !== ''
-          ? raw
-          : symbolNameOf(raw) || 'editing-pane';
-      openFileFromTree(path, target);
-      return NIL;
-    },
-    // The pane id the current dir-tree opens files into (wired by the
-    // project), or nil — read by the `directory-tree-open-file` Lisp fn.
-    'current-directory-tree-target': () => {
-      const treeView = projectDirTreeView();
-      const id = treeView && treeView.openTargetPaneId;
-      return typeof id === 'string' && id !== '' ? id : NIL;
-    },
-    // Wire the current dir-tree to open files into pane PANE-ID (a leaf id),
-    // or clear it with nil. Lets Lisp point a tree at a specific pane.
-    'set-directory-tree-target!': (args) => {
-      const treeView = projectDirTreeView();
-      if (!treeView) return NIL;
-      const raw = args[0];
-      treeView.openTargetPaneId =
-        raw == null || raw === NIL || raw === '' ? null : String(raw);
-      return NIL;
-    },
-    // Mark the current pane focusable (#t) or passive (#f). A passive pane
-    // never becomes the active pane — clicking still works (the view acts
-    // on the active pane), but focus stays in the editing area. This is how
-    // Lisp builds Nova-style sidebars. Making the current pane passive moves
-    // focus to the next focusable pane.
-    'set-pane-focusable!': (args) => {
-      if (currentPaneId === null) return NIL;
-      const focusable = args[0] !== false; // only an explicit #f is passive
-      paneFocusOverride.set(currentPaneId, focusable);
-      if (!focusable) focusNextPane();
-      refreshPaneFocusIndicators();
-      return NIL;
-    },
-    // #t when the current pane is focusable, #f when it's passive.
-    'pane-focusable?': () =>
-      currentPaneId !== null && !isNoFocusPane(currentPaneId),
-    // Open the bookmark outline for the current text buffer (C-x r l) in
-    // a narrow pane to the RIGHT of the focused pane — a navigator, so the
-    // source buffer stays visible (jump from the outline moves it). If the
-    // outline is already shown anywhere, reuse that pane (re-target +
-    // focus it) instead of splitting again; otherwise split the focused
-    // pane side-by-side (the source — a leaf view OR a whole tabline —
-    // rides into the left child, the outline into the new right child).
-    'open-bookmark-view!': () => {
-      const buf = currentTextBuffer;
-      if (!buf) return NIL;
-      const view = ensureBookmarkView();
-      retargetBookmarkView(buf);
-      const shownLeaf = leafPanes(rootPane).find((leaf) => leaf.view === view);
-      if (shownLeaf) {
-        setCurrentPaneId(shownLeaf.id);
-        return NIL;
-      }
-      const focused = currentPane();
-      if (focused && focused.kind === 'leaf') {
-        // ratio is the FIRST (source) child's share; bias narrow-right.
-        splitPaneAtLeafWith(focused, SPLIT_HORIZONTAL, 0.7, 'after', view);
-      } else {
-        switchToViewIndex(views.indexOf(view));
-      }
-      return NIL;
-    },
-    // Show the directory picker; on confirm, open the chosen directory as
-    // a project workspace. Returns immediately — the workspace is built
-    // when the dialog resolves (mirrors `prompt-directory!`).
-    'open-project!': () => {
-      window.host
-        .openDirectory()
-        .then((path) => {
-          if (path === null) return;
-          return openProject(path);
-        })
-        .catch((error) => {
-          repl.appendError(error.lispMessage ?? error.message ?? String(error));
-        });
-      return NIL;
-    },
-    // Open a specific directory as a project, no picker — for scripting
-    // and tests. `(open-project-at! "~/Source/btt")`.
-    'open-project-at!': (args) => {
-      const root = String(args[0] ?? '');
-      if (root === '') return NIL;
-      openProject(root).catch((error) => {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      });
-      return NIL;
-    },
-    // Close the open project and return to the home session. A no-op when
-    // no project is open.
-    'close-project!': () => {
-      closeProject().catch((error) => {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      });
-      return NIL;
-    },
-    // The open project's absolute root, or nil in the home session. A data
-    // accessor (no `!`) — the chooser and modeline can read it.
-    'current-project': () => (activeProjectPath === null ? NIL : activeProjectPath),
-    // Open the Project Chooser launcher modal — a grid of known projects
-    // (thumbnails + search) to pick from, plus Open Folder / Add Project.
-    'open-project-chooser!': () => {
-      showProjectChooser();
-      return NIL;
-    },
-    // Open the *View List* — a clickable HTML table of every open view
-    // (the replacement for the old text *Buffer List*). There is one
-    // such view; this finds or creates it, switches the current pane to
-    // it, and refreshes its rows so they reflect the live view list.
-    'open-view-list!': () => {
-      const view = ensureViewListView();
-      switchToViewIndex(views.indexOf(view));
-      viewListView.refresh();
-      return NIL;
-    },
-    // Re-scan the crash-recovery snapshots and open the *Recover* view —
-    // the manual entry point to the same flow the startup scan runs. The
-    // scan is async; the view opens once it resolves (showing an
-    // empty-state when there is nothing to recover).
-    'recover-session!': () => {
-      scanForRecovery().then(openRecoverView);
-      return NIL;
-    },
-    // --- Utility pane (the tabbed bottom dock) -------------------------
-    // Open (or reuse) a utility panel as a tab. FACTORY selects a
-    // registered factory; ID is the tab id (defaults to FACTORY, i.e. a
-    // single instance); TITLE is the tab label (defaults to ID). So one
-    // 'output' factory can back several tabs ("tex-output", "tex-errors").
-    // Does NOT steal focus (informational) — use utility-panel-activate! /
-    // -focus! to bring it forward. Returns the tab id, or NIL if no such
-    // factory.
-    'utility-panel-open!': (args) => {
-      const factoryName = String(args[0] ?? '');
-      const id = args[1] != null && args[1] !== NIL ? String(args[1]) : factoryName;
-      const title = args[2] != null && args[2] !== NIL ? String(args[2]) : id;
-      const factory = utilityPanelFactories.get(factoryName);
-      if (!factory) {
-        repl.appendError(`utility-panel-open!: no panel "${factoryName}"`);
-        return NIL;
-      }
-      utilityDock.openUtilityPanel({
-        id,
-        title,
-        makePanel: (handle) => factory(handle, { title }),
-        focus: false,
-      });
-      return id;
-    },
-    // Bring the named tab forward (creating focus on it). No-op if absent.
-    'utility-panel-activate!': (args) => {
-      utilityDock.activateUtilityTab(String(args[0] ?? ''));
-      return NIL;
-    },
-    // Append TEXT to the named panel's log (streaming output). No-op if the
-    // panel isn't open or doesn't accept appends.
-    'utility-panel-append!': (args) => {
-      const panel = utilityDock.getPanel(String(args[0] ?? ''));
-      if (panel && typeof panel.appendOutput === 'function') {
-        panel.appendOutput(String(args[1] ?? ''));
-      }
-      return NIL;
-    },
-    // Replace the named panel's content with TEXT.
-    'utility-panel-set!': (args) => {
-      const panel = utilityDock.getPanel(String(args[0] ?? ''));
-      if (panel && typeof panel.setContent === 'function') {
-        panel.setContent(String(args[1] ?? ''));
-      }
-      return NIL;
-    },
-    // Close the named tab (no-op for the non-closable resident REPL).
-    'utility-panel-close!': (args) => {
-      utilityDock.closeUtilityTab(String(args[0] ?? ''));
-      return NIL;
-    },
-    // Focus the active utility tab's panel.
-    'utility-panel-focus!': () => {
-      utilityDock.focusUtilityPane();
-      return NIL;
-    },
-    // Cycle the active utility tab by DELTA (wraps); default +1.
-    'utility-cycle-tab!': (args) => {
-      const n = Number(args[0]);
-      utilityDock.cycleUtilityTab(Number.isFinite(n) && n !== 0 ? n : 1);
-      return NIL;
-    },
-    // Open the *RefTeX Select* picker as a right-edge drawer overlaid on
-    // the editor (the document stays visible underneath). RefTeX's
-    // reftex-reference uses this as the selection-first path; the panel
-    // reads its rows through reftex-select-candidates and its keys call
-    // back into reftex-select-on-{select,peek,cancel}. SPC-peek navigates
-    // the editor pane UNDER the overlay (the bug the old pane-takeover
-    // form couldn't fix). See `openReftexSelectOverlay`.
-    'open-reftex-select!': () => {
-      openReftexSelectOverlay();
-      return NIL;
-    },
-    // RefTeX R3 citation flow (bottom dock). `open-reftex-cite-format!`
-    // opens the format menu (\cite / \citep / …); choosing one runs
-    // reftex-cite-format-chosen, which calls `open-reftex-cite-select!` —
-    // and because a dock is already up, that SWAPS it in place for the
-    // cite picker. The picker reads its rows via reftex-cite-select-rows
-    // and inserts via reftex-cite-insert.
-    'open-reftex-cite-format!': () => {
-      openReftexCiteFormat();
-      return NIL;
-    },
-    'open-reftex-cite-select!': () => {
-      openReftexCiteSelect();
-      return NIL;
-    },
-    // Open a shell view — a child process running the user's default
-    // shell ($SHELL, falling back to /bin/zsh) with a transcript and
-    // an input line. The process is spawned by the host the first time
-    // the view is mounted; killing the view terminates it. Unlike the
-    // other "open" primitives, each call creates a new view (a user
-    // may want several shells); to switch to an existing one, C-x b
-    // by name.
-    'open-shell-buffer!': () => {
-      const sessionId = nextShellSessionId();
-      const sequence = views.filter((v) => v.kind === 'shell').length + 1;
-      const name = sequence === 1 ? '*shell*' : `*shell*<${sequence}>`;
-      views.push(createView({
-        kind: 'shell',
-        name,
-        extras: {
-          sessionId,
-          transcript: [],
-          ended: false,
-          spawned: false,
-        },
-      }));
-      switchToViewIndex(views.length - 1);
-      return NIL;
-    },
-    // Open a gnuplot buffer: a long-lived gnuplot child shown through
-    // the L4 gnuplot view (a notebook REPL — per-command cells over an
-    // input line). The process is spawned by the host on first mount and
-    // killed when the view is killed. Like `open-shell-buffer!`, each
-    // call creates a new view; switch to an existing one with C-x b.
-    'open-gnuplot-buffer!': () => {
-      const sessionId = nextGnuplotSessionId();
-      const sequence = views.filter((v) => v.kind === 'gnuplot').length + 1;
-      const name = sequence === 1 ? '*gnuplot*' : `*gnuplot*<${sequence}>`;
-      views.push(createView({
-        kind: 'gnuplot',
-        name,
-        extras: {
-          sessionId,
-          ended: false,
-          spawned: false,
-        },
-      }));
-      switchToViewIndex(views.length - 1);
-      return NIL;
-    },
-    // Open a reactive Lisp notebook: a sheet of `(cell NAME EXPR)` cells
-    // shown through the L4 notebook view, where editing one cell
-    // recomputes everything downstream. Like `open-gnuplot-buffer!`,
-    // each call creates a fresh view; switch to an existing one with
-    // C-x b. In-memory for now (M2); a `.rxlisp` file backing comes with
-    // persistence (M3).
-    'open-notebook-buffer!': () => {
-      const notebookId = nextNotebookId();
-      const sequence = views.filter((v) => v.kind === 'notebook').length + 1;
-      const name = sequence === 1 ? '*notebook*' : `*notebook*<${sequence}>`;
-      views.push(createView({
-        kind: 'notebook',
-        name,
-        // The canonical `(cell …)` source lives in buffer.text so the
-        // generic save path works once the user gives it a file.
-        buffer: { text: '', filePath: null, name },
-        extras: { notebookId },
-      }));
-      switchToViewIndex(views.length - 1);
-      return NIL;
-    },
-    // The current notebook's id, or nil. Captured by the rename command
-    // *before* it prompts, so the rename targets the right notebook even
-    // after the minibuffer moves focus.
-    'current-notebook-id': () => {
-      const view = session.currentView;
-      return view && view.kind === 'notebook' && typeof view.notebookId === 'string'
-        ? view.notebookId
-        : NIL;
-    },
-    // Rename the notebook with this id (display + buffer name; the file on
-    // disk is unchanged — use save-as to rename that).
-    'rename-notebook-by-id!': (args) => {
-      renameNotebookById(String(args[0] ?? ''), String(args[1] ?? ''));
-      return NIL;
-    },
-    // Cycle among open notebooks (also reachable via the header picker).
-    'next-notebook!': () => {
-      cycleNotebook(1);
-      return NIL;
-    },
-    'previous-notebook!': () => {
-      cycleNotebook(-1);
-      return NIL;
-    },
-    // Open a Finder-style column-view buffer rooted at `path`. Same
-    // re-use semantics as `open-directory-tree!`.
-    'open-directory-columns!': (args) => {
-      const rootPath = expandTilde(String(args[0] ?? ''));
-      if (rootPath === '') return NIL;
-      const view = ensureDirectoryColumnsViewForPath(rootPath);
-      switchToViewIndex(views.indexOf(view));
-      return NIL;
-    },
-    'save-buffer!': () => {
-      saveBufferInteractive();
-      return NIL;
-    },
-    'reload-stdlib!': () => {
-      reloadStdlib();
-      return NIL;
-    },
-    // Themes set CSS custom properties on the document root. The Lisp
-    // side holds the palettes and decides which is active; this is the
-    // host hook that reads the current palette and writes it to the DOM.
-    'apply-theme!': () => {
-      applyCurrentTheme();
-      applyCurrentFaceStyles();
-      return NIL;
-    },
-    // Face customisation: regenerate `<style id="face-overrides">`
-    // from the Lisp-side resolved face map. Called whenever any
-    // override changes, plus on startup and theme switch.
-    'apply-face-styles!': () => {
-      applyCurrentFaceStyles();
-      return NIL;
-    },
-    // Documentation: open the doc page for NAME in a doc-kind buffer.
-    // The page HTML is read from docs/build/ by the host (the
-    // renderer is sandboxed). Unknown names print to the REPL.
-    'open-doc!': (args) => {
-      const name = String(args[0] ?? '');
-      if (name === '') return NIL;
-      openDocInPane(name);
-      return NIL;
-    },
-    // Open the manual at its Top node (the table-of-contents root), so the
-    // doc-view's sidebar/breadcrumb/Next-Prev are anchored at the top. The
-    // top id comes from the loaded node tree; the manual's known root slug
-    // is the fallback before the manifest has arrived (readDocPage resolves
-    // a node id either way).
-    'open-manual!': () => {
-      openDocInPane((docNavTree && docNavTree.top) || 'the-jmacs-manual');
-      return NIL;
-    },
-    // Open URL in a browser-kind view. Creates the view, pushes it onto
-    // the global list, switches to it, returns nil. The page title
-    // overwrites `view.name` once the webview reports it.
-    'open-url!': (args) => {
-      const url = String(args[0] ?? '').trim();
-      if (url === '') return NIL;
-      const current = session.currentView;
-      // If the active pane already shows a browser, navigate THAT one in
-      // place — don't spawn a duplicate browser view (and don't yank a
-      // browser element over from another pane). Find the live element
-      // showing this view (the leaf-direct singleton or a per-tab
-      // instance) and repaint it at the new URL.
-      if (current && current.kind === 'browser') {
-        current.url = url;
-        current.name = url;
-        const el = browserElementByView.get(current);
-        if (el) el.setBuffer(current);
-        updateModeline();
-        notifyViewsChanged();
-        return NIL;
-      }
-      // The active pane isn't a browser — open a fresh browser there.
-      const view = createView({
-        kind: 'browser',
-        name: url,
-        extras: { url },
-      });
-      views.push(view);
-      notifyViewsChanged();
-      switchToViewIndex(views.length - 1);
-      return NIL;
-    },
-    // `(pdf-extract-text [callback])` — extract the text of the
-    // currently-visible page of the PDF view in the focused pane.
-    //
-    // PDF.js's text-content API is async, so the primitive returns nil
-    // immediately. CALLBACK is invoked with `(text page-num)` once the
-    // text is ready; without a callback the text is appended to the
-    // REPL. CALLBACK can be a symbol naming a global procedure or a
-    // procedure value (a lambda).
-    //
-    // Errors land in the REPL — the asynchrony means we can't raise
-    // them through the original primitive call. Synchronous validation
-    // (no PDF in focus, document still loading) does throw.
-    'pdf-extract-text': (args) => {
-      const view = session.currentView;
-      if (!view || view.kind !== 'pdf') {
-        throw new LispError(
-          'pdf-extract-text: no PDF view in the focused pane'
-        );
-      }
-      const el = elementForViewInstance(view);
-      if (el === null || typeof el.extractPageText !== 'function') {
-        throw new LispError('pdf-extract-text: PDF view not mounted');
-      }
-      const pageNum = el.currentPageNumber;
-      if (pageNum < 1) {
-        throw new LispError('pdf-extract-text: document still loading');
-      }
-      const cb = args[0];
-      el.extractPageText(pageNum).then((text) => {
-        if (cb !== undefined && cb !== NIL) {
-          deliverLispCallback(cb, [text, pageNum], 'pdf-extract-text');
-          return;
-        }
-        repl.appendOutput(text);
-        if (text.length > 0 && !text.endsWith('\n')) repl.appendOutput('\n');
-      }).catch((error) => {
-        repl.appendError(
-          `pdf-extract-text: ${error.message ?? error}`
-        );
-      });
-      return NIL;
-    },
-    // `(pdf-extract-page-range M N [callback])` — extract pages M
-    // through N (inclusive, 1-based) of the focused-pane PDF view.
-    // CALLBACK is invoked with `(texts m last)` once every page is
-    // resolved, where `texts` is a list of strings; without a callback,
-    // the pages are appended to the REPL with `--- page N ---`
-    // separators. Range bounds are clamped to the document; an
-    // inverted range raises.
-    'pdf-extract-page-range': (args) => {
-      const m = Math.floor(Number(args[0]));
-      const n = Math.floor(Number(args[1]));
-      if (!Number.isFinite(m) || !Number.isFinite(n) || m < 1 || n < m) {
-        throw new LispError(
-          `pdf-extract-page-range: invalid range (${args[0]} .. ${args[1]})`
-        );
-      }
-      const view = session.currentView;
-      if (!view || view.kind !== 'pdf') {
-        throw new LispError(
-          'pdf-extract-page-range: no PDF view in the focused pane'
-        );
-      }
-      const el = elementForViewInstance(view);
-      if (el === null || typeof el.extractPageRangeText !== 'function') {
-        throw new LispError('pdf-extract-page-range: PDF view not mounted');
-      }
-      const pageCount = el.pageCount;
-      if (pageCount < 1) {
-        throw new LispError(
-          'pdf-extract-page-range: document still loading'
-        );
-      }
-      const last = Math.min(n, pageCount);
-      const cb = args[2];
-      el.extractPageRangeText(m, last).then((texts) => {
-        if (cb !== undefined && cb !== NIL) {
-          deliverLispCallback(
-            cb, [arrayToList(texts), m, last], 'pdf-extract-page-range'
-          );
-          return;
-        }
-        for (let i = 0; i < texts.length; i += 1) {
-          repl.appendOutput(`--- page ${m + i} ---\n${texts[i]}\n`);
-        }
-      }).catch((error) => {
-        repl.appendError(
-          `pdf-extract-page-range: ${error.message ?? error}`
-        );
-      });
-      return NIL;
-    },
-    // Documentation: open the fuzzy-search minibuffer with the
-    // manifest's names as candidates; submit opens the matching
-    // doc page.
-    'start-doc-search!': () => {
-      startDocSearch();
-      return NIL;
-    },
-    // Inline eval: the bounds of the form enclosing point in the
-    // current buffer, as a `(start . end)` pair, or nil.
-    'form-bounds-at-point!': () => {
-      if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
-        return NIL;
-      }
-      const bounds = formBoundsAtPoint(
-        currentTextBuffer.text,
-        currentTextBuffer.point,
-        'lisp'
-      );
-      return bounds === null ? NIL : cons(bounds.start, bounds.end);
-    },
-    // Inline eval: the bounds of the form immediately before point.
-    'form-bounds-before-point!': () => {
-      if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
-        return NIL;
-      }
-      const bounds = formBoundsBeforePoint(
-        currentTextBuffer.text,
-        currentTextBuffer.point,
-        'lisp'
-      );
-      return bounds === null ? NIL : cons(bounds.start, bounds.end);
-    },
-    // Inline eval: evaluate the current buffer's source in
-    // [start, end) and show the result as a pill overlay.
-    'eval-region!': (args) => {
-      const start = Number(args[0]);
-      const end = Number(args[1]);
-      if (!Number.isInteger(start) || !Number.isInteger(end)) return NIL;
-      evalRegionWithOverlay(start, end);
-      return NIL;
-    },
-    // Inline eval: open (or reuse) the *Eval log* buffer.
-    'show-eval-log!': () => {
-      openEvalLogBuffer();
-      return NIL;
-    },
-    // Documentation (live path): NAME's docstring is Markdown; render
-    // it through `*markdown-interpreter*` and show the result in a
-    // doc-kind buffer. Used by `(open-doc …)` for user-defined
-    // procedures that aren't in the pre-built manifest.
-    'open-docstring-page!': (args) => {
-      const name = String(args[0] ?? '');
-      const source = String(args[1] ?? '');
-      if (name === '' || source === '') return NIL;
-      openDocstringBuffer(name, source);
-      return NIL;
-    },
-    // `describe-face-at-point` (C-h F) — surface the tree-sitter
-    // capture under the cursor. Returns (LANGUAGE . CAPTURES), or
-    // `nil` when the current buffer has no tree-sitter language.
-    // CAPTURES is a list of `(start end face)` lists in document order.
-    'tree-sitter-captures-for-buffer!': () => {
-      if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
-        return NIL;
-      }
-      const name = currentTextBuffer.name;
-      const language = languageForFilename(name);
-      if (language === null) return NIL;
-      const highlighter = highlighters[language];
-      if (!highlighter || typeof highlighter.captures !== 'function') {
-        return NIL;
-      }
-      let captureRanges;
-      try {
-        captureRanges = highlighter.captures(currentTextBuffer.text);
-      } catch (error) {
-        repl.appendError(`tree-sitter captures: ${error.message}`);
-        return NIL;
-      }
-      const captures = arrayToList(
-        captureRanges.map((r) => arrayToList([r.start, r.end, r.face]))
-      );
-      return cons(language, captures);
-    },
-    // `describe-face-at-point` fallback — when no capture covers point,
-    // surface the tree-sitter node info so the user knows what query
-    // rule they'd write to face it. Returns a hash-map with `:language`,
-    // `:type` (the node's tree-sitter type), `:start`, `:end`, and
-    // `:ancestors` (a list of parent-type strings, immediate-parent
-    // first), or `nil` when the buffer has no tree-sitter language or
-    // no node covers point.
-    'tree-sitter-node-at-point!': (args) => {
-      if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
-        return NIL;
-      }
-      const name = currentTextBuffer.name;
-      const language = languageForFilename(name);
-      if (language === null) return NIL;
-      const highlighter = highlighters[language];
-      if (!highlighter || typeof highlighter.nodeAtPoint !== 'function') {
-        return NIL;
-      }
-      const pos = Number.isInteger(args[0]) ? args[0] : 0;
-      let info;
-      try {
-        info = highlighter.nodeAtPoint(currentTextBuffer.text, pos);
-      } catch (error) {
-        repl.appendError(`tree-sitter nodeAtPoint: ${error.message}`);
-        return NIL;
-      }
-      if (info === null) return NIL;
-      const record = new Map();
-      record.set(keyword('language'), language);
-      record.set(keyword('type'), info.type);
-      record.set(keyword('start'), info.start);
-      record.set(keyword('end'), info.end);
-      record.set(keyword('ancestors'), arrayToList(info.ancestors));
-      return record;
-    },
-    // `describe-face-at-point` (C-h F) — resolve a face name to the
-    // CSS colour the active theme renders it with. Reads the runtime
-    // value of `--tok-<face>` from `document.documentElement`. Falls
-    // back to an empty string when nothing is bound.
-    'face-color-for': (args) => {
-      const face = String(args[0] ?? '');
-      if (face === '') return '';
-      try {
-        const value = getComputedStyle(document.documentElement)
-          .getPropertyValue(`--tok-${face}`)
-          .trim();
-        return value;
-      } catch {
-        return '';
-      }
-    },
-    // Documentation: return the (cached) list of doc-page names, or
-    // `()` when the docs haven't been built. The Lisp side caches
-    // this in *doc-manifest*. The manifest itself is fetched once
-    // at startup (see `loadDocManifest` below) so this primitive
-    // can be synchronous.
-    'load-doc-manifest!': () =>
-      docManifestNames === null ? NIL : arrayToList(docManifestNames),
-
-    // Face customisation: return the face-overrides hash-map loaded
-    // from faces.json at startup, or an empty-overrides map when no
-    // file existed. Called once from Lisp right after stdlib load.
-    'load-face-overrides!': () =>
-      faceOverridesCache ?? emptyOverrides(lispFactories),
-
-    // Face customisation: write the COMPLETE faces.json — colour
-    // overrides + user-created faces + highlight rules — in one blob.
-    // The Lisp side passes `(current-faces-file)`; we serialise all
-    // three sections (lists are unfolded via listToArray for the rules).
-    'write-faces!': (args) => {
-      const facesFile = args[0];
-      try {
-        const json = lispToJsonFacesFile(facesFile, lispFactories, listToArray);
-        window.host.writeFaces(json);
-      } catch (error) {
-        repl.appendError(
-          `faces:write: ${error.lispMessage ?? error.message}`
-        );
-      }
-      return NIL;
-    },
-    // Highlight customisation: receive the user's `kind -> face` rule
-    // set from Lisp (highlight-rules.lisp) and push it into the live
-    // highlighter store. Each ARG[0] element is a record with :scope
-    // ("mode" | "language"), :key (mode display name / language tag),
-    // :pattern (a tree-sitter node type or query fragment), and :face
-    // (a registered face name). The store recompiles the affected
-    // languages' queries lazily at the next highlight; we re-render the
-    // open editors so the change is visible immediately.
-    'set-highlight-overrides!': (args) => {
-      const list = args[0];
-      const entries = [];
-      try {
-        for (const rec of listToArray(list)) {
-          if (!(rec instanceof Map)) continue;
-          const scope = rec.get(keyword('scope'));
-          const key = rec.get(keyword('key'));
-          const pattern = rec.get(keyword('pattern'));
-          const face = rec.get(keyword('face'));
-          entries.push({
-            scope: typeof scope === 'string' ? scope : 'language',
-            key: key == null ? '' : String(key),
-            pattern: pattern == null ? '' : String(pattern),
-            face: face == null ? '' : String(face),
-          });
-        }
-        highlightOverrideStore.replaceAll(entries);
-        rerenderAllEditors();
-      } catch (error) {
-        repl.appendError(
-          `highlight-overrides: ${error.lispMessage ?? error.message}`
-        );
-      }
-      return NIL;
-    },
-    'start-search!': () => {
-      startSearch('forward');
-      return NIL;
-    },
-    'start-search-backward!': () => {
-      startSearch('backward');
-      return NIL;
-    },
-    'start-regexp-search!': () => {
-      startRegexpSearch('forward');
-      return NIL;
-    },
-    'start-regexp-search-backward!': () => {
-      startRegexpSearch('backward');
-      return NIL;
-    },
-    // Regexp matching for use by Lisp commands (query-replace,
-    // replace-regexp). Returns `(start . end)` for the first match in
-    // the current buffer's text at or after FROM, or `#f` for no
-    // match (miss convention: absence -> #f, safe as a bare if-test).
-    // An invalid pattern is also `#f` — deliberately the same value
-    // as a miss, because these back incremental search, where a
-    // half-typed regexp ("[a-") simply matches nothing.
-    'find-regexp-forward': (args) => {
-      const source = String(args[0] ?? '');
-      const from = Number(args[1] ?? 0);
-      const regexp = compileRegexpSource(source);
-      if (regexp === null) return false;
-      const match = regexpForwardMatch(currentTextBuffer.text, regexp, from);
-      return match === null ? false : cons(match.start, match.end);
-    },
-    'find-regexp-backward': (args) => {
-      const source = String(args[0] ?? '');
-      const from = Number(args[1] ?? 0);
-      const regexp = compileRegexpSource(source);
-      if (regexp === null) return false;
-      const match = regexpBackwardMatch(currentTextBuffer.text, regexp, from);
-      return match === null ? false : cons(match.start, match.end);
-    },
-    // Find a plain (non-regexp) string FROM offset onward; used by the
-    // `query-replace` walker (plain string match, per spec). No match
-    // — including an empty needle — is `#f`.
-    'find-string-forward': (args) => {
-      const needle = String(args[0] ?? '');
-      const from = Number(args[1] ?? 0);
-      if (needle === '') return false;
-      const index = currentTextBuffer.text.indexOf(needle, Math.max(0, from));
-      return index < 0 ? false : cons(index, index + needle.length);
-    },
-    // Replace every regexp match in the current buffer; REPLACEMENT
-    // supports the standard JS `$N`, `$&`, `$$` back-references.
-    // Returns the count of replacements made, or -1 for an invalid
-    // pattern.
-    'replace-regexp-all!': (args) => {
-      const source = String(args[0] ?? '');
-      const replacement = String(args[1] ?? '');
-      const regexp = compileRegexpSource(source);
-      if (regexp === null) return -1;
-      const buffer = currentTextBuffer;
-      let count = 0;
-      const newText = buffer.text.replace(regexp, (...match) => {
-        count += 1;
-        return expandReplacement(replacement, match);
-      });
-      if (count > 0) buffer.setText(newText);
-      repl.appendNote(
-        count > 0
-          ? `replaced ${count} occurrence(s) of /${source}/`
-          : `/${source}/ — no match`
-      );
-      return count;
-    },
-    // Replace the buffer range [start, end) with TEXT in a single edit.
-    // Used by `query-replace` to swap one match in.
-    'replace-range!': (args) => {
-      const start = Number(args[0]);
-      const end = Number(args[1]);
-      const text = String(args[2] ?? '');
-      if (!Number.isInteger(start) || !Number.isInteger(end)) return NIL;
-      const buffer = currentTextBuffer;
-      buffer.moveTo(Math.min(start, end));
-      buffer.deleteForward(Math.abs(end - start));
-      buffer.insert(text);
-      return NIL;
-    },
-    'start-command-palette!': () => {
-      startCommandPalette();
-      return NIL;
-    },
-    'start-buffer-switcher!': () => {
-      startBufferSwitcher();
-      return NIL;
-    },
-    'start-describe-command!': () => {
-      startDescribeCommand();
-      return NIL;
-    },
-    // Open a minibuffer prompt for the command argument gatherer; the
-    // result is delivered back to Lisp via `minibuffer-delivered`.
-    'open-minibuffer!': (args) => {
-      minibuffer.prompt(String(args[0]), {
-        onSubmit(value) {
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', value);
-        },
-        onCancel() {
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', NIL);
-        },
-      });
-      return NIL;
-    },
-    'goto-line!': (args) => {
-      const buffer = currentTextBuffer;
-      const n = Number(args[0]);
-      if (Number.isInteger(n) && n >= 1) {
-        buffer.moveTo(buffer.offsetAt(Math.min(n, buffer.lineCount) - 1, 0));
-      }
-      return NIL;
-    },
-    // `(point-line-col)` — the cursor's 1-based line and column in the
-    // current text buffer, as a cons `(LINE . COL)`. The buffer reports
-    // a 0-based line/column from `positionAt(point)`; we add 1 to each so
-    // both match the 1-based convention SyncTeX (and the status bar) use.
-    // Returns nil when no text buffer is current. Used by forward search
-    // (`synctex view -i LINE:COL:file`).
-    'point-line-col': () => {
-      const buffer = currentTextBuffer;
-      if (!buffer || typeof buffer.positionAt !== 'function') return NIL;
-      const { line, column } = buffer.positionAt(buffer.point);
-      return cons(line + 1, column + 1);
-    },
-    'replace-all!': (args) => {
-      const buffer = currentTextBuffer;
-      const search = String(args[0]);
-      const replacement = String(args[1]);
-      if (search !== '') {
-        const text = buffer.text;
-        const count = text.split(search).length - 1;
-        if (count > 0) buffer.setText(text.split(search).join(replacement));
-        repl.appendNote(
-          count > 0
-            ? `replaced ${count} occurrence(s) of "${search}"`
-            : `"${search}" not found`
-        );
-      }
-      return NIL;
-    },
-    'recenter!': () => {
-      editorView.recenter();
-      return NIL;
-    },
-    // `(flash-current-line!)` — briefly highlight the cursor's line with a
-    // transient mild-yellow band that fades out, to call attention to it
-    // (SyncTeX inverse search uses it on the landed source line).
-    'flash-current-line!': () => {
-      if (typeof editorView.flashCurrentLine === 'function') {
-        editorView.flashCurrentLine();
-      }
-      return NIL;
-    },
-    'page-lines': () => editorView.pageLines(),
-    'toggle-fold-at-point!': () => {
-      editorView.toggleFoldAtPoint();
-      return NIL;
-    },
-    'fold-all!': () => {
-      editorView.foldAll();
-      return NIL;
-    },
-    'unfold-all!': () => {
-      editorView.unfoldAll();
-      return NIL;
-    },
-    'toggle-repl!': () => {
-      utilityDock.toggleUtilityDock();
-      // Tell the server the new dock visibility so the workspace keeps it (even
-      // when this isn't the window the user later quits from).
-      if (serverViewClient) serverViewClient.reportDock();
-      return NIL;
-    },
-    'markdown-preview!': () => {
-      toggleMarkdownPreview();
-      return NIL;
-    },
-    'quit-editor!': () => {
-      quitInteractive();
-      return NIL;
-    },
-
-    // View-list primitives now come from createViewPrimitives(viewHost),
-    // spread in below this block. The host shape (viewHost) is defined
-    // alongside the interpreter so the closures see the live views.
-
-    // Persist the customisation registry's saved settings to disk.
-    'write-custom-file!': (args) => {
-      writeCustomFile(args[0]);
-      return NIL;
-    },
-    // Open (or switch to) a customisation buffer.
-    'open-customize!': () => {
-      openCustomize('*Customize*', { group: 'godot' });
-      return NIL;
-    },
-    'open-customize-group!': (args) => {
-      openCustomScope({ group: String(args[0]) });
-      return NIL;
-    },
-    'open-customize-variable!': (args) => {
-      openCustomScope({ variable: String(args[0]) });
-      return NIL;
-    },
-    // Customize one specific face — opens the customize buffer scoped
-    // to a single face row (and scrolled to it).
-    'open-customize-face!': (args) => {
-      openCustomScope({ face: String(args[0]) });
-      return NIL;
-    },
-    // Customize all faces — opens the customize buffer with the
-    // 'Faces' group as its scope.
-    'open-customize-faces!': () => {
-      openCustomScope({ group: 'faces' });
-      return NIL;
-    },
-
-    // Sticky notes — see sticky-notes.js and sticky-notes.lisp.
-    'note-create!': (args) =>
-      stickyNotes.create(typeof args[0] === 'number' ? args[0] : undefined),
-    'note-delete!': (args) => {
-      stickyNotes.remove(String(args[0]));
-      return NIL;
-    },
-    'note-edit!': (args) => {
-      stickyNotes.edit(String(args[0]));
-      return NIL;
-    },
-    'note-set-source!': (args) => {
-      stickyNotes.setSource(String(args[0]), String(args[1]));
-      return NIL;
-    },
-    'note-source': (args) => {
-      const source = stickyNotes.getSource(String(args[0]));
-      return source === null ? NIL : source;
-    },
-    'note-move!': (args) => {
-      stickyNotes.move(String(args[0]), args[1], args[2]);
-      return NIL;
-    },
-    'note-resize!': (args) => {
-      stickyNotes.resize(String(args[0]), args[1], args[2]);
-      return NIL;
-    },
-    'note-ids': () => arrayToList(stickyNotes.ids()),
-    'note-count': () => stickyNotes.count(),
-    'note-at-point': () => {
-      const id = stickyNotes.noteAtPoint();
-      return id === null ? NIL : id;
-    },
-    'note-goto!': (args) => {
-      stickyNotes.gotoNote(String(args[0]));
-      return NIL;
-    },
-    'note-next!': () => {
-      stickyNotes.gotoNext();
-      return NIL;
-    },
-    'note-prev!': () => {
-      stickyNotes.gotoPrevious();
-      return NIL;
-    },
-    'notes-toggle!': () => {
-      stickyNotes.toggle();
-      return NIL;
-    },
-
-    // Bookmarks — see bookmarks.js and bookmarks.lisp.
-    'bookmark-set!': (args) => {
-      const name = bookmarks.set(String(args[0]));
-      return name === null ? NIL : name;
-    },
-    'bookmark-jump!': (args) => {
-      bookmarks.jump(String(args[0]));
-      return NIL;
-    },
-    'bookmark-delete!': (args) => {
-      bookmarks.remove(String(args[0]));
-      return NIL;
-    },
-    'bookmark-names': () => arrayToList(bookmarks.names()),
-    'bookmark-count': () => bookmarks.count(),
-
-    // Jukebox audio — see audio.js and jukebox-view.js. Each primitive
-    // is a thin wrapper over the shared HTMLAudioElement; the panel
-    // layout and playlist logic live in the jukebox view (Layer 4).
-    'list-directory': (args) => {
-      const entries = window.host.listDirectorySync(String(args[0]));
-      return entries === null ? NIL : arrayToList(entries);
-    },
-    // Open (or refresh) the jukebox buffer for DIR. The host reads
-    // the directory, filters to audio files, finds an art file, then
-    // creates a `jukebox`-kind buffer carrying the state the view
-    // needs — no Lisp panel rendering, no buffer text to maintain.
-    'open-jukebox-buffer!': (args) => {
-      const dir = expandTilde(String(args[0] ?? ''));
-      if (dir === '') return NIL;
-      openJukeboxForDirectory(dir);
-      return NIL;
-    },
-    // Refresh the `labels` array on every open jukebox buffer. Called
-    // by the `*jukebox-track-format*` :on-change hook so a user
-    // customising the format string sees it take effect immediately.
-    'refresh-jukebox-labels!': () => {
-      refreshAllJukeboxLabels();
-      return NIL;
-    },
-    // Read an audio file's embedded tag metadata as a Lisp hash-map
-    // keyed by :title :artist :album :track :year :genre :duration.
-    // Missing fields are nil; an unsupported / unreadable file is nil
-    // overall. The IPC round-trip is synchronous (Lisp interpreter is
-    // synchronous), mirroring `list-directory` above.
-    'audio-metadata': (args) => {
-      const path = expandTilde(String(args[0] ?? ''));
-      if (path === '') return NIL;
-      const meta = window.host.audioMetadataSync(path);
-      if (meta === null || meta === undefined) return NIL;
-      const map = new Map();
-      const set = (key, value) =>
-        map.set(keyword(key), value === null || value === undefined ? NIL : value);
-      set('title', meta.title);
-      set('artist', meta.artist);
-      set('album', meta.album);
-      set('track', meta.track);
-      set('year', meta.year);
-      set('genre', meta.genre);
-      set('duration', meta.duration);
-      return map;
-    },
-    // Replace one tag on the audio file at `path` with `value` (or
-    // add it if it wasn't present). The host re-serialises the whole
-    // file via writeMetadataSync, dropping unrecognised frames per
-    // the always-rewrite design in plans/AUDIO-METADATA-EDIT.md.
-    // Cover art is preserved by the writer (reads existing APIC).
-    // The renderer's cached metadata on any open buffer is the
-    // source of truth — it carries user-added custom keys that
-    // extractMetadataSync wouldn't surface.
-    'set-audio-metadata!': (args) => {
-      const path = expandTilde(String(args[0] ?? ''));
-      const key = String(args[1] ?? '');
-      if (path === '' || key === '') {
-        throw new Error('set-audio-metadata!: missing arg');
-      }
-      const value = args[2] === undefined ? '' : String(args[2]);
-      applyAudioMetadataEdit(path, (fields) => {
-        fields[key] = value;
-      });
-      return NIL;
-    },
-    'remove-audio-metadata!': (args) => {
-      const path = expandTilde(String(args[0] ?? ''));
-      const key = String(args[1] ?? '');
-      if (path === '' || key === '') {
-        throw new Error('remove-audio-metadata!: missing arg');
-      }
-      applyAudioMetadataEdit(path, (fields) => {
-        delete fields[key];
-      });
-      return NIL;
-    },
-    // Directory listing with per-entry type info, synchronous. Returns
-    // a list of (name . type) pairs where type is the keyword
-    // :directory or :file. The find-file Lisp completer uses this to
-    // add a trailing "/" to directory completions, so further typing
-    // keeps descending. Returns nil when the path can't be read.
-    'list-directory-paths': (args) => {
-      const path = expandTilde(String(args[0] ?? ''));
-      const entries = window.host.listDirectoryWithTypesSync(path);
-      if (entries === null) return NIL;
-      return arrayToList(
-        entries.map((entry) => cons(entry.name, keyword(entry.type)))
-      );
-    },
-    // Open a completing minibuffer: a prompt the Lisp side drives
-    // through `minibuffer-tab-complete` on Tab and the usual
-    // `minibuffer-delivered` on submit/cancel. This is what `find-file`
-    // uses to gather a path with TAB completion. The handler is
-    // implemented in Lisp (see files.lisp) so the policy — what to
-    // complete against, what to show when ambiguous — stays in
-    // userland.
-    'open-completing-minibuffer!': (args) => {
-      const promptText = String(args[0] ?? '');
-      const initialValue = args.length > 1 ? String(args[1] ?? '') : '';
-      minibuffer.prompt(promptText, {
-        initialValue,
-        onSubmit(value) {
-          // The command is finishing — drop the transient completions tab
-          // (a no-op when none is open, e.g. RefTeX/LaTeX prompts).
-          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', value);
-        },
-        onCancel() {
-          utilityDock.closeUtilityTab(COMPLETIONS_TAB_ID);
-          editorView.focus();
-          interpreter.call('minibuffer-delivered', NIL);
-        },
-        onTab(value) {
-          try {
-            const result = interpreter.call('minibuffer-tab-complete', value);
-            if (typeof result === 'string') return result;
-          } catch (error) {
-            repl.appendError(
-              `tab-complete: ${error.lispMessage ?? error.message}`
-            );
-          }
-          return value;
-        },
-      });
-      return NIL;
-    },
-    'play-audio!': (args) => {
-      audio.play(expandTilde(String(args[0])));
-      return NIL;
-    },
-    'pause-audio!': () => {
-      audio.pause();
-      return NIL;
-    },
-    'stop-audio!': () => {
-      audio.stop();
-      return NIL;
-    },
-    'audio-current-time': () => audio.currentTime(),
-    'audio-duration': () => audio.duration(),
-    'audio-playing?': () => audio.isPlaying(),
-    'audio-current-path': () => {
-      const p = audio.currentPath();
-      return p === null ? NIL : p;
-    },
-    // Show the directory picker; on confirm, dispatch the chosen path
-    // back into Lisp via the jukebox callback. Mirrors how `open-file!`
-    // returns immediately and the file is shown when the dialog resolves.
-    'prompt-directory!': () => {
-      window.host
-        .openDirectory()
-        .then((path) => {
-          if (path === null) return;
-          try {
-            interpreter.call('jukebox-on-directory-chosen', path);
-          } catch (error) {
-            repl.appendError(
-              error.lispMessage ?? error.message ?? String(error)
-            );
-          }
-        })
-        .catch((error) => {
-          repl.appendError(`directory open failed: ${error.message}`);
-        });
-      return NIL;
-    },
-  },
-});
-
-// Auto-advance: the audio element fires `ended`, which the jukebox
-// translates into a "next track" command. Other contexts have no such
-// command, so the call silently no-ops.
-audio.onEnded(() => {
-  try {
-    interpreter.call('jukebox-track-ended');
-  } catch {
-    // No jukebox loaded — that is fine; the track has simply finished.
-  }
-});
-
-/** Evaluate a line of REPL input and show the result. */
-/** Format a Lisp error for display: its message, plus the source location
- *  of the offending form when the evaluator tagged one (B6) — so a failing
- *  multi-line definition says *where*, not just *what*. */
-function formatLispError(error) {
-  const message = error?.lispMessage ?? error?.message ?? String(error);
-  const loc = error?.location;
+/** Format a spine REPL eval error: its message + the source location of the
+ *  offending form when the spine tagged one — mirrors formatLispError for the
+ *  `{ text, location }` the spine's replEval sends back. */
+function formatReplError(r) {
+  const message = r?.text ?? 'eval error';
+  const loc = r?.location;
   return loc ? `${message} (at line ${loc.line}:${loc.col})` : message;
 }
 
 function evaluateInRepl(source) {
-  try {
-    repl.appendResult(writeString(interpreter.evaluate(source)));
-  } catch (error) {
-    repl.appendError(formatLispError(error));
+  // L5: the REPL evaluates in the REAL spine world (the renderer interpreter is
+  // inert under Model B), so a typed form drives the live editor and sees its
+  // actual state. The result — the writeString'd value, or the error + location
+  // — comes back async and appends to the dock.
+  if (serverViewClient && typeof serverViewClient.replEval === 'function') {
+    serverViewClient.replEval(source).then((r) => {
+      if (r && r.ok) repl.appendResult(r.text);
+      else repl.appendError(formatReplError(r));
+    });
+    return;
   }
+  repl.appendError('REPL: not connected to the server yet');
 }
 
 // --- standard library ---------------------------------------------------
 
-/** Fetch the source of a standard-library file over the app:// scheme. */
-function fetchStdlibSource(name) {
-  return fetch(`app://editor/packages/stdlib/lisp/${name}`).then((response) =>
-    response.text()
-  );
-}
 
-/** List `.lisp` files in the stdlib's `languages/` directory. */
-async function listStdlibLanguageFiles() {
-  const response = await fetch(
-    'app://editor/packages/stdlib/lisp/languages/?list'
-  );
-  if (!response.ok) return [];
-  const names = await response.json();
-  return names.filter((name) => name.endsWith('.lisp'));
-}
 
 /**
  * Import every JS module in `packages/renderer/src/languages/`. Each
@@ -5565,145 +2497,6 @@ async function discoverRendererLanguages() {
   }
 }
 
-/**
- * Write the customisation registry's saved settings to custom.lisp.
- * `pairList` is a Lisp list of (name value) pairs; each value is
- * wrapped in `quote` so it round-trips whatever its type.
- */
-function writeCustomFile(pairList) {
-  const lines = listToArray(pairList).map((pair) => {
-    const [name, value] = listToArray(pair);
-    return `(custom-set-saved! (quote ${writeString(name)}) (quote ${writeString(value)}))`;
-  });
-  const text = CUSTOM_FILE_HEADER + lines.join('\n') + '\n';
-  window.host
-    .writeConfigFile('custom.lisp', text)
-    .catch((error) =>
-      repl.appendError(`saving customisations failed: ${error.message}`)
-    );
-}
-
-/**
- * Load the user's saved customisations and their init.lisp — the
- * jmacs equivalent of .emacs. The saved file loads first so a hand
- * edit in init.lisp wins. A broken config file is reported, not fatal.
- * On first run, a commented init.lisp template is written.
- */
-async function loadUserConfig() {
-  try {
-    const customSrc = await window.host.readConfigFile('custom.lisp');
-    if (customSrc) interpreter.evaluate(customSrc);
-  } catch (error) {
-    repl.appendError(`custom.lisp: ${error.lispMessage ?? error.message}`);
-  }
-  // One-time: a custom.lisp saved before the `light` → `solarized-light`
-  // theme rename selects a now-gone theme; rewrite and re-save it. A no-op
-  // once migrated, and for any other persisted theme value.
-  try {
-    interpreter.call('-migrate-stale-theme!');
-  } catch (error) {
-    repl.appendError(`theme migration: ${error.lispMessage ?? error.message}`);
-  }
-  try {
-    const initSrc = await window.host.readConfigFile('init.lisp');
-    if (initSrc === null) {
-      await window.host.writeConfigFile('init.lisp', INIT_TEMPLATE);
-    } else {
-      interpreter.evaluate(initSrc);
-    }
-  } catch (error) {
-    repl.appendError(`init.lisp: ${error.lispMessage ?? error.message}`);
-  }
-}
-
-/** The options passed to `loadStdlib` — same shape both at boot and on
- *  hot reload, so language files are picked up by both paths. */
-const stdlibOptions = { listLanguageFiles: listStdlibLanguageFiles };
-
-/**
- * Report any standard-library files that failed to load. `loadStdlib`
- * isolates each file, so a broken one no longer aborts the rest — but the
- * user still needs to know which file failed (and that its commands are
- * gone), so name each one in the REPL.
- *
- * @param {{name: string, phase: string, error: Error}[]} failures
- */
-function reportStdlibFailures(failures) {
-  if (!failures || failures.length === 0) return;
-  for (const { name, error } of failures) {
-    repl.appendError(
-      `stdlib: ${name} failed to load — ${error.lispMessage ?? error.message}`
-    );
-  }
-  repl.appendError(
-    `stdlib: ${failures.length} file(s) failed to load; the rest loaded. ` +
-      'Commands defined in the failed file(s) are unavailable.'
-  );
-}
-
-/** Re-evaluate the standard library — hot reload of the editor itself. */
-async function reloadStdlib() {
-  try {
-    const { failures } = await loadStdlib(
-      interpreter,
-      fetchStdlibSource,
-      stdlibOptions
-    );
-    reportStdlibFailures(failures);
-    // Reapply face hooks + state: a fresh stdlib reset all of them.
-    // Re-register user faces FIRST (overrides/rules may reference them).
-    installFacePersistence();
-    if (userFacesCache !== null) {
-      interpreter.call('set-user-faces!', userFacesCache);
-    }
-    if (faceOverridesCache !== null) {
-      interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
-    }
-    // Re-install the user highlight rules into the freshly-built stdlib
-    // (a reload reset *highlight-rules* to empty) and re-push them so the
-    // live highlighter keeps the user's overrides.
-    installHighlightRules();
-    await loadUserConfig();
-    applyCurrentTheme();
-    applyCurrentFaceStyles();
-    repl.appendNote('standard library reloaded');
-  } catch (error) {
-    repl.appendError(`reload failed: ${error.message}`);
-  }
-}
-
-/** Wire the renderer-side face persistence into the Lisp face system.
- *  After this runs, every `set-face-attribute` persists to faces.json.
- *  CSS regeneration is already handled by the `apply-face-styles!`
- *  primitive that Lisp calls directly on every change. */
-function installFacePersistence() {
-  // The saver writes the WHOLE faces.json — colour overrides, user-
-  // created faces, and highlight rules — so both the face-change and
-  // highlight-rule-change paths (which share this hook) persist
-  // everything in one atomic write.
-  interpreter.evaluate(
-    '(set-face-overrides-saver! (lambda () (write-faces! (current-faces-file))))'
-  );
-}
-
-/** Install the persisted user highlight rules into the (freshly-loaded)
- *  stdlib and push them into the live highlighter. A no-op-but-safe push
- *  of the empty set when nothing was persisted. Called after the first
- *  stdlib load and after every reload-stdlib (which resets the Lisp
- *  `*highlight-rules*`). */
-function installHighlightRules() {
-  try {
-    if (highlightRulesCache !== null) {
-      interpreter.call('set-highlight-rules!', highlightRulesCache);
-    } else {
-      interpreter.call('push-highlight-rules!');
-    }
-  } catch (error) {
-    repl.appendError(
-      `highlight-rules: ${error.lispMessage ?? error.message}`
-    );
-  }
-}
 
 /** Things that want a callback when the editor theme changes. The
  *  shell view registers itself once it exists so xterm.js can
@@ -5714,85 +2507,13 @@ function installHighlightRules() {
  *  declaration runs. */
 const themeListeners = new Set();
 
-// `keymapReady` is declared near the top of the module (the pane-focus
-// machinery reads it during the initial paint); set it here once the
-// stdlib has loaded.
-try {
-  // Per-file isolation: a single broken stdlib file is reported and
-  // skipped, not allowed to abort the load and leave the editor with no
-  // keymap. The outer catch is now only a backstop for a catastrophic
-  // failure (e.g. the source fetch itself is broken).
-  const { failures } = await loadStdlib(
-    interpreter,
-    fetchStdlibSource,
-    stdlibOptions
-  );
-  keymapReady = true;
-  reportStdlibFailures(failures);
-} catch (error) {
-  repl.appendError(`standard library failed to load: ${error.message}`);
-}
 
-// Faces: read faces.json (or get null if it's missing) and install into
-// the Lisp face system before the first paint. The stdlib has already
-// loaded `faces.lisp` + `highlight-rules.lisp`, so the mutators exist.
-// We install in dependency order: USER FACES first (so colour overrides
-// and highlight rules can reference them), then the colour overrides.
-// The highlight rules are installed later (`installHighlightRules`, once
-// the override store + highlighters exist) from `highlightRulesCache`.
-if (keymapReady) {
-  installFacePersistence();
-  try {
-    const json = await window.host.readFaces();
-    faceOverridesCache = jsonToLispOverrides(json, lispFactories);
-    userFacesCache = jsonToLispUserFaces(json, lispFactories);
-    highlightRulesCache = jsonToLispHighlightRules(
-      json,
-      lispFactories,
-      arrayToList,
-      cons
-    );
-    interpreter.call('set-user-faces!', userFacesCache);
-    interpreter.evaluate('(set-face-overrides! (load-face-overrides!))');
-  } catch (error) {
-    repl.appendError(
-      `faces: failed to load overrides — ${error.lispMessage ?? error.message}`
-    );
-  }
-}
-
-if (keymapReady) await loadUserConfig();
-
-// Sync the `--tab-width` CSS variable with the live *tab-width*
-// setting. Runs after stdlib + user config load so a user-customised
-// value lands here. The `on-change` hook (installed via
-// `custom-on-change!` below) keeps the var in sync afterwards.
-if (keymapReady) {
-  try {
-    const value = interpreter.evaluate('*tab-width*');
-    interpreter.call('set-css-tab-width!', value);
-    // Install an on-change hook so subsequent customise edits update
-    // the CSS var. The Lisp side stores the hook in the *custom-registry*;
-    // we wrap a host-side closure as a Lisp lambda via `eval`.
-    interpreter.evaluate(`
-      (set! *custom-registry*
-        (assoc *custom-registry* '*tab-width*
-          (assoc (get *custom-registry* '*tab-width* {})
-                 :on-change (lambda (_n v) (set-css-tab-width! v)))))
-    `);
-  } catch (error) {
-    repl.appendError(`tab-width sync failed: ${error.lispMessage ?? error.message}`);
-  }
-}
-// Sync the editor line-height CSS var from *line-height* on startup; the
-// defcustom's on-change keeps it current after customise edits.
-if (keymapReady) {
-  try {
-    interpreter.call('set-css-line-height!', interpreter.evaluate('*line-height*'));
-  } catch { /* an old config without the setting — the CSS default stands */ }
-}
-if (keymapReady) applyCurrentTheme();
-if (keymapReady) applyCurrentFaceStyles();
+// B2.2b (plans/MODEL-B-DEFAULT.md): the CSS knobs (--tab-width / --line-height)
+// are server-authoritative now, like theme + faces (B1.3). The spine pushes a
+// `css-knobs` directive on connect (and re-pushes on change), applied in
+// applyDirective above — so there is no local boot-time knob sync here, and the
+// renderer's set-css-* are no-ops. The host-injected *tab-width* on-change moved
+// to the spine.
 
 // Kick off the doc manifest fetch — fire-and-forget. The
 // `load-doc-manifest!` primitive returns the cached value once it
@@ -5803,7 +2524,6 @@ window.host
   .readDocManifest()
   .then((manifest) => {
     if (manifest === null) return;
-    docManifestNames = manifest.names;
     // The navigation node tree (TeXinfo-style): hand it to the doc-view so
     // it can render the sidebar, breadcrumb, and Next/Prev/Up. If the Manual
     // panel is already open (docs opened before the manifest resolved), push
@@ -5846,6 +2566,12 @@ const { highlighters, foldCaptures } = await loadLanguageHighlighters(
   highlightOverrideStore
 );
 document.body.dataset.treesitter = Object.keys(highlighters).join(',');
+
+// Bridge the loaded highlighters to embedded editors that mount their OWN
+// <text-view> over a renderer-local buffer (the notebook-cells view), so they
+// highlight without re-running loadLanguageHighlighters. Mirrors the
+// window.__godotNotebookEval host→view bridge.
+window.__godotHighlighters = { highlighters, foldCaptures };
 
 // --- G2: route ONE real view through the Model-B server -----------------
 //
@@ -5917,10 +2643,16 @@ if (window.host && window.host.serverMode) {
   // `{kind:'split',orientation,ratio,first,second}` /
   // `{kind:'leaf',id,bufferId,focused,name,point,mark,tabline?,tabs?}` (no pixels).
   let serverPaneTreeWire = null;
-  // The shell sources still open in this window (fanned per PANE_TREE). A cached
-  // shell whose session leaves this set was closed → reaped (pty killed + element
-  // disposed) in the reconcile; a switch-away keeps it here, so it survives.
-  let serverLiveShells = new Set();
+  // The live-process sources (shell + gnuplot) still open in this window (fanned
+  // per PANE_TREE). A cached process whose session leaves this set was closed →
+  // reaped (child killed + element disposed) in the reconcile; a switch-away
+  // keeps it here, so it survives.
+  let serverLiveProcs = new Set();
+  // The open browser sources in this window (fanned per PANE_TREE, the twin of
+  // serverLiveProcs). A cached <browser-view> whose source leaves this set was
+  // closed → its webview element is disposed in the reconcile; a switch-away
+  // keeps it here, so its Chromium page survives.
+  let serverLiveBrowsers = new Set();
   // Step 3b: per-buffer STATIC mirrors for panes showing a DIFFERENT buffer than
   // the focused/active one. Seeded + refreshed from each PANE_TREE leaf's `text`
   // (not live deltas — they update on a structural/focus change, which is when a
@@ -6028,7 +2760,10 @@ if (window.host && window.host.serverMode) {
       const elementKind = w.viewKind === 'element';
       const jukeboxKind = w.viewKind === 'jukebox';
       const bookmarkKind = w.viewKind === 'bookmark';
-      const shellKind = w.viewKind === 'shell';
+      const browserKind = w.viewKind === 'browser';
+      const procViewKind = isProcViewKind(w.viewKind); // shell | gnuplot
+      const customizeKind = w.viewKind === 'customize';
+      const docKind = w.viewKind === 'doc'; // B4: docs are a server data-source now
       let extras;
       if (bookmarkKind) {
         // The outline of a text buffer's bookmarks. The server holds the records
@@ -6052,16 +2787,16 @@ if (window.host && window.host.serverMode) {
           keyboard: s.keyboard,
           noFocus: s.noFocus === true,
         };
-      } else if (shellKind) {
-        // A SHELL data-source (M-x shell). The server owns the descriptor
-        // (sessionId + cwd, both server-minted); the renderer drives a real pty
-        // in MAIN by `sessionId` via the existing shell:* IPC (the server never
-        // touches the process). `spawned`/`ended` are client-owned flags on the
-        // (persisted) view object — the view is exempt from the switch-away prune
-        // (see reconcileServerPaneTree), so a buffer-switch/split never respawns;
-        // the pty is reaped only when the data-source is closed. Per-instance,
-        // not a singleton: each shell owns its own <shell-view> + xterm + pty, so
-        // several render at once (a split, or a bottom tabline of shells).
+      } else if (procViewKind) {
+        // A LIVE-PROCESS data-source (shell / gnuplot). The server owns the
+        // descriptor (sessionId + cwd, both server-minted); the renderer drives
+        // the child in MAIN by `sessionId` via the existing shell:*/gnuplot:* IPC
+        // (the server never touches the process). `spawned`/`ended` are
+        // client-owned flags on the (persisted) view object — the view is exempt
+        // from the switch-away prune (see reconcileServerPaneTree), so a
+        // buffer-switch/split never respawns; the child is reaped only when the
+        // data-source is closed. Per-instance, not a singleton: each owns its own
+        // <shell-view>/<gnuplot-view> + child, so several render at once.
         const s = (w.state && typeof w.state === 'object') ? w.state : {};
         extras = {
           sessionId: typeof s.sessionId === 'string' ? s.sessionId : w.bufferId,
@@ -6069,12 +2804,20 @@ if (window.host && window.host.serverMode) {
           ended: false,
           spawned: false,
         };
+      } else if (browserKind) {
+        // A BROWSER data-source carries its url on the wire `state`; the
+        // <browser-view> (Electron <webview>) reads `view.url` and navigates
+        // there. The live page (history/scroll) is per-instance renderer state
+        // — the server only owns the url, like a shell's cwd.
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = { url: typeof s.url === 'string' && s.url !== '' ? s.url : 'about:blank' };
       } else if (directoryKind) {
         extras = { rootPath: w.filePath, expanded: new Set() };
       } else if (jukeboxKind) {
-        // The server lists the directory's audio files + album art; the client
-        // formats per-track labels (the same Lisp helper + audio-metadata IPC as
-        // flag-off) and plays tracks via media:// URLs (jukebox-view).
+        // The server lists the directory's audio files + album art AND formats the
+        // per-track labels (format-track via the standalone audio-metadata reader,
+        // in spine.openJukebox — no renderer interpreter); the client plays tracks
+        // via media:// URLs (jukebox-view).
         const s = (w.state && typeof w.state === 'object') ? w.state : {};
         const dir = typeof s.dir === 'string' ? s.dir : '';
         const tracks = Array.isArray(s.tracks) ? s.tracks : [];
@@ -6082,12 +2825,33 @@ if (window.host && window.host.serverMode) {
           dir,
           tracks,
           art: typeof s.art === 'string' ? s.art : null,
-          labels: tracks.map((t) => formatTrackLabel(joinPath(dir, t))),
+          // Server-formatted labels ride the data-source state; bare filenames if absent.
+          labels: Array.isArray(s.labels) ? s.labels : tracks,
           // refresh (g) re-reads the dir — deferred in server mode (v1 is
           // immutable; the mutable-source seam would re-scan + restate).
           refresh: () => {},
           // quit (q) stops playback; the pane itself closes via the tabline ×.
           quit: () => { try { audio.stop(); } catch { /* ignore */ } },
+        };
+      } else if (customizeKind) {
+        // The customize view: the server leaf carries only the SCOPE
+        // ({group|variable|face}); the (pre-configured singleton) view renders
+        // the model + applies value/face edits from the CLIENT's interpreter,
+        // which holds the same defcustom/face registry. Default = 'godot' group.
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          scope: (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' },
+        };
+      } else if (docKind) {
+        // B4: a server 'doc' data-source carries the doc NAME (a manifest page /
+        // nav node) or a live docstring's Markdown `source`. The HTML is filled
+        // asynchronously below (read render-side via the host, or rendered from
+        // the source); the <doc-view> renders from view.html + the nav manifest.
+        const s = (w.state && typeof w.state === 'object') ? w.state : {};
+        extras = {
+          docName: typeof s.docName === 'string' ? s.docName : '',
+          docSource: typeof s.source === 'string' ? s.source : null,
+          html: '',
         };
       } else {
         extras = { filePath: w.filePath };
@@ -6105,9 +2869,18 @@ if (window.host && window.host.serverMode) {
       v._serverBufferId = w.bufferId;
       serverMediaViews.set(w.bufferId, v);
       // Only media needs an async byte-load; directory / element / jukebox /
-      // bookmark / shell render themselves from the spec / state.
-      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind && !shellKind) {
+      // bookmark / shell / browser / doc render themselves from the spec / state.
+      if (!directoryKind && !elementKind && !jukeboxKind && !bookmarkKind
+          && !procViewKind && !customizeKind && !browserKind && !docKind) {
         loadServerMediaSrc(v, w.filePath);
+      }
+      // B4: the <doc-view> self-fetches its content from docName / docSource (see
+      // configureDocView's readPage / renderMarkdown), so the reconcile only
+      // refines the tab name from the nav tree — no host-side fill, no element
+      // lookup (which differs by mount path).
+      if (docKind) {
+        const node = docNavTree && docNavTree.nodes ? docNavTree.nodes[v.docName] : null;
+        if (node && typeof node.title === 'string') v.name = node.title;
       }
     }
     // The bookmark outline is a MUTABLE data-source: refresh the (possibly
@@ -6121,6 +2894,16 @@ if (window.host && window.host.serverMode) {
       v.sourceName = typeof s.sourceName === 'string' ? s.sourceName : '';
       v.sourceBufferId = s.sourceBufferId ?? null;
       v.pinned = s.pinned === true; // drives the thumbtack (pinned vs following)
+    }
+    // The customize view is likewise mutable: refresh its scope AND its
+    // server-computed model from the wire on every reconcile, so an openScope
+    // (CUSTOMIZE_OP) navigation or a value/face edit (setState fan-out) re-renders
+    // the (reused, pre-configured singleton) view from the pushed data. B2.3: the
+    // model is computed server-side now; the renderer renders from state.model.
+    if (w.viewKind === 'customize') {
+      const s = (w.state && typeof w.state === 'object') ? w.state : {};
+      v.scope = (s.scope && typeof s.scope === 'object') ? s.scope : { group: 'godot' };
+      v.model = (s.model && typeof s.model === 'object') ? s.model : null;
     }
     return v;
   }
@@ -6366,14 +3149,26 @@ if (window.host && window.host.serverMode) {
       if (t.viewKind && t.viewKind !== 'text') {
         return buildServerMediaView({
           bufferId: t.bufferId, viewKind: t.viewKind, name: t.name, filePath: t.filePath,
+          // Carry the tab's data-source state (scope / records / tracks): this
+          // build REUSES the cached view, so omitting state let its mutable
+          // refresh clobber the scope to the fallback (customize showed godot).
+          state: t.state,
         });
       }
       // A text tab: the active one is the façade/static content; the rest proxies.
-      return t.bufferId === activeId
-        ? activeTextView
-        : ensureServerProxy({
-            id: t.bufferId, name: t.name, modified: t.modified, filePath: t.filePath,
-          });
+      if (t.bufferId === activeId) {
+        // Stamp the wire's bufferId on the active view too (re-stamped on
+        // every reconcile): the tab-close handler must resolve the id from
+        // the SAME wire data the strip renders — the old fallback through
+        // serverViewClient.currentBufferId() lags the server's re-points
+        // (a close-active-tab sequence left it pointing at a killed buffer,
+        // making the next active-tab × a silent no-op).
+        activeTextView._serverBufferId = t.bufferId;
+        return activeTextView;
+      }
+      return ensureServerProxy({
+        id: t.bufferId, name: t.name, modified: t.modified, filePath: t.filePath,
+      });
     });
     const activeIdx = tabs.findIndex((t) => t.bufferId === activeId);
     tlv.active = activeIdx >= 0 ? activeIdx : 0;
@@ -6407,21 +3202,19 @@ if (window.host && window.host.serverMode) {
     return v;
   }
 
-  /** Reap a CLOSED shell: kill its pty + dispose its <shell-view> wherever it
-   *  lives (a bare-leaf element via shellElementByView, or a tabline tab via the
-   *  tabline's editorByChild) and drop it from the media cache. Called from the
-   *  reconcile when the shell's source has left the server's open-set. */
-  function reapServerShell(view, sourceId) {
-    if (shellElementByView.has(view)) {
-      // Bare leaf: disposeShellElementForView kills the pty + destroys the xterm.
-      disposeShellElementForView(view);
+  /** Reap a CLOSED live-process view (shell/gnuplot): kill its child + dispose
+   *  its element wherever it lives (a bare-leaf element via procViewElementByView,
+   *  or a tabline tab via the tabline's editorByChild) and drop it from the media
+   *  cache. Called from the reconcile when the source has left the open-set. */
+  function reapProcView(view, sourceId) {
+    if (procViewElementByView.has(view)) {
+      // Bare leaf: disposeProcViewElement kills the child + destroys the element.
+      disposeProcViewElement(view);
     } else {
       // Tabline tab: the element lives in the tabline's editorByChild — kill the
-      // pty ourselves (the element's destroy() only tears down the xterm) then
-      // dispose + un-register it.
-      if (typeof view.sessionId === 'string') {
-        try { window.host?.shellKill?.(view.sessionId); } catch { /* already gone */ }
-      }
+      // child ourselves (the element's destroy() only tears down the view) then
+      // dispose + un-register it. disposeKindView dispatches shellKill/gnuplotKill.
+      try { disposeKindView(view); } catch { /* already gone */ }
       for (const st of tablineStateByView.values()) {
         const el = st.editorByChild.get(view);
         if (el) {
@@ -6510,23 +3303,40 @@ if (window.host && window.host.serverMode) {
     for (const id of [...serverMediaViews.keys()]) {
       if (!shownMedia.has(id)) {
         const v = serverMediaViews.get(id);
-        // A SHELL is a live process: leaving the visible tree (a buffer-switch,
-        // a C-x 0 that collapses its pane, a tab change) must NOT reap it. Keep
-        // the cached view + its <shell-view>/xterm/pty alive (hideInactiveShells
-        // hides the element); it is reaped only when its data-source is actually
-        // closed (reconcileShellSources, driven by the server's live-shell set).
-        if (v && v.kind === 'shell') continue;
+        // A LIVE-PROCESS view (shell/gnuplot) is a running child: leaving the
+        // visible tree (a buffer-switch, a C-x 0 that collapses its pane, a tab
+        // change) must NOT reap it. Keep the cached view + its element/child alive
+        // (hideInactiveProcViews hides the element); it is reaped only when its
+        // data-source is actually closed (the reap loop below, driven by the
+        // server's live-process set).
+        if (v && isProcViewKind(v.kind)) continue;
+        // A BROWSER is per-instance renderer state (a live Chromium <webview>):
+        // like a proc view, a switch-away must NOT reap it — re-creating the
+        // element would reset the page (history/scroll/url). Keep it cached +
+        // mounted (hideInactiveBrowsers hides it); reaped only on a real close
+        // (the browser reap loop below, driven by serverLiveBrowsers).
+        if (v && v.kind === 'browser') continue;
         if (v && v.kind === 'bookmark') disposeBookmarkElementForView(v);
         serverMediaViews.delete(id);
       }
     }
-    // Reap CLOSED shells: a shell whose source left the server's open-set
-    // (serverLiveShells) was killed (C-x k / tab ×) — kill its pty + dispose its
-    // element. A switch-away keeps the source open, so it's still here and
-    // survives (the prune above already exempted it). Keyed by source id, which
-    // is the sessionId.
+    // Reap CLOSED live-process views: a shell/gnuplot whose source left the
+    // server's open-set (serverLiveProcs) was killed (C-x k / tab ×) — kill its
+    // child + dispose its element. A switch-away keeps the source open, so it's
+    // still here and survives (the prune above already exempted it). Keyed by
+    // source id, which is the sessionId.
     for (const [id, v] of [...serverMediaViews]) {
-      if (v && v.kind === 'shell' && !serverLiveShells.has(id)) reapServerShell(v, id);
+      if (v && isProcViewKind(v.kind) && !serverLiveProcs.has(id)) reapProcView(v, id);
+    }
+    // Reap CLOSED browser views: a <browser-view> whose source left the server's
+    // open-set (serverLiveBrowsers) was closed (C-x k / tab ×) — dispose its
+    // webview element + drop the cache. A switch-away keeps it open (exempted
+    // above), so its page survives. Keyed by the data-source id.
+    for (const [id, v] of [...serverMediaViews]) {
+      if (v && v.kind === 'browser' && !serverLiveBrowsers.has(id)) {
+        disposeBrowserElementForView(v);
+        serverMediaViews.delete(id);
+      }
     }
     // Drop minimap companions whose leaf left the tree (toggle-off / target
     // deleted): dispose the <minimap-view> element + clear its target binding.
@@ -6590,15 +3400,15 @@ if (window.host && window.host.serverMode) {
             // Preserve scroll on a focus/relayout re-point (only reveal on a
             // genuine buffer switch) — never scroll the document on focus.
             try { repointServerTextEl(el, activeChild); } catch { /* ignore */ }
-          } else if (el && typeof el.setBuffer === 'function' && activeChild.kind !== 'shell') {
+          } else if (el && typeof el.setBuffer === 'function' && !isProcViewKind(activeChild.kind)) {
             // Media (image/audio/video/pdf) re-binds via setBuffer so swapping one
-            // media tab in over another re-points the element. A SHELL is NOT
-            // re-bound: its <shell-view> is already bound 1:1 to its pty session
-            // (ensureTabElement set it once), and a redundant setBuffer re-enters
-            // the async ensureTerminal() — racing a SECOND Terminal build, which
-            // leaves the visible grid blank even though the pty spawned and bytes
-            // arrive. This is the tabline-path twin of the ensureShellElementForView
-            // guard; the bare-leaf path has no re-point, which is why it worked.
+            // media tab in over another re-points the element. A LIVE-PROCESS view
+            // (shell/gnuplot) is NOT re-bound: its element is already bound 1:1 to
+            // its child session (ensureTabElement set it once), and a redundant
+            // setBuffer re-enters the view's async build — racing a SECOND instance
+            // + double-spawn, which leaves the visible view blank even though the
+            // child spawned and output arrives. This is the tabline-path twin of
+            // the ensureProcViewElement guard; the bare-leaf path has no re-point.
             try { el.setBuffer(activeChild); } catch { /* ignore */ }
           }
         }
@@ -6622,11 +3432,12 @@ if (window.host && window.host.serverMode) {
         // A bookmark outline re-mounts on EVERY reconcile (its records refresh on
         // fan-out); only focus it when it is the focused leaf, so a `C-x r m`
         // from the document — which refreshes the open outline — doesn't yank
-        // focus off the document. A SHELL follows the same rule: with a shell in a
-        // split beside the document, an unrelated reconcile must not yank the
-        // keyboard into the terminal. Other media keep the old always-focus path.
+        // focus off the document. A LIVE-PROCESS view (shell/gnuplot) follows the
+        // same rule: with one in a split beside the document, an unrelated
+        // reconcile must not yank the keyboard into it. Media keep always-focus.
         const focus = !(
-          (leaf.view.kind === 'bookmark' || leaf.view.kind === 'shell')
+          (leaf.view.kind === 'bookmark' || leaf.view.kind === 'browser'
+            || isProcViewKind(leaf.view.kind))
           && leaf.id !== currentPaneId
         );
         mountKindView(leaf.view, { paneEl: paneElements.get(leaf.id), focus });
@@ -6646,6 +3457,12 @@ if (window.host && window.host.serverMode) {
     hideInactiveSingletons();
     relayoutPanes();
     refreshPaneFocusIndicators();
+    // Now that the server tree is applied and every leaf is mounted, (re)compute
+    // the project dir-tree's editing-pane target so a file opened from the tree
+    // lands in the middle tabline, not the tree's own pane. Under Model B the
+    // pane tree is server-driven, so this must run on each reconcile (the old
+    // renderer-driven project path did it once at open). A no-op with no tree.
+    reapplyProjectDirTreeTarget();
     // Bind each minimap companion to its target leaf's <text-view> now that every
     // leaf has mounted + laid out (deferred a microtask; a no-op when none exist).
     scheduleMinimapReconcile();
@@ -6691,7 +3508,7 @@ if (window.host && window.host.serverMode) {
     // tabline focused leaf) the façade element in its active tab.
     const focusedInstance = focusedServerLeafElement;
     return {
-      setView: () => { const i = focusedInstance(); if (i) { try { i.setView(i.boundView ?? serverFacadeView); } catch { /* ignore */ } } },
+      setView: (_requestedView, opts) => { const i = focusedInstance(); if (i) { try { i.setView(i.boundView ?? serverFacadeView, opts); } catch { /* ignore */ } } },
       focus: () => { const i = focusedInstance(); if (i) { try { i.focus(); } catch { /* ignore */ } } },
       recenter: () => { const i = focusedInstance(); if (i) { try { i.recenter(); } catch { /* ignore */ } } },
       pageLines: () => { const i = focusedInstance(); try { return i ? i.pageLines() : 0; } catch { return 0; } },
@@ -6702,13 +3519,15 @@ if (window.host && window.host.serverMode) {
   /** A server PANE_TREE push: store it and render the new layout — splits appear
    *  / collapse, a tabline leaf re-renders. Every window renders from its
    *  PANE_TREE now (the unify); a push before the first mirror is just stored. */
-  function applyServerPaneTree(tree, liveShells) {
+  function applyServerPaneTree(tree, liveProcs, liveBrowsers) {
     serverPaneTreeWire = tree;
-    // The shell sources still open in this window (server's open-set). A shell
-    // whose session is NOT here was closed (C-x k / tab ×) — reaped below. Only
-    // update when the server actually sent the field (every PANE_TREE does), so
-    // a stray push without it can't wrongly reap every shell.
-    if (Array.isArray(liveShells)) serverLiveShells = new Set(liveShells);
+    // The live-process sources (shell + gnuplot) still open in this window
+    // (server's open-set). A process whose session is NOT here was closed (C-x k /
+    // tab ×) — reaped below. Only update when the server actually sent the field
+    // (every PANE_TREE does), so a stray push without it can't wrongly reap all.
+    if (Array.isArray(liveProcs)) serverLiveProcs = new Set(liveProcs);
+    // The open browser sources (same seam, for <webview> elements).
+    if (Array.isArray(liveBrowsers)) serverLiveBrowsers = new Set(liveBrowsers);
     if (serverMirror) renderServerPaneLayout();
   }
 
@@ -6767,14 +3586,26 @@ if (window.host && window.host.serverMode) {
     // The server bakes the modeline string (renderModeline). Show it whole in
     // the name slot; the line:col is already inside the string, so the position
     // slot is cleared (the server is authoritative for it now).
-    setModeline: (modeline) => {
+    setModeline: (modeline, v) => {
       nameEl.textContent = modeline;
       positionEl.textContent = '';
       document.title = `${modeline} — Godot`;
+      // The server computes the focused buffer's mode menu (the client's own
+      // interpreter is inert under GODOT_SERVER=1) and ships it in the view-state;
+      // forward it to the macOS app menu so the menu follows the buffer's mode.
+      if (v && 'modeMenu' in v) applyServerModeMenu(v.modeMenu);
+      // Markdown-preview forward search: follow the cursor line in the preview.
+      if (v && typeof v.cursorLine === 'number') previewScrollToCursor(v.cursorLine);
+      // Live preview: on a text change, debounce a save-free refresh (the
+      // guard inside skips cursor-only pushes and non-previewed buffers).
+      schedulePreviewSync();
     },
     // The echo area: a mid-chord prefix (e.g. "C-x-") or a one-off status. The
     // minibuffer component reuses its row as the echo area when no prompt is up.
     setEcho: (status) => minibuffer.setStatus(status ?? ''),
+    // The echo area as STYLED segments ([{ text, color, bold }]) — e.g. the
+    // quit walk's red Save prompt with a bold filename. Plain setEcho otherwise.
+    setEchoRich: (segments) => minibuffer.setStatusRich(segments),
     // A server-suspended minibuffer read: open the real minibuffer; its input
     // routes back up as MINIBUFFER_* intents (the spine resumes the command).
     // On submit/cancel, return focus to the server view so typing resumes.
@@ -6840,6 +3671,388 @@ if (window.host && window.host.serverMode) {
         window.host.newWindow(geometry);
       }
     },
+    // P2: a CLIENT_DIRECTIVE — the server told THIS window to perform a
+    // renderer-side action. The server already chose the recipients (this /
+    // other / all windows); we just apply it. `close-window` (C-x 5 0, or
+    // C-x 5 1 from another window) closes this window via the host; the server
+    // keeps the buffers. New directive names slot in as they're ported.
+    applyDirective: (name, args) => {
+      if (name === 'close-window') {
+        if (window.host && typeof window.host.closeWindow === 'function') {
+          window.host.closeWindow();
+        }
+      } else if (name === 'quit') {
+        // P2c: the spine's quit-editor already walked the unsaved buffers
+        // across all windows (save-some-buffers), so run the shutdown ritual
+        // directly — no second dirty check.
+        performShutdown();
+      } else if (name === 'show-help') {
+        // P3: describe-key (C-h k) / describe-command (C-h f) resolved a
+        // command server-side and asked THIS window to surface its docstring.
+        // args = [heading, docstring]; the dock owns one reusable Help tab.
+        displayDocPanel({
+          id: HELP_TAB_ID, title: 'Help', icon: 'fa-solid fa-circle-question',
+          heading: String(args?.[0] ?? ''), body: String(args?.[1] ?? ''),
+          empty: '_No documentation._',
+        });
+      } else if (name === 'show-apropos') {
+        // P3: apropos (C-h a) matched commands server-side and asked THIS
+        // window to list them. args = [heading, markdown-list].
+        displayDocPanel({
+          id: APROPOS_TAB_ID, title: 'Apropos', icon: 'fa-solid fa-list-ul',
+          heading: String(args?.[0] ?? ''), body: String(args?.[1] ?? ''),
+          empty: '_(none)_',
+        });
+      } else if (name === 'markdown-preview') {
+        // P3: the JMarkdown live-preview toggle (C-c v / the Markdown/JMarkdown
+        // mode menu). The server resolved the command and sent the active
+        // buffer's saved path (args[0], '' when unsaved); toggle the preview
+        // pane here, pointing it at the real `jmarkdown watch` server.
+        toggleMarkdownPreview(String(args?.[0] ?? ''));
+      } else if (name === 'recenter-current-line') {
+        // SyncTeX inverse search: center the just-revealed line. Goes through the
+        // ACTIVE editorView (correctly re-pointed at the source pane on mount) —
+        // the server's onScroll/recenter path targets serverViewClient's own view,
+        // which is the wrong object after a pane switch (line stuck at the edge).
+        if (editorView && typeof editorView.recenter === 'function') {
+          editorView.recenter();
+        }
+      } else if (name === 'flash-current-line') {
+        // Inverse search (Markdown-preview ⌘-click): the server moved + centered
+        // the cursor; flash its line so the user sees where the jump landed. The
+        // view defers the flash to the next render, so it lands on the just-moved
+        // line regardless of whether this arrives before or after the cursor view.
+        if (editorView && typeof editorView.flashCurrentLine === 'function') {
+          editorView.flashCurrentLine();
+        }
+      } else if (name === 'markdown-preview-sync') {
+        // Explicit forward search (C-c C-v): scroll the preview to the cursor's
+        // line (args[0], 1-based) and flash it, regardless of the follow setting.
+        previewSyncToCursor(Number(args?.[0]));
+      } else if (name === 'enter-add-pane-mode') {
+        // The visual add-pane macro (C-x + / M-x add-pane): the server asked
+        // THIS window to show the overlay over #editor-host. Re-entry toggles it
+        // off. A picked splitter / border sends a PANE_INTENT the server applies
+        // to this window's pane model (it re-pushes PANE_TREE with the new pane).
+        // The overlay reads the server-synced `rootPane` (ids match the server).
+        if (addPaneModeHandle && addPaneModeHandle.active) {
+          addPaneModeHandle.exit();
+          addPaneModeHandle = null;
+        } else {
+          const sendPane = (intent) => {
+            if (serverViewClient && typeof serverViewClient.sendPaneIntent === 'function') {
+              serverViewClient.sendPaneIntent(intent);
+            }
+          };
+          addPaneModeHandle = enterAddPaneMode({
+            host: editorHostEl,
+            getRootPane: () => rootPane,
+            onPickSplitter: (splitId) => {
+              sendPane({ op: 'add-at-splitter', paneId: splitId });
+              addPaneModeHandle = null;
+            },
+            onPickBorder: (side) => {
+              sendPane({ op: 'add-at-border', side });
+              addPaneModeHandle = null;
+            },
+          });
+          // Escape tears the overlay down itself; drop our handle so a re-entry
+          // doesn't try to exit() a dead overlay.
+          if (addPaneModeHandle) {
+            const original = addPaneModeHandle.exit;
+            addPaneModeHandle.exit = () => { original(); addPaneModeHandle = null; };
+          }
+        }
+      } else if (name === 'enter-move-views-mode') {
+        // The visual swap-views / permute-views macro (args[0] = 'swap'|'permute'):
+        // badge every pane, read the user's picks, then commit ONE structural
+        // rearrangement. Re-entry toggles the overlay off. We translate the
+        // overlay's badge-number assignments into leaf IDS — using the SAME
+        // spiral order it badged — and send ONE move-views PANE_INTENT; the
+        // server moves the leaves (a browser/pdf/shell guest rides along, not
+        // recreated), keeping the geometry decision on the client.
+        const moveMode = args?.[0] === 'permute' ? 'permute' : 'swap';
+        if (moveViewsModeHandle && moveViewsModeHandle.active) {
+          moveViewsModeHandle.exit();
+          moveViewsModeHandle = null;
+        } else {
+          moveViewsModeHandle = enterMoveViewsMode({
+            mode: moveMode,
+            host: editorHostEl,
+            getRootPane: () => rootPane,
+            onCommit: (assignments) => {
+              moveViewsModeHandle = null;
+              if (!Array.isArray(assignments)) return;
+              const rect = editorHostEl.getBoundingClientRect();
+              const { ordered } = spiralOrder(rootPane, { width: rect.width, height: rect.height });
+              const n = ordered.length;
+              if (n === 0) return;
+              // occupantBySlot[s] = the leaf whose content should land at slot s.
+              const occupantBySlot = new Array(n);
+              if (moveMode === 'swap') {
+                for (let i = 0; i < n; i += 1) occupantBySlot[i] = ordered[i];
+                const a = assignments[0] - 1;
+                const b = assignments[1] - 1;
+                if (a < 0 || b < 0 || a >= n || b >= n) return;
+                const tmp = occupantBySlot[a];
+                occupantBySlot[a] = occupantBySlot[b];
+                occupantBySlot[b] = tmp;
+              } else {
+                if (assignments.length !== n) return;
+                for (let k = 0; k < n; k += 1) {
+                  const dest = assignments[k] - 1;
+                  if (dest < 0 || dest >= n) return;
+                  occupantBySlot[dest] = ordered[k];
+                }
+              }
+              if (occupantBySlot.some((leaf) => !leaf)) return; // incomplete pick
+              if (serverViewClient && typeof serverViewClient.sendPaneIntent === 'function') {
+                serverViewClient.sendPaneIntent({
+                  op: 'move-views',
+                  slotOrder: ordered.map((l) => l.id),
+                  occupants: occupantBySlot.map((l) => l.id),
+                });
+              }
+            },
+          });
+          if (moveViewsModeHandle) {
+            const original = moveViewsModeHandle.exit;
+            moveViewsModeHandle.exit = () => { original(); moveViewsModeHandle = null; };
+          }
+        }
+      } else if (name === 'theme-apply') {
+        // B1.3 (plans/MODEL-B-DEFAULT.md): the spine pushed the theme's CSS
+        // variables (JSON array of [--var, value]). Apply them to :root and
+        // notify theme listeners (e.g. the shell's xterm palette). The server is
+        // authoritative — the renderer no longer computes the theme itself.
+        try {
+          const pairs = JSON.parse(String(args?.[0] ?? '[]'));
+          for (const [cssVar, value] of pairs) {
+            if (typeof cssVar === 'string' && cssVar.startsWith('--') && value !== '') {
+              document.documentElement.style.setProperty(cssVar, String(value));
+            }
+          }
+          for (const listener of themeListeners) {
+            try { listener(); } catch { /* listener bug — keep going */ }
+          }
+        } catch { /* malformed payload — keep the current theme */ }
+      } else if (name === 'faces-apply') {
+        // B1.3: the spine pushed the prebuilt face-overrides CSS string; inject it
+        // into <style id="face-overrides"> (writeFaceStyleElement). No local
+        // face-styles computation needed.
+        writeFaceStyleElement(document, String(args?.[0] ?? ''));
+      } else if (name === 'highlight-rules') {
+        // B1.3: the spine pushed the user's highlight-rule records (JSON
+        // {scope,key,pattern,face}). Replace the override store + re-highlight.
+        try {
+          const entries = JSON.parse(String(args?.[0] ?? '[]'));
+          highlightOverrideStore.replaceAll(entries);
+          rerenderAllEditors();
+        } catch { /* malformed — keep current highlighting */ }
+      } else if (name === 'css-knobs') {
+        // B2.2b: the spine pushed the editor's CSS knobs ({tabWidth, lineHeight}).
+        // Apply them to the document root's CSS vars — the renderer's set-css-*
+        // primitives are no-ops now; the server drives these like theme/faces.
+        // Clamp defensively (the old set-css-* primitives did the same).
+        try {
+          const { tabWidth, lineHeight } = JSON.parse(String(args?.[0] ?? '{}'));
+          if (Number.isFinite(tabWidth) && tabWidth > 0) {
+            const width = tabWidth | 0;
+            document.documentElement.style.setProperty('--tab-width', String(width));
+            currentTabWidth = width;
+          }
+          if (Number.isFinite(lineHeight) && lineHeight >= 1 && lineHeight <= 3) {
+            document.documentElement.style.setProperty('--line-height', String(lineHeight));
+          }
+        } catch { /* malformed — keep the current knobs */ }
+      } else if (name === 'config-snapshot') {
+        // B0 (plans/B5-B7-TEARDOWN-AUDIT.md): the spine pushed the full set of
+        // renderer-consumed defcustom values as plain JS (on connect, and on any
+        // chrome change). Merge into the config cache so the renderer reads
+        // config without its interpreter. Idempotent.
+        try {
+          const snap = JSON.parse(String(args?.[0] ?? '{}'));
+          for (const [k, v] of Object.entries(snap)) rendererConfig[k] = v;
+        } catch { /* malformed — keep the current cache */ }
+      } else if (name === 'config-apply') {
+        // L6 (plans/B5-B7-TEARDOWN-AUDIT.md): the spine pushed a renderer-consumed
+        // customize setting that changed live, as [varName, valueJson] — the plain
+        // JS value JSON-encoded (clone-safe, mirroring config-snapshot). Merge it
+        // straight into the config cache; every live consumer (markdown preview,
+        // autosave getters, the pdf-restore default) reads from rendererConfig. No
+        // interpreter: the jukebox relabel — the only renderer reactive on-change —
+        // is server-side (relabelJukeboxes), and refresh-jukebox-labels! is a
+        // renderer no-op. (Was a custom-apply! re-eval; the last interpreter use in
+        // this handler, gone for B7.)
+        try {
+          const varName = String(args?.[0] ?? '');
+          if (varName) rendererConfig[varName] = JSON.parse(String(args?.[1] ?? 'null'));
+        } catch { /* malformed — leave the current value */ }
+      } else if (name === 'utility-panel-open') {
+        // B4 (latex-compile.lisp): open/reuse a utility-dock tab. Mirrors the
+        // renderer's old utility-panel-open! primitive — look up the factory and
+        // open the tab without stealing focus. [factory, id, title].
+        const factoryName = String(args?.[0] ?? '');
+        const id = String(args?.[1] ?? factoryName);
+        const title = String(args?.[2] ?? id);
+        const factory = utilityPanelFactories.get(factoryName);
+        if (factory) {
+          utilityDock.openUtilityPanel({
+            id, title,
+            makePanel: (handle) => factory(handle, { title }),
+            focus: false,
+          });
+        }
+      } else if (name === 'utility-panel-set') {
+        // Replace the named panel's content ([id, text]).
+        const panel = utilityDock.getPanel(String(args?.[0] ?? ''));
+        if (panel && typeof panel.setContent === 'function') panel.setContent(String(args?.[1] ?? ''));
+      } else if (name === 'utility-panel-append') {
+        // Append to the named panel's log ([id, text]).
+        const panel = utilityDock.getPanel(String(args?.[0] ?? ''));
+        if (panel && typeof panel.appendOutput === 'function') panel.appendOutput(String(args?.[1] ?? ''));
+      } else if (name === 'utility-panel-activate') {
+        // Bring the named tab forward ([id]).
+        utilityDock.activateUtilityTab(String(args?.[0] ?? ''));
+      } else if (name === 'pdf-reload') {
+        // B4 (latex-compile.lisp): a recompile produced the same pdf path with
+        // new bytes; reload the open pdf-view (bypassing its same-path load
+        // guard). [path] — empty reloads the current pdf; a path reloads only
+        // when the singleton shows that file. Mirrors the old pdf-reload!.
+        const current = pdfView.buffer;
+        if (current) {
+          const wanted = String(args?.[0] ?? '');
+          if (!(wanted !== '' && viewFilePath(current) !== wanted)
+              && typeof pdfView.reload === 'function') {
+            pdfView.reload();
+          }
+        }
+      } else if (name === 'pdf-synctex-show') {
+        // Forward SyncTeX (C-c C-v): the spine ran `synctex view` and asks THIS
+        // window's PDF (when it shows args[0]) to scroll to the page + flash the
+        // typeset box. [path, page, x, y, w, h] (PDF points; page 1-based).
+        // Mirrors the old pdf-synctex-show! prim (the box anchor is x/y, so the
+        // highlight covers the box: { h: x, v: y, w, h_: h }).
+        const current = pdfView.buffer;
+        const wanted = args?.[0] != null ? String(args[0]) : '';
+        const page = Number(args?.[1]);
+        const x = Number(args?.[2]);
+        const y = Number(args?.[3]);
+        if (current
+            && !(wanted !== '' && viewFilePath(current) !== wanted)
+            && Number.isFinite(page) && Number.isFinite(x) && Number.isFinite(y)
+            && typeof pdfView.syncTexShow === 'function') {
+          const w = Number(args?.[4]) || 0;
+          const h = Number(args?.[5]) || 0;
+          pdfView.syncTexShow(page, x, y, { h: x, v: y, w, h_: h });
+        }
+      } else if (name === 'open-project-dialog') {
+        // B4 project Stage 3 (open-project): the spine asked this window to run the
+        // native OS directory picker; the chosen dir goes back up as PROJECT_OPEN
+        // (→ a new project window). The picker is a renderer/main concern.
+        window.host
+          .openDirectory()
+          .then((path) => { if (path) requestOpenProject(path); })
+          .catch((error) => repl.appendError(error.lispMessage ?? error.message ?? String(error)));
+      } else if (name === 'remember-project') {
+        // B4 project: record an opened project in the central index so the
+        // chooser lists it. Under Model B the spine opens projects, so the old
+        // in-place openProject's rememberProject call no longer runs.
+        const root = String(args?.[0] ?? '');
+        if (root) {
+          rememberProject(root).catch((error) =>
+            repl.appendError(error.lispMessage ?? error.message ?? String(error)));
+        }
+      } else if (name === 'open-project-chooser') {
+        // B4 project Stage 3 (project-chooser): show the visual launcher; its
+        // open/openFolder actions route the chosen path up as PROJECT_OPEN.
+        showProjectChooser();
+      } else if (name === 'tree-sitter-query') {
+        // B4 face-info: the spine asked for the focused buffer's tree-sitter info
+        // at a point (tree-sitter is WASM here). Compute the captures + node and
+        // reply up as TREE_SITTER_INFO — the spine resumes the suspended C-h F /
+        // C-h C-f command. Reuses the highlighter (same as the old in-renderer
+        // tree-sitter-captures-for-buffer! / -node-at-point! primitives).
+        const pt = Number(args?.[0] ?? 0);
+        const payload = { lang: null, captures: [], node: null, colors: {} };
+        try {
+          const buf = currentTextBuffer;
+          if (buf && typeof buf.text === 'string') {
+            const language = languageForFilename(buf.name);
+            const hl = language && highlighters[language];
+            if (hl && typeof hl.captures === 'function') {
+              payload.lang = language;
+              payload.captures = hl.captures(buf.text).map((r) => [r.start, r.end, r.face]);
+              // Resolve each distinct face's rendered colour from the live CSS
+              // cascade (--tok-<face>); the spine can't (it has no styles.css /
+              // theme CSS), so it reads these via face-color-for after the reply.
+              const root = getComputedStyle(document.documentElement);
+              for (const [, , face] of payload.captures) {
+                if (face && !(face in payload.colors)) {
+                  payload.colors[face] = root.getPropertyValue(`--tok-${face}`).trim();
+                }
+              }
+              if (typeof hl.nodeAtPoint === 'function') {
+                const info = hl.nodeAtPoint(buf.text, pt);
+                if (info) {
+                  payload.node = {
+                    type: info.type, start: info.start, end: info.end,
+                    ancestors: info.ancestors,
+                  };
+                }
+              }
+            }
+          }
+        } catch (error) {
+          repl.appendError(`tree-sitter: ${error.lispMessage ?? error.message ?? String(error)}`);
+        }
+        if (godotServerPort) {
+          godotServerPort.postMessage({ type: MSG.TREE_SITTER_INFO, ...payload });
+        }
+      } else if (name === 'fold-toggle') {
+        // B4 (folding.lisp): fold a view concern — act on the focused editor.
+        editorView.toggleFoldAtPoint();
+      } else if (name === 'fold-all') {
+        editorView.foldAll();
+      } else if (name === 'unfold-all') {
+        editorView.unfoldAll();
+      } else if (name === 'toggle-repl') {
+        // B4 (system.lisp): show/hide the REPL / utility dock, then tell the
+        // server the new visibility so the workspace keeps it (mirrors the old
+        // toggle-repl! primitive).
+        utilityDock.toggleUtilityDock();
+        if (serverViewClient) serverViewClient.reportDock();
+      } else if (name === 'sticky-add') {
+        // B4 (sticky-notes): the renderer does the whole op so no note id crosses
+        // the wire. Create at the (server-synced) cursor + open it for editing.
+        const id = stickyNotes.create();
+        if (id != null) stickyNotes.edit(String(id));
+      } else if (name === 'sticky-edit') {
+        const id = stickyNotes.noteAtPoint();
+        if (id != null) stickyNotes.edit(String(id));
+        else minibuffer.setStatus('No sticky note near the cursor.');
+      } else if (name === 'sticky-delete') {
+        const id = stickyNotes.noteAtPoint();
+        if (id != null) stickyNotes.remove(String(id));
+        else minibuffer.setStatus('No sticky note near the cursor.');
+      } else if (name === 'sticky-next') {
+        stickyNotes.gotoNext();
+      } else if (name === 'sticky-prev') {
+        stickyNotes.gotoPrevious();
+      } else if (name === 'sticky-toggle') {
+        stickyNotes.toggle();
+      } else if (name === 'inline-eval-result') {
+        // B4 (inline-eval): the spine evaluated a form in its session and pushed
+        // the result (end offset, label, ok). Show the pill beside the form.
+        const end = Number(args?.[0]);
+        const label = String(args?.[1] ?? '');
+        const ok = args?.[2] === true;
+        if (Number.isInteger(end)) {
+          if (ok) inlineEval.showResult(end, label);
+          else inlineEval.showError(end, `! ${label}`);
+        }
+      }
+    },
     // B2: apply a saved window frame to THIS window (SET_WINDOW_BOUNDS, sent to
     // window 1 on restore). main reconciles it against the live displays.
     setWindowBounds: (geometry) => {
@@ -6856,11 +4069,44 @@ if (window.host && window.host.serverMode) {
     // G4 Step 3: the server pushed this window's pane layout. Render it (splits
     // become visible). Only a 'single' (fresh / composable) window reflects the
     // server tree; window 1 keeps its tabline.
-    setPaneTree: (tree, liveShells) => applyServerPaneTree(tree, liveShells),
+    setPaneTree: (tree, liveProcs, liveBrowsers) =>
+      applyServerPaneTree(tree, liveProcs, liveBrowsers),
+    // B4: a server buffer mirror mounted (SNAPSHOT). Point the sticky-notes
+    // overlay manager at it so the buffer's notes (server-pushed onto
+    // mirror.metadata.notes) render on this editor, and (re)bind the inline-eval
+    // pill overlay. Guarded against the init-TDZ trap (stickyNotes / inlineEval
+    // are declared later); a later snapshot re-wires if this fires too early.
+    onServerBuffer: (mirror, serverView) => {
+      // Point currentTextBuffer at the mirror so the overlay managers that read it
+      // — inline-eval positions its pill via getBuffer→currentTextBuffer.positionAt,
+      // and sticky-notes anchors a new note at currentTextBuffer.point — use the
+      // RIGHT buffer (the editor's), not the stale boot scratch. A bare assignment
+      // (not setCurrentTextBuffer): under Model B the SERVER owns dirty/autosave, so
+      // the renderer dirty-watch is moot here.
+      currentTextBuffer = mirror;
+      try {
+        const overlay = serverView && serverView.overlayLayer;
+        if (overlay) {
+          stickyNotes.setOverlayLayer(overlay);
+          inlineEval.setOverlayLayer(overlay);
+        }
+        stickyNotes.setBuffer(mirror);
+      } catch { /* declared later / mid-init — a later snapshot re-wires */ }
+    },
   };
 
   bootServerViewClient = () => {
     if (serverViewClient || !godotServerPort) return;
+    // The cell notebook (M-x notebook-cells) evaluates its cells in the spine's
+    // Node context — the renderer can't (CSP forbids unsafe-eval). Expose the
+    // round-trip as a renderer global the bundled <notebook-cells-view> reads;
+    // lazy so it works regardless of when serverViewClient finishes connecting.
+    // Flag-off this is never set, so the notebook view falls back to local eval
+    // (which the CSP blocks — the notebook is a GODOT_SERVER=1 feature).
+    window.__godotNotebookEval = (source, sessionId) =>
+      serverViewClient && typeof serverViewClient.notebookEval === 'function'
+        ? serverViewClient.notebookEval(source, sessionId)
+        : Promise.reject(new Error('notebook eval needs the server (GODOT_SERVER=1)'));
     serverViewClient = createServerViewClient({
       port: godotServerPort,
       mountView: mountServerView,
@@ -6894,32 +4140,31 @@ if (window.host && window.host.serverMode) {
       // The renderer owns element-view commands (define-element-view, incl.
       // user config): announce their names so the server's M-x routes them
       // back down (RUN_CLIENT_COMMAND), and run them here when it does.
-      clientCommandNames: elementViewCommandNames,
+      clientCommandNames: elementViewKinds,
       runClientCommand: (name, bibPath) => {
-        // SAFETY GATE. Only renderer-owned ELEMENT-VIEW commands (define-element-
-        // view) are safe to run in the inert renderer session — they open a view
-        // through the server's OPEN_ELEMENT_SOURCE channel. The server's M-x
-        // fallback forwards ANY unmatched name here (to catch a LIVE-registered
-        // element-view whose CLIENT_COMMANDS announcement didn't include it), so
-        // REFUSE anything that isn't a current element-view: a typo, or a renderer
-        // command not yet ported to Model B (e.g. `shell`, the old minimap) would
-        // otherwise run `(run-command …)` against the inert session and corrupt
-        // the server-owned layout (the bug that blanked the editor on toggle-minimap).
-        if (!elementViewCommandNames().includes(name)) {
+        // L4 (plans/B5-B7-TEARDOWN-AUDIT.md): element-view dispatch is plain JS
+        // now — the registry + payload come from element-spec.js, not the
+        // renderer interpreter. SAFETY GATE unchanged: the server's M-x fallback
+        // forwards ANY unmatched name here, so REFUSE anything that isn't a
+        // current element-view (a typo, or a renderer command not yet ported to
+        // Model B) — it would otherwise reach the inert session.
+        if (!elementViewKinds().includes(name)) {
           minibuffer.message(`No command: ${name}`);
           return;
         }
         try {
-          // bib-search can't see the active document in server mode (the
-          // renderer session is inert), so the server resolved its bibliography
-          // and sent it here. Pin it via the override the command consults; a
-          // null clears any stale pin. Defensive: a missing var (bib-search not
-          // loaded) must not block the command run.
-          const v = typeof bibPath === 'string' && bibPath !== ''
-            ? writeString(bibPath) : 'nil';
-          try { interpreter.evaluate(`(set! *bib-search-doc-override* ${v})`); }
-          catch { /* bib-search lisp not loaded — fine */ }
-          interpreter.evaluate(`(run-command (quote ${name}))`);
+          // bib-search can't see the active document in server mode (the inert
+          // renderer session), so the server resolved its bibliography and sent
+          // it as bibPath; fold it straight into the open payload (host-file-url
+          // src + a bib-path attr), exactly as the old Lisp command did. The
+          // payload is identical to what open-element-view! built.
+          const payload = elementViewOpenPayload(name, {
+            bibPath,
+            hostFileUrl: vouchHostFileUrl,
+          });
+          if (payload && serverViewClient) {
+            serverViewClient.openElementView(payload);
+          }
         } catch (error) {
           repl.appendError(
             `run ${name}: ${error.lispMessage ?? error.message ?? error}`
@@ -6973,54 +4218,9 @@ if (window.host && window.host.serverMode) {
   if (godotServerPort) bootServerViewClient();
 }
 
-// Install the persisted user highlight rules now that the override store
-// and the highlighters exist. (The faces.json read above already filled
-// `highlightRulesCache`.) Re-render-on-push is a guarded no-op here —
-// the editors mount below — so the rules are simply seeded into the
-// store, ready for the first highlight call.
-if (keymapReady) installHighlightRules();
-
-/** Dispatch a keystroke through the Lisp keymap. */
-function dispatchKey(key) {
-  // M-1..M-9 jumps to the Nth buffer (1-indexed). Intercepted here,
-  // before the Lisp keymap, so the tabline shortcut is unaffected by
-  // user keymap edits. Out-of-range indexes are a no-op (handled).
-  // Placeholders are excluded so the count matches the user-visible
-  // View List (the Nth *real* view, not the Nth `views[]` slot).
-  if (
-    typeof key === 'string' &&
-    key.length === 3 &&
-    key.startsWith('M-') &&
-    key[2] >= '1' &&
-    key[2] <= '9'
-  ) {
-    const nth = Number(key[2]) - 1;
-    const realViews = views.filter((v) => !isPlaceholderView(v));
-    const target = views.indexOf(realViews[nth]);
-    if (target >= 0) switchToViewIndex(target);
-    return true;
-  }
-  try {
-    const handled = interpreter.call('handle-key', key) === true;
-    // A key may have switched mode (e.g. toggle-math-mode) — keep the
-    // mode menu in step.
-    refreshModeMenu();
-    // If point has wandered out of an active snippet's body (an arrow
-    // key, a click-driven move), soft-commit it — the text stays, the
-    // active record is dropped. Field navigation (TAB/S-TAB) keeps point
-    // inside the body, so it does not trip this. A no-op when no snippet
-    // is active (guarded in Lisp).
-    try {
-      interpreter.call('snippet-soft-commit-if-outside');
-    } catch {
-      // Ignore — never let the soft-commit check break key dispatch.
-    }
-    return handled;
-  } catch (error) {
-    repl.appendError(error.lispMessage ?? error.message ?? String(error));
-    return true; // consume the key; the error is visible in the REPL
-  }
-}
+// B1.3: highlight rules are server-authoritative too — the spine pushes
+// highlight-rules on connect (and on change), applied in applyDirective above.
+// No local install at boot. (installHighlightRules stays for reloadStdlib.)
 
 /** Keys that are modifiers in their own right — a bare press of one is
  *  not a keystroke to dispatch (waiting for the real key). */
@@ -7061,7 +4261,11 @@ function targetOwnsKeys(el) {
 // unclaimed are routed here. browser-view is exempt by nature: a focused
 // <webview> delivers keydown to the guest page, which never reaches us.
 window.addEventListener('keydown', (event) => {
-  if (!keymapReady) return;
+  // No keymap-ready gate: before the server view mounts, `mounted` is false and
+  // the swallow-pre-mount arm handles the key (B7 — keymapReady is gone with the
+  // interpreter). The two arms self-gate on `mounted` (serverViewClient.getView()).
+  const serverMode = !!(window.host && window.host.serverMode);
+  const mounted = !!(serverViewClient && serverViewClient.getView());
   // Server-mode (Model B): once the server view is mounted it is the sole
   // dispatcher. A focused TEXT view routes its own keys (its onKey →
   // serverViewClient.dispatchKey), so the global router stands down for it — else
@@ -7069,9 +4273,8 @@ window.addEventListener('keydown', (event) => {
   // NON-TEXT view (a media / element data-source view) has no such onKey, so a
   // command CHORD would be lost and could trap the user on, e.g., a video. Route
   // just those held-modifier chords up to the server here; bare keys
-  // (space=play/pause, arrows=seek) stay with the element. Flag-off
-  // serverViewClient is null, so this whole branch is skipped.
-  if (window.host && window.host.serverMode && serverViewClient && serverViewClient.getView()) {
+  // (space=play/pause, arrows=seek) stay with the element.
+  if (shouldGlobalRouterDefer(serverMode, mounted)) {
     if (event.defaultPrevented) return;            // a deeper listener claimed it
     if (BARE_MODIFIER_KEYS.has(event.key)) return; // a bare modifier press
     if (targetOwnsKeys(event.target)) return;      // minibuffer / native input
@@ -7085,125 +4288,55 @@ window.addEventListener('keydown', (event) => {
     if (serverViewClient.dispatchKey(chord)) event.preventDefault();
     return;
   }
-  // Flag-off (and the pre-mount window): the router runs exactly as today.
-  if (shouldGlobalRouterDefer(
-    !!(window.host && window.host.serverMode),
-    !!(serverViewClient && serverViewClient.getView())
-  )) {
-    return;
+  // Pre-mount (Model B boot window): server-mode is on but the view has not
+  // mounted yet (the SNAPSHOT/mount round-trip is still in flight). There is no
+  // server dispatcher to route to, and the in-renderer interpreter is the idle
+  // mirror the server supersedes (and which B7 deletes) — so SWALLOW command
+  // chords here. Otherwise an early Cmd/Ctrl/Alt chord that reached <body> would
+  // fall through to a native menu accelerator (Close/Open/…) during boot. Bare
+  // keys are harmless — no view to receive them yet. Guards mirror the mounted
+  // arm. (serverMode is permanently true in Model B, so the old flag-off
+  // local-dispatch path that ran here is dead and has been removed.)
+  if (shouldSwallowPreMount(serverMode, mounted)) {
+    if (event.defaultPrevented) return;            // a deeper listener claimed it
+    if (BARE_MODIFIER_KEYS.has(event.key)) return; // a bare modifier press
+    if (targetOwnsKeys(event.target)) return;      // minibuffer / native input
+    if (event.metaKey || event.ctrlKey || event.altKey) event.preventDefault();
   }
-  // A deeper listener already claimed it (focused view, modal, input).
-  if (event.defaultPrevented) return;
-  // A bare modifier press is not a keystroke in its own right.
-  if (BARE_MODIFIER_KEYS.has(event.key)) return;
-  // Native inputs keep every key — including editor chords — so a user
-  // typing in the minibuffer/REPL/url-bar is never interrupted.
-  if (targetOwnsKeys(event.target)) return;
-  // Add-pane mode runs its own transient key handling over the host.
-  if (editorHostEl.dataset.addPane) return;
-
-  // (The pre-Meta Cmd+V/C/X clipboard chords and the capture-phase
-  // Cmd+W close-tab handler used to live here. With Command as Meta,
-  // those chords ARE Emacs bindings — Cmd+W is M-w copy-region, Cmd+X
-  // is M-x, Cmd+V is M-v — and the kill ring already syncs with the
-  // system clipboard. Native inputs returned above keep their own
-  // chords, and an unclaimed Cmd chord falls through to its menu role
-  // (Cmd+C copy, Cmd+Z undo, Cmd+O open…), since menu accelerators
-  // only fire for keydowns the renderer leaves unhandled.)
-
-  const key = keyEventToString(event);
-  // A bare printable character self-inserts; only route that to a text
-  // view. Command keys and chords route regardless of the view kind, so
-  // C-x C-f (etc.) work from an image, pdf or audio view too.
-  if (key.length === 1) {
-    const current = views[currentViewIndex];
-    if (!current || current.kind !== 'text') return;
-  }
-  let handled = dispatchKey(key);
-  // An unbound Option chord that composed a printable character (curly
-  // quotes, accents) self-inserts the composed character into a text
-  // view — a bound `A-…` chord above wins, so Option stays bindable.
-  if (!handled && altComposedInsert(event)) {
-    const current = views[currentViewIndex];
-    if (current && current.kind === 'text') handled = dispatchKey(event.key);
-  }
-  if (handled) event.preventDefault();
 });
 
-// Right-click → Paste (and any other native paste action — the Edit
-// menu's Paste item included). The custom renderer isn't
-// contenteditable, so a paste event would otherwise do nothing. Route it
-// through the clipboard-aware `yank`. Native inputs keep their own paste.
-window.addEventListener('paste', (event) => {
-  if (!keymapReady) return;
-  // Same server-mode stand-down as the key router: the in-renderer `yank`
-  // would mutate the idle editor, not the server's buffer. (Flag-off: false.)
-  if (shouldGlobalRouterDefer(
-    !!(window.host && window.host.serverMode),
-    !!(serverViewClient && serverViewClient.getView())
-  )) {
-    return;
-  }
-  if (targetOwnsKeys(event.target)) return;
-  const current = views[currentViewIndex];
-  if (!current || current.kind !== 'text') return;
-  event.preventDefault();
-  try {
-    interpreter.call('yank');
-  } catch (error) {
-    repl.appendError(`paste: ${error.message}`);
-  }
+// Native paste action (right-click Paste, the Edit menu's Paste). In Model B
+// this is a server-owned concern, so the global handler stands down — see below.
+window.addEventListener('paste', () => {
+  // Model B: paste is server-owned. Keyboard paste is the M-v binding (Cmd-V =
+  // M-v → yank server-side). For a native `paste` event (right-click / Edit
+  // menu) the in-renderer `yank` would mutate the idle mirror, not the server's
+  // buffer, so the global handler stands down — mounted, the focused element /
+  // server owns it; pre-mount there is nothing to paste into yet. (serverMode is
+  // permanently true, so the old flag-off yank path is dead and has been removed;
+  // routing a native paste event to the server is a possible follow-on.)
+  if (window.host && window.host.serverMode) return;
 });
 
 // --- mode menu ----------------------------------------------------------
-// The native menu shows the current buffer's mode commands. The
-// renderer owns the keymaps, so it builds the menu data here and ships
-// it to the main process; a click comes back through onMenuCommand.
-
-/** The mode menu for the current buffer, or null when it has none.
- *
- * Two shapes, both consumed by menu.js's recursive renderer:
- *  - flat (the default): `items` are leaves `{label, command, toolTip}`,
- *    one per bound command — byte-for-byte the historical menu;
- *  - nested: when the mode registered a structured menu
- *    (`mode-menu-sections`), `items` are submenus `{label, items:[…]}`,
- *    one per section, whose leaves are resolved (keys + docstring) from
- *    the same flat `mode-menu-entries` data.
- */
-function currentModeMenu() {
-  if (!keymapReady) return null;
-  let raw;
-  try {
-    raw = listToArray(interpreter.call('mode-menu-entries'));
-  } catch (error) {
-    repl.appendError(`mode menu failed: ${error.message}`);
-    return null;
-  }
-  if (raw.length === 0) return null;
-
-  // The structured (sectioned) menu, when this mode registered one.
-  let sections = [];
-  try {
-    sections = listToArray(interpreter.call('mode-menu-sections-resolved'))
-      .map((section) => listToArray(section).map((cell, i) =>
-        i === 0 ? cell : listToArray(cell)));
-  } catch (error) {
-    // A registry slip shouldn't lose the menu — fall back to flat.
-    repl.appendError(`mode menu sections failed: ${error.message}`);
-    sections = [];
-  }
-
-  const flatEntries = raw.map((entry) => listToArray(entry));
-  const items = buildModeMenuItems(flatEntries, sections);
-  return { label: interpreter.call('major-mode-name'), items };
-}
+// The native menu shows the current buffer's mode commands. The SERVER owns the
+// keymaps + the mode-menu registrations (menus.lisp/latex-menu.lisp/markdown.lisp
+// + the language modes, all in SPINE_STDLIB), so the spine computes the menu —
+// `{label, entries, sections}` — and pushes it in the view-state. The renderer
+// just renders the pushed data (applyServerModeMenu) and ships it to the main
+// process; a click comes back through onMenuCommand → the spine (RUN_COMMAND).
 
 let lastModeMenuJson = null;
 
-/** Recompute the mode menu and, when it changed, send it to the host. */
-function refreshModeMenu() {
-  if (!keymapReady) return;
-  const menu = currentModeMenu();
+/** Render a SERVER-computed mode menu (carried in the view-state) into the macOS
+ *  app menu. The focused buffer + its mode live on the server, so the spine
+ *  computes `{label, entries, sections}` (the inert renderer interpreter can't);
+ *  the renderer just builds the items + ships them. Dedup'd via lastModeMenuJson.
+ *  Called on every view-state update (mode switch, pane/buffer switch). */
+function applyServerModeMenu(data) {
+  const menu = data
+    ? { label: data.label, items: buildModeMenuItems(data.entries, data.sections) }
+    : null;
   const json = JSON.stringify(menu);
   if (json === lastModeMenuJson) return;
   lastModeMenuJson = json;
@@ -7229,15 +4362,6 @@ function refreshModeMenu() {
 // every other face uses, so a theme / customise edit re-tints the boxes
 // with no extra wiring.
 
-/** Read one `(start . end)` cons pair into a `{start, end}` of finite
- *  numbers, or null when the value is nil / malformed. */
-function snippetRangePair(pair, face) {
-  if (pair === null || pair === undefined || pair === NIL) return null;
-  const start = Number(pair.head);
-  const end = Number(pair.tail);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  return { start, end, face };
-}
 
 /**
  * The face-tagged decoration ranges for an active snippet, or an empty
@@ -7250,34 +4374,11 @@ function snippetRangePair(pair, face) {
  * @returns {Array<{start: number, end: number, face: string}>}
  */
 function snippetDecorationsFor(buffer) {
-  if (!keymapReady) return [];
-  // The active snippet is global (one across the editor) and its offsets
-  // are into the focused buffer; only paint on the pane showing it.
-  if (!buffer || buffer !== currentTextBuffer) return [];
-  try {
-    const ranges = [];
-    // Forthcoming tab stops first, so the active / mirror boxes paint
-    // over them if anything ever overlaps. These read as amber "pending"
-    // pills via `snippet-inactive-face`.
-    for (const pending of listToArray(interpreter.call('snippet-forthcoming-regions'))) {
-      const p = snippetRangePair(pending, 'snippet-inactive-face');
-      if (p !== null) ranges.push(p);
-    }
-    const active = snippetRangePair(
-      interpreter.call('snippet-active-region'),
-      'snippet-active-face'
-    );
-    if (active !== null) ranges.push(active);
-    for (const mirror of listToArray(interpreter.call('snippet-mirror-regions'))) {
-      const m = snippetRangePair(mirror, 'snippet-mirror-face');
-      if (m !== null) ranges.push(m);
-    }
-    return ranges;
-  } catch {
-    // A snippet read must never break rendering — drop the boxes for
-    // this frame. The next render retries.
-    return [];
-  }
+  // Snippet fields are server-side now (snippets.lisp runs in the spine); the
+  // renderer interpreter holds no snippet state, so there are no boxes to paint
+  // from here. If snippet decorations should show in server mode, the spine
+  // pushes them via the overlay channel (filed — verify in the matrix).
+  return [];
 }
 
 // --- editor view (per-pane instances) -----------------------------------
@@ -7328,23 +4429,13 @@ const mathPreviewByPaneId = new Map();
  *  buffer's minor-mode list. Null until resolved / if resolution fails.
  *  `latex-math-preview-mode` is an alias of this same map, so a LaTeX
  *  buffer toggled the old way is still recognised here. */
-let mathPreviewMode = null;
-/** Whether we've attempted to resolve `mathPreviewMode` yet. */
-let mathPreviewModeResolved = false;
-
-/** Resolve (once) the general `math-preview-mode` map from the stdlib. */
+/** The general `math-preview-mode` provider map came from the renderer
+ *  interpreter. In Model B the buffer's server-pushed `mathPreviewActive`
+ *  flag drives activation (`resolvedMathPreviewActive` checks it first) and
+ *  the provider is resolved by mode NAME (`mathPreviewProviderForMode`), so
+ *  the map is unused — return null. (Interpreter gone — B7.) */
 function resolveMathPreviewMode() {
-  if (mathPreviewModeResolved || !keymapReady) return mathPreviewMode;
-  mathPreviewModeResolved = true;
-  try {
-    mathPreviewMode = interpreter.evaluate('math-preview-mode');
-  } catch {
-    // The mode is defined in math-preview.lisp; if it isn't loaded the
-    // feature is simply unavailable and we leave the reference null
-    // (→ inactive).
-    mathPreviewMode = null;
-  }
-  return mathPreviewMode;
+  return null;
 }
 
 /** The major-mode display name for BUFFER. Under GODOT_SERVER=1 the renderer's
@@ -7468,6 +4559,8 @@ function getMathReplacedRanges(leaf) {
   // Per-render bookkeeping (segment-under-point tracking, MathJax-ready
   // arm) must run before ranges() reads.
   controller.update();
+  // Live math tooltip: show/refresh/hide it for the construct under point.
+  driveMathTooltip(leaf, controller, provider, view);
   return controller.ranges();
 }
 
@@ -7475,55 +4568,146 @@ function getMathReplacedRanges(leaf) {
  *  typeset cache. Safe to call when none exists. */
 function disposeMathPreviewForLeaf(leaf) {
   mathPreviewByPaneId.delete(leaf.id);
+  hideMathTooltipForLeaf(leaf);
 }
 
-/** The leaf pane whose view is currently focused. Used to resolve
- *  `editorView` callsites that operate on the "current" instance. */
-function focusedTextLeafId() {
-  // For now, currentPaneId resolves through the pane focus model; with
-  // one pane it's that pane's id. The variable is declared above this
-  // section in the pane block.
-  return currentPaneId;
+// --- the live math tooltip (math-preview-mode) -------------------------
+// When the cursor sits inside a math construct, its source is revealed for
+// editing; this floats a tooltip above the caret showing the live MathJax
+// render of the body, refreshed on each render. A parse error keeps the last
+// valid image plus an error badge; leaving the construct hides it. Renderer
+// -only (MathJax + DOM); the typeset + caret rect are read one frame after
+// the edit, so positioning reflects the just-painted caret.
+let mathTooltip = null;
+/** The leaf id whose construct-under-point currently drives the tooltip. */
+let mathTooltipOwner = null;
+/** The state captured for the next animation frame, or null. */
+let mathTooltipPending = null;
+let mathTooltipRaf = 0;
+
+function ensureMathTooltip() {
+  if (!mathTooltip) mathTooltip = createMathTooltip(editorHostEl);
+  return mathTooltip;
 }
 
-/** The `onKey` configure option for a leaf's `<text-view>`.
- *
- *  Flag-off (the common case) this is byte-for-byte the original: bind the
- *  in-renderer `dispatchKey` once the keymap is ready, nothing before.
- *
- *  Flag-on (Model B) it installs a per-keystroke router instead, because
- *  `TextView.configure()` cannot re-run after mount (it throws) yet a leaf may
- *  become server-backed *after* its element was built. The closure decides live
- *  on each key: a server-backed leaf sends the key to the server's keymap
- *  (the leaf-flip — auto-pair / chords / self-insert all resolve server-side);
- *  any other leaf falls back to the in-renderer dispatch exactly as flag-off. */
-function serverViewKeyOption(instance) {
-  if (!(window.host && window.host.serverMode)) {
-    return keymapReady ? { onKey: dispatchKey } : {};
+function flushMathTooltip() {
+  mathTooltipRaf = 0;
+  const pending = mathTooltipPending;
+  mathTooltipPending = null;
+  if (!pending) return;
+  const tip = ensureMathTooltip();
+  if (pending.hide) {
+    tip.hide();
+    return;
   }
+  // Typeset the current body now (synchronous). MathJax 3 renders a TeX
+  // syntax error as an error node rather than throwing, so also treat an
+  // error node (and the not-ready case) as "no new render" — the tooltip then
+  // keeps the last valid image and flags the syntax error.
+  const raw = isMathJaxReady()
+    ? typesetMath(pending.tex, { display: pending.display })
+    : null;
+  const node = raw && !isMathErrorNode(raw) ? raw : null;
+  // Anchor the tooltip INSIDE the editor's scrolling content so it rides the
+  // native scroll (no JS-tracking lag), positioned in content coordinates
+  // above the caret.
+  const instance =
+    typeof pending.instanceEl === 'function' ? pending.instanceEl() : null;
+  const q = (sel) =>
+    instance && typeof instance.querySelector === 'function'
+      ? instance.querySelector(sel)
+      : null;
+  const contentEl = q('.editor-content');
+  const caret = q('.editor-cursor');
+  const caretRect =
+    caret && typeof caret.getBoundingClientRect === 'function'
+      ? caret.getBoundingClientRect()
+      : null;
+  const contentRect =
+    contentEl && typeof contentEl.getBoundingClientRect === 'function'
+      ? contentEl.getBoundingClientRect()
+      : null;
+  if (contentEl) tip.mount(contentEl);
+  tip.update({
+    node,
+    key: pending.key,
+    display: pending.display,
+    scale: pending.scale,
+    caretRect,
+    contentRect,
+  });
+}
+
+function scheduleMathTooltip(state) {
+  mathTooltipPending = state;
+  if (!mathTooltipRaf) mathTooltipRaf = requestAnimationFrame(flushMathTooltip);
+}
+
+/** Show/refresh/hide the live tooltip for LEAF from its controller's
+ *  segment-under-point. Called from getMathReplacedRanges after update(). */
+function driveMathTooltip(leaf, controller, provider, view) {
+  const seg = controller.currentSegment();
+  if (seg && view && view.buffer) {
+    const text = view.buffer.text;
+    let preamble = '';
+    try {
+      const harvest = provider && provider.preamble;
+      preamble = typeof harvest === 'function' ? harvest(text) || '' : '';
+    } catch {
+      preamble = '';
+    }
+    const tex = preamble === '' ? seg.body : `${preamble}\n${seg.body}`;
+    // *math-tooltip-scale* defcustom (pushed via the config snapshot).
+    const scale = Number(rendererConfig['*math-tooltip-scale*']) || 1.5;
+    mathTooltipOwner = leaf.id;
+    scheduleMathTooltip({
+      key: seg.start,
+      tex,
+      display: seg.kind === 'block',
+      scale,
+      instanceEl: () => leaf.element ?? editorViewByPaneId.get(leaf.id) ?? null,
+    });
+  } else if (mathTooltipOwner === leaf.id) {
+    mathTooltipOwner = null;
+    scheduleMathTooltip({ hide: true });
+  }
+}
+
+/** Hide the tooltip if LEAF currently owns it (mode off / leaf gone). */
+function hideMathTooltipForLeaf(leaf) {
+  if (mathTooltipOwner === leaf.id) {
+    mathTooltipOwner = null;
+    if (mathTooltip) scheduleMathTooltip({ hide: true });
+  }
+}
+
+
+/** The `onKey` configure option for a leaf's `<text-view>` (Model B). A
+ *  per-keystroke router, because `TextView.configure()` cannot re-run after
+ *  mount yet a leaf may become server-backed *after* its element was built. The
+ *  closure decides live: a server-backed leaf sends the key to the server's
+ *  keymap (auto-pair / chords / self-insert all resolve server-side); a
+ *  non-server-backed leaf returns false so the key falls through to the global
+ *  router (which routes it to the server too). The in-renderer dispatch the
+ *  flag-off path used here is gone with the interpreter (B7). */
+function serverViewKeyOption(instance) {
   return {
     onKey: (key) => {
       const v = peelTabline(instance._boundLeaf.view);
-      if (isServerBackedView(v) && serverViewClient) {
-        return serverViewClient.dispatchKey(key);
-      }
-      return keymapReady ? dispatchKey(key) : false;
+      return (isServerBackedView(v) && serverViewClient)
+        ? serverViewClient.dispatchKey(key)
+        : false;
     },
   };
 }
 
-/** The `onKey` for a NON-TEXT element-view (image/audio/video/pdf) that routes to
- *  the SERVER's keymap in server mode — so a chord (C-x C-f, M-x, C-x b…) typed
- *  while a media view is focused reaches the server instead of being swallowed by
- *  the idle in-renderer dispatchKey (which would preventDefault it, so the
- *  window-level router never sees it either). Flag-off it is exactly the legacy
- *  `keymapReady ? { onKey: dispatchKey } : {}`. serverViewClient is resolved at
- *  key-press time (it's null when the singletons are configured at boot). */
+/** The `onKey` for a NON-TEXT element-view (image/audio/video/pdf) that routes a
+ *  chord (C-x C-f, M-x, C-x b…) typed while a media view is focused to the
+ *  SERVER's keymap — else it would be swallowed before the window-level router
+ *  sees it. serverViewClient is resolved at key-press time (it's null when the
+ *  singletons are configured at boot). */
 function serverMediaKeyOption() {
-  if (window.host && window.host.serverMode) {
-    return { onKey: (key) => (serverViewClient ? serverViewClient.dispatchKey(key) : false) };
-  }
-  return keymapReady ? { onKey: dispatchKey } : {};
+  return { onKey: (key) => (serverViewClient ? serverViewClient.dispatchKey(key) : false) };
 }
 
 /** Create (or reuse) the <text-view> custom element for LEAF, mount it
@@ -7655,146 +4839,14 @@ ensureEditorViewForLeaf(initialLeaf);
 let editorView = /** @type {*} */ (editorViewByPaneId.get(initialLeaf.id));
 
 // --- the customisation view's data bridge ------------------------------
-// The view is decoupled from the Lisp; these turn registry data into
-// plain objects for it, and route its callbacks back into the registry.
+// The customize MODEL is computed server-side and pushed in the leaf state
+// (B2.3 — the view renders from v.model); these functions only route the
+// view's callbacks back to the spine (propagateCustomize -> CUSTOMIZE_CHANGED).
 
-/** Turn a `custom-field` Lisp list into a plain setting object. */
-function fieldToSetting(field) {
-  const f = listToArray(field);
-  return {
-    name: f[0],
-    type: String(f[1]).replace(/^:/, ''),
-    value: f[2] === NIL ? null : f[2],
-    default: f[3] === NIL ? null : f[3],
-    doc: f[4],
-    state: f[5],
-    options: f[6] === NIL ? [] : listToArray(f[6]),
-  };
-}
-
-/** Turn a `face-row` Lisp list into a plain face object. */
-function rowToFace(row) {
-  const r = listToArray(row);
-  const name = String(r[0]);
-  return {
-    name,
-    doc: String(r[1] ?? ''),
-    foreground: typeof r[2] === 'string' ? r[2] : '',
-    background: typeof r[3] === 'string' ? r[3] : '',
-    weight: String(r[4] ?? 'normal'),
-    slant: String(r[5] ?? 'normal'),
-    underline: r[6] === true,
-    strikeThrough: r[7] === true,
-    // Typography: size is a number (or '' when unset), family a string.
-    // The base face owns these; on other faces they are blank (inherit).
-    size: typeof r[8] === 'number' ? r[8] : '',
-    family: typeof r[9] === 'string' ? r[9] : '',
-    isBase: name === BASE_FACE_NAME,
-    state: String(r[10] ?? 'standard'),
-  };
-}
-
-/** The model the customisation view renders for a buffer's scope. */
-function getCustomModel(scope) {
-  if (!keymapReady) return null;
-  try {
-    if (scope.variable) {
-      const field = interpreter.evaluate(
-        `(custom-field (quote ${scope.variable}))`
-      );
-      return {
-        title: scope.variable,
-        doc: '',
-        parent: null,
-        groups: [],
-        settings: [fieldToSetting(field)],
-        faces: [],
-      };
-    }
-    if (scope.face) {
-      const model = listToArray(
-        interpreter.evaluate(
-          `(face-single-model ${writeString(scope.face)})`
-        )
-      );
-      return {
-        title: scope.face,
-        doc: model[1],
-        parent: model[2] === NIL ? null : String(model[2]),
-        groups: [],
-        settings: [],
-        faces: listToArray(model[4]).map(rowToFace),
-        scrollToFace: scope.face,
-      };
-    }
-    if (scope.group === 'faces') {
-      const model = listToArray(interpreter.call('faces-group-model'));
-      return {
-        title: model[0],
-        doc: model[1],
-        parent: model[2] === NIL ? null : String(model[2]),
-        groups: [],
-        settings: [],
-        faces: listToArray(model[4]).map(rowToFace),
-      };
-    }
-    const model = listToArray(
-      interpreter.evaluate(`(custom-group-model (quote ${scope.group}))`)
-    );
-    return {
-      title: model[0],
-      doc: model[1],
-      parent: model[2] === NIL ? null : model[2],
-      groups: listToArray(model[3]).map((pair) => {
-        const g = listToArray(pair);
-        return { name: g[0], doc: g[1] };
-      }),
-      settings: listToArray(model[4]).map(fieldToSetting),
-      faces: [],
-    };
-  } catch (error) {
-    repl.appendError(`customize: ${error.lispMessage ?? error.message}`);
-    return null;
-  }
-}
-
-/** Apply the current theme: read each (--var . value) pair from Lisp
- *  and write it to the document root's inline style. Settings the
- *  theme leaves out (font-size, font-mono, …) keep the :root defaults.
- *  Also pokes any registered theme listeners (e.g. the shell view's
- *  xterm.js theme; that view reads CSS variables at construction time
- *  and needs telling explicitly when they change). */
-function applyCurrentTheme() {
-  try {
-    const pairs = listToArray(interpreter.call('current-theme-css-vars'));
-    for (const pair of pairs) {
-      const cssVar = String(pair.head);
-      const value = String(pair.tail ?? '');
-      if (cssVar.startsWith('--') && value !== '') {
-        document.documentElement.style.setProperty(cssVar, value);
-      }
-    }
-    for (const listener of themeListeners) {
-      try { listener(); } catch { /* listener bug — keep going */ }
-    }
-  } catch (error) {
-    repl.appendError(`theme: ${error.lispMessage ?? error.message}`);
-  }
-}
-
-/** Apply the resolved face map to the document: regenerate
- *  `<style id="face-overrides">` with one rule per face. */
-function applyCurrentFaceStyles() {
-  try {
-    const alist = listToArray(interpreter.call('current-face-styles'));
-    const modeAlist = listToArray(
-      interpreter.call('current-mode-face-styles')
-    );
-    applyFaceStyles(document, alist, listToArray, modeAlist);
-  } catch (error) {
-    repl.appendError(`face-styles: ${error.lispMessage ?? error.message}`);
-  }
-}
+// applyCurrentTheme / applyCurrentFaceStyles were reload-stdlib-only (they read
+// the theme/face maps from the renderer interpreter). The spine is authoritative
+// for theme + faces now (the theme-apply / faces-apply directives drive :root +
+// themeListeners), so they died with the interpreter — B7.
 
 /** Force every mounted text editor — pane leaves and tabline children —
  *  to re-render. A CSS-only face change is picked up by re-painting the
@@ -7833,51 +4885,66 @@ function rerenderAllEditors() {
   forEachMinimapElement((el) => el.invalidateColors());
 }
 
-/** Apply a setting for the session — a value, quote-wrapped to survive
- *  its type. */
+// B2.2b/B2.3 (plans/MODEL-B-DEFAULT.md): the spine is the SOLE applier + render
+// driver + persister + MODEL computer for customize. Each edit below sends a
+// CUSTOMIZE_CHANGED intent (propagateCustomize) and nothing else — the spine
+// applies it to its interpreter, persists custom.lisp / faces.json, pushes the
+// resulting chrome (theme / faces / highlight / css-knobs) to EVERY window, and
+// re-pushes the refreshed customize MODEL so the panel re-renders. The renderer
+// makes ZERO interpreter calls for customize now. Values ride as Lisp SOURCE
+// strings (writeString): a :choice value is a string the spine re-symbolises by
+// type (custom-apply! -> -coerce-for-type), so nothing raw-Lisp crosses the wire.
+
+/** Apply a setting for the session. */
 function applyCustomSetting(name, value) {
-  interpreter.evaluate(
-    `(custom-apply! (quote ${name}) (quote ${writeString(value)}))`
-  );
-  if (name === '*theme*') applyCurrentTheme();
+  propagateCustomize({ op: 'apply', name, valueSrc: writeString(value) });
 }
 
-/** Apply a setting and persist it. */
+/** Apply a setting and persist it (the spine persists). */
 function saveCustomSetting(name, value) {
-  interpreter.evaluate(
-    `(custom-apply-and-save! (quote ${name}) (quote ${writeString(value)}))`
-  );
-  if (name === '*theme*') applyCurrentTheme();
+  propagateCustomize({ op: 'save', name, valueSrc: writeString(value) });
 }
 
 /** Reset a setting to its default value. */
 function resetCustomSetting(name) {
-  interpreter.evaluate(`(custom-reset! (quote ${name}))`);
-  if (name === '*theme*') applyCurrentTheme();
+  propagateCustomize({ op: 'reset', name });
 }
 
-/** Apply a face-attribute change from the customize view. The widget
- *  passes everything as strings/booleans; the wrapper coerces. */
+/** Apply a face-attribute change from the customize view. The widget passes
+ *  strings/booleans; the spine's set-face-attribute-by-strings coerces. */
 function setFaceFromView(faceName, attr, value) {
   const valueSrc =
     typeof value === 'boolean'
       ? (value ? 'true' : 'false')
       : writeString(String(value));
-  interpreter.evaluate(
-    `(set-face-attribute-by-strings ${writeString(faceName)} ${writeString(attr)} ${valueSrc})`
-  );
+  // `face` + `attr` are strings (set-face-attribute-by-STRINGS), so they ride the
+  // wire fine; `valueSrc` is the already-built Lisp source (booleans → true/false).
+  propagateCustomize({ op: 'set-face', face: faceName, attr, valueSrc });
 }
 
-/** Reset a face — drop the global override and rerender. */
+/** Reset a face — drop the global override. */
 function resetFaceFromView(faceName) {
-  interpreter.evaluate(
-    `(reset-face-by-string ${writeString(faceName)})`
-  );
+  propagateCustomize({ op: 'reset-face', face: faceName });
+}
+
+/** Send a customize change to the spine (CUSTOMIZE_CHANGED). The spine applies +
+ *  persists + pushes chrome to every window (see the block comment above). A
+ *  no-op when no server is connected. */
+function propagateCustomize(change) {
+  if (serverViewClient && typeof serverViewClient.customizeChanged === 'function') {
+    serverViewClient.customizeChanged(change);
+  }
 }
 
 /** Open a customisation buffer for a scope — a subgroup, a variable,
  *  or a single face. */
 function openCustomScope(scope) {
+  // Server mode: the customize leaf is server-owned — ask the spine to open the
+  // scope's leaf (CUSTOMIZE_OP); it switches this client + the view re-renders.
+  if (serverViewClient) {
+    serverViewClient.customizeOp(scope);
+    return;
+  }
   if (scope.variable) {
     openCustomize(`*Customize: ${scope.variable}*`, scope);
   } else if (scope.face) {
@@ -7897,8 +4964,9 @@ function openCustomScope(scope) {
 // tabline).
 function configureCustomizeView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    getModel: getCustomModel,
+    ...serverMediaKeyOption(),
+    // B2.3: no getModel — the model is server-computed and pushed in the leaf
+    // state (v.model); the view renders from it.
     applySetting: applyCustomSetting,
     saveSetting: saveCustomSetting,
     resetSetting: resetCustomSetting,
@@ -7953,26 +5021,18 @@ function highlightCodeForDocView(text, language) {
 // the tabline mount path for per-tab `<doc-view>` instances.
 function configureDocView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
-    openDoc: (name) => {
-      // In-view navigation — a clicked cross-link, menu item, breadcrumb, or
-      // nav button. The target is a built page: a navigation node id (e.g.
-      // "getting-started") OR a documented function name. Open it directly;
-      // readDocPage resolves either against the manifest. This is distinct
-      // from the `open-doc` command (C-h f / M-x), which looks up docs for an
-      // arbitrary symbol and falls back to rendering its docstring — that
-      // command only knows function names, so routing node-id clicks through
-      // it reported "no doc page".
-      openDocInPane(name);
-    },
+    ...serverMediaKeyOption(),
+    // View-close is server-driven now (the in-renderer kill-view was inert).
+    closeBuffer: () => {},
+    // B4: the doc-view OWNS its content + navigation via these — it fetches a
+    // built page (readPage) or renders a live docstring (renderMarkdown) and
+    // setBuffers itself, regardless of how it was mounted (leaf vs tabline child).
+    // So a TOC click / Next-Prev navigates in place, and the initial page fills
+    // itself. `openDoc` stays only as a no-readPage fallback.
+    readPage: (name) =>
+      window.host.readDocPage(name).then((page) => (page ? page.html : null)),
+    renderMarkdown: (src) => renderMarkdownHtml(src),
+    openDoc: (name) => openDocInPane(name),
     highlightCode: highlightCodeForDocView,
     manifest: docNavTree,
   };
@@ -8032,17 +5092,23 @@ jukeboxView.style.display = 'none';
  *  on macOS/Linux but the brief glitch keeps the behaviour
  *  predictable across platforms). */
 function runMetadataEdit(primitiveName, buffer, key, value) {
-  if (!keymapReady) return { ok: false, error: 'interpreter not ready' };
   if (!buffer || typeof buffer.filePath !== 'string') {
     return { ok: false, error: 'no audio buffer' };
   }
   const snapshot = audioView.pauseAndRelease();
   try {
-    if (value === undefined) {
-      interpreter.call(primitiveName, buffer.filePath, key);
-    } else {
-      interpreter.call(primitiveName, buffer.filePath, key, value);
-    }
+    // Apply the tag edit directly via the host writer (it's pure host I/O — no
+    // buffer state — so it works without the interpreter). `set` adds/updates
+    // the field; `remove` deletes it. (Was dispatched through the idle renderer
+    // interpreter; the set-/remove-audio-metadata! primitives are now dead and
+    // drop with the primitive table in B7.)
+    applyAudioMetadataEdit(buffer.filePath, (fields) => {
+      if (primitiveName === 'remove-audio-metadata!') {
+        delete fields[key];
+      } else {
+        fields[key] = value === undefined ? '' : String(value);
+      }
+    });
     return { ok: true };
   } catch (error) {
     return {
@@ -8109,14 +5175,8 @@ function stripDerivedFields(meta) {
 function configureAudioView() {
   return {
     ...serverMediaKeyOption(),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // View-close is server-driven now (the in-renderer kill-view was inert).
+    closeBuffer: () => {},
     // Inline-edit lifecycle. Wired to the stubbed metadata-write
     // primitives — see `set-audio-metadata!` / `remove-audio-metadata!`
     // below. The real writers (agent-audio-edit-id3v2 onwards) replace
@@ -8140,14 +5200,8 @@ audioView.style.display = 'none';
 function configureVideoView() {
   return {
     ...serverMediaKeyOption(),
-    closeBuffer: () => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // View-close is server-driven now (the in-renderer kill-view was inert).
+    closeBuffer: () => {},
   };
 }
 const videoView = /** @type {*} */ (document.createElement('video-view'));
@@ -8167,17 +5221,13 @@ function configurePdfView() {
   return {
     ...serverMediaKeyOption(),
     // Inverse SyncTeX: an Option-click in the PDF jumps the editor to the
-    // source. The pdf-view hands us the 1-based page and the clicked PDF
-    // point (SyncTeX convention); `latex-synctex-inverse` runs
-    // `synctex edit` and opens the resulting file:line. Guarded by the
-    // keymap-ready latch and wrapped so a Lisp error can't break the click.
-    onSyncTexClick: (page, x, y) => {
-      if (!keymapReady) return;
-      try {
-        interpreter.call('latex-synctex-inverse', page, x, y);
-      } catch (error) {
-        repl.appendError(error.lispMessage ?? error.message ?? String(error));
-      }
+    // source. The pdf-view hands us the 1-based page, the clicked PDF point
+    // (SyncTeX convention), and the clicked PDF's own path. The SPINE runs
+    // `synctex edit` and reveals the resulting file:line in a source pane —
+    // the renderer interpreter's pane model is idle in server mode, so the
+    // old `interpreter.call('latex-synctex-inverse', …)` here no-op'd.
+    onSyncTexClick: (page, x, y, filePath) => {
+      if (serverViewClient) serverViewClient.synctexInverse(filePath, page, x, y);
     },
   };
 }
@@ -8196,12 +5246,21 @@ pdfView.style.display = 'none';
 // per-webview state is the only thing keeping that intact.
 function configureBrowserView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     defaultUrl: 'about:blank',
     partition: 'persist:browser-views',
     // Page title updates flow through here so the modeline + tabline
     // pick up the page's <title> as the view's label.
     onTitleChanged: () => notifyViewsChanged(),
+    // A navigation (link / URL bar / in-page route) reports the new URL UP so
+    // the server's browser data-source tracks the current page (session-restore
+    // reopens where the user browsed to, not the URL it was first opened at).
+    onNavigate: (view, url) => {
+      const id = view && view._serverBufferId;
+      if (id && serverViewClient && typeof serverViewClient.browserNavigated === 'function') {
+        serverViewClient.browserNavigated(id, url);
+      }
+    },
   };
 }
 // Browsers are PER-INSTANCE, not a shared singleton: each browser VIEW
@@ -8359,6 +5418,34 @@ function buildMinimapAdapter(buffer, textViewEl) {
   };
 }
 
+/** The per-instance live-process element (`<gnuplot-view>` etc.) bound to CONTENT
+ *  in LEAF — a bare-leaf element (procViewElementByView) or a tabline tab (the
+ *  tabline's editorByChild). Null when none is mounted yet. */
+function procViewElementFor(content, leaf) {
+  if (procViewElementByView.has(content)) return procViewElementByView.get(content);
+  if (isTablineView(leaf.view)) {
+    const st = tablineStateByView.get(leaf.view);
+    if (st && st.editorByChild) return st.editorByChild.get(content) ?? null;
+  }
+  return null;
+}
+
+/** Build a `kind:'plots'` minimap adapter over a live `<gnuplot-view>` element:
+ *  the minimap reads its rendered plots, re-renders when a new one lands, and a
+ *  thumbnail click jumps the gnuplot transcript to that plot. */
+function buildGnuplotMinimapAdapter(gnuplotEl) {
+  return {
+    kind: 'plots',
+    getPlots: () =>
+      typeof gnuplotEl.getPlots === 'function' ? gnuplotEl.getPlots() : [],
+    onChange: (cb) =>
+      typeof gnuplotEl.onPlotsChange === 'function' ? gnuplotEl.onPlotsChange(cb) : () => {},
+    scrollToPlot: (id) => {
+      if (typeof gnuplotEl.scrollToPlot === 'function') gnuplotEl.scrollToPlot(id);
+    },
+  };
+}
+
 /** Resolve the target leaf's *current* active text content + its live
  *  editor element and (re)bind the minimap. If the active content isn't a
  *  text view → bind null ("not supported"). If the target leaf is gone →
@@ -8372,6 +5459,18 @@ function rebindMinimapForLeaf(targetLeafId) {
   const leaf = leafPanes(rootPane).find((l) => l.id === targetLeafId);
   if (!leaf) { removeMinimapForLeaf(targetLeafId); return; }
   const content = peelTabline(leaf.view);
+  // A GNUPLOT target: bind a plots adapter so the minimap shows a strip of plot
+  // thumbnails (a click jumps the transcript to that plot). Falls back to "not
+  // supported" until the gnuplot element is mounted.
+  if (content && content.kind === 'gnuplot') {
+    const gpEl = procViewElementFor(content, leaf);
+    el.bindTarget(
+      gpEl && typeof gpEl.getPlots === 'function'
+        ? buildGnuplotMinimapAdapter(gpEl)
+        : null
+    );
+    return;
+  }
   if (!content || content.kind !== 'text' || !content.buffer) {
     el.bindTarget(null);
     return;
@@ -8479,56 +5578,12 @@ function toggleMinimapForFocusedLeaf(side, widthFraction) {
 // plans/ELEMENT-VIEWS.md.
 const elementHostByView = new Map();
 
-/** Render a Lisp value (a Sym, a Keyword, or a string) as plain text. */
-function lispText(value) {
-  if (typeof value === 'string') return value;
-  if (value && typeof value.name === 'string') return value.name;
-  if (value === undefined || value === null || value === NIL) return '';
-  return String(value);
-}
 
-/** Parse a spec's `:attrs` — a Lisp list whose entries are a bare symbol
- *  (a boolean attribute) or a list `(name value)` — into `[name, value]`
- *  pairs (`value` is `true` for boolean attributes). */
-function parseElementAttrs(list) {
-  if (list === undefined || list === null || list === NIL) return [];
-  const out = [];
-  for (const entry of listToArray(list)) {
-    if (typeof entry === 'string' || entry instanceof Sym) {
-      const name = lispText(entry);
-      if (name !== '') out.push([name, true]);
-      continue;
-    }
-    const parts = listToArray(entry);
-    if (parts.length === 0) continue;
-    const name = lispText(parts[0]);
-    if (name === '') continue;
-    let value = true;
-    if (parts.length > 1) {
-      const v = parts[1];
-      value = (v === true || v === false || typeof v === 'number')
-        ? v
-        : lispText(v);
-    }
-    out.push([name, value]);
-  }
-  return out;
-}
 
 /** The command names the renderer owns by registering element-views
  *  (`define-element-view`) — the `element-views` registry's keys (built-ins +
  *  any in user config). Server mode announces these so M-x routes them back
  *  down (RUN_CLIENT_COMMAND). Tolerant: [] before the stdlib registers any. */
-function elementViewCommandNames() {
-  try {
-    const reg = interpreter.call('element-views');
-    if (reg instanceof Map) {
-      return [...reg.keys()].map((k) => lispText(k)).filter((n) => n !== '');
-    }
-  } catch { /* stdlib/registry not ready — element-views just aren't M-x-routable yet */ }
-  return [];
-}
-
 function configureElementView() {
   return {
     // onKey routes chords to the server's keymap in server mode; flag-off
@@ -8545,20 +5600,10 @@ function configureElementView() {
     // insert `\cite{…}`.
     insertText: (text) => {
       if (typeof text !== 'string' || text === '') return;
-      // Server mode: route the insert to the SERVER's active buffer (the
-      // document) — the in-renderer session is inert. The server fans the delta
-      // back so the document updates.
-      if (window.host && window.host.serverMode) {
-        if (serverViewClient) serverViewClient.insertText(text);
-        return;
-      }
-      try {
-        interpreter.evaluate(`(insert! ${writeString(text)})`);
-      } catch (error) {
-        repl.appendError(
-          `element-view insert-text: ${error.lispMessage ?? error.message ?? error}`
-        );
-      }
+      // Route the insert to the SERVER's active buffer (the document); the server
+      // fans the delta back so the document updates. (The in-renderer `(insert! …)`
+      // path is gone with the interpreter — B7.)
+      if (serverViewClient) serverViewClient.insertText(text);
     },
     // The generic open-external channel: a hosted element asks the host to
     // open a resource in an OS app. bib-search uses it to open an entry's
@@ -8675,77 +5720,73 @@ function disposeBookmarkElementForView(view) {
   bookmarkElementByView.delete(view);
 }
 
-// --- shell as a per-instance pane view (server mode) ---------------------
-// In server mode each shell data-source owns its OWN <shell-view> element (its
-// own xterm + its own pty session), so several shells render in one window — a
-// split with two shells, or a bottom tabline of shell tabs. The flag-off app
-// keeps the single shared `shellView` singleton (mounted via the singleton path
-// in mountKindView); only `_serverMedia` shell views route to the per-instance
-// path here. Mirrors ensureBookmarkElementForView / the browser + doc views.
-// CRUCIAL: this element is hide-not-kill (a switch-away/split hides it, never
-// destroys it) so the running process + scrollback survive; it is reaped only
-// by disposeShellElementForView when the data-source is actually closed.
-const shellElementByView = new Map();
+// --- live-process views (shell + gnuplot) as per-instance pane views (server) ---
+// In server mode each live-process data-source (a shell or a gnuplot) owns its
+// OWN element (<shell-view> / <gnuplot-view>) — its own child process + view — so
+// several render in one window (a split, or a bottom tabline of process tabs).
+// The flag-off app keeps the single shared singletons; only `_serverMedia` views
+// route to this per-instance path. Mirrors ensureBookmarkElementForView / the
+// browser + doc views. CRUCIAL: the element is hide-not-kill (a switch-away/split
+// hides it, never destroys it) so the running process + view state survive; it is
+// reaped only by disposeProcViewElement when the data-source is actually closed.
+const PROC_VIEW_KINDS = new Set(['shell', 'gnuplot']);
+const isProcViewKind = (kind) => PROC_VIEW_KINDS.has(kind);
+const procViewElementByView = new Map();
 
-/** The <shell-view> element for a SERVER-mode shell VIEW — created (configured
- *  + mounted in PANE-EL) on first use, then reused and re-parented. The pty
- *  spawns lazily on the element's first setBuffer (when `view.spawned` is
- *  false); a reused element with `view.spawned` already true just re-attaches
- *  to the still-running session. */
-function ensureShellElementForView(view, paneEl) {
-  let el = shellElementByView.get(view);
+/** The per-instance element for a SERVER-mode live-process VIEW (shell/gnuplot)
+ *  — created (configured + mounted in PANE-EL) on first use, then reused and
+ *  re-parented. The child spawns lazily on the element's first setBuffer (when
+ *  `view.spawned` is false); a reused element with `view.spawned` already true
+ *  just re-attaches to the still-running session. */
+function ensureProcViewElement(view, paneEl) {
+  let el = procViewElementByView.get(view);
   if (el) {
-    // Reuse: re-parent only. Do NOT call setBuffer again — the element is
-    // already bound to this view and its xterm + pty are live. In server mode a
-    // shell leaf re-mounts on EVERY reconcile, and a redundant setBuffer re-enters
-    // shell-view's async ensureTerminal() (its `if (term) return` guard doesn't
-    // hold against calls that race before the first `await fonts.ready`), which
-    // builds a second Terminal and can double-spawn/terminate the pty — leaving
-    // the visible grid orphaned + empty. Re-parenting (a DOM move) fires only the
-    // no-op disconnected/connected callbacks, so the running terminal is preserved.
+    // Reuse: re-parent only. Do NOT call setBuffer again — the element is already
+    // bound and its child is live. In server mode a process leaf re-mounts on
+    // EVERY reconcile, and a redundant setBuffer re-enters the view's async build
+    // (e.g. shell-view's ensureTerminal, whose `if (term) return` guard can't hold
+    // against calls racing before the first `await fonts.ready`) → a second
+    // instance + a double-spawn, leaving the visible view orphaned. Re-parenting
+    // (a DOM move) fires only the no-op disconnected/connected callbacks.
     if (paneEl && el.parentNode !== paneEl) paneEl.append(el);
     return el;
   }
-  el = /** @type {*} */ (document.createElement('shell-view'));
-  el.configure(configureShellView());
-  el.setBuffer(view); // first bind: spawns the pty lazily (view.spawned → true)
+  const factory = perKindConfigureFactory(view.kind); // configureShellView / configureGnuplotView
+  el = /** @type {*} */ (document.createElement(`${view.kind}-view`));
+  if (factory) el.configure(factory());
+  el.setBuffer(view); // first bind: spawns the child lazily (view.spawned → true)
   if (paneEl) paneEl.append(el);
-  shellElementByView.set(view, el);
+  procViewElementByView.set(view, el);
   return el;
 }
 
-/** Show leaf-direct shell elements whose view is active; hide the rest (do NOT
- *  destroy — the pty + grid stay alive). Tabline shell tabs manage their own
- *  visibility via mountTablineActiveChild. Called from hideInactiveSingletons. */
-function hideInactiveShells() {
+/** Show leaf-direct process elements whose view is active; hide the rest (do NOT
+ *  destroy — the child + view state stay alive). Tabline process tabs manage
+ *  their own visibility via mountTablineActiveChild. Called from
+ *  hideInactiveSingletons. */
+function hideInactiveProcViews() {
   const active = new Set();
   for (const leaf of leafPanes(rootPane)) {
-    if (!isTablineView(leaf.view) && leaf.view && leaf.view.kind === 'shell') {
+    if (!isTablineView(leaf.view) && leaf.view && isProcViewKind(leaf.view.kind)) {
       active.add(leaf.view);
     }
   }
-  for (const [view, el] of shellElementByView) {
+  for (const [view, el] of procViewElementByView) {
     el.style.display = active.has(view) ? '' : 'none';
   }
 }
 
-/** Tear down the per-instance <shell-view> bound to VIEW and reap its pty (its
- *  data-source was closed). disposeKindView's shell arm also calls shellKill;
- *  doing it here keeps the reap atomic with the element teardown. */
-function disposeShellElementForView(view) {
-  const el = shellElementByView.get(view);
+/** Tear down the per-instance element bound to VIEW and reap its child (its
+ *  data-source was closed). The element's destroy() does NOT kill the child;
+ *  disposeKindView dispatches the right kill (shellKill / gnuplotKill). */
+function disposeProcViewElement(view) {
+  const el = procViewElementByView.get(view);
   if (!el) return;
-  try { el.destroy(); } catch { /* already gone */ } // xterm dispose + IPC unsubscribe
+  try { el.destroy(); } catch { /* already gone */ } // view dispose + IPC unsubscribe
   el.remove();
-  shellElementByView.delete(view);
-  // Reap the pty in MAIN (the renderer-side destroy() above does NOT kill it).
-  if (typeof view.sessionId === 'string') {
-    try {
-      if (window.host && typeof window.host.shellKill === 'function') {
-        window.host.shellKill(view.sessionId);
-      }
-    } catch { /* process already gone */ }
-  }
+  procViewElementByView.delete(view);
+  // Reap the child in MAIN (the renderer-side destroy() above does NOT kill it).
+  try { disposeKindView(view); } catch { /* process already gone */ }
 }
 
 // --- documentation as a pane view (per-instance, mirrors the browser) ---
@@ -8825,7 +5866,6 @@ function showDocInPane(name, html, label) {
     const el = elementForViewInstance(cur);
     if (el && typeof el.setBuffer === 'function') el.setBuffer(cur);
     notifyViewsChanged();
-    updateModeline();
     return;
   }
   const view = createView({
@@ -8860,46 +5900,24 @@ async function openDocInPane(name) {
 // Phase 3g: directory-tree is a custom element now. Factory reused by
 // the tabline mount path for per-tab `<directory-tree-view>` instances.
 function configureDirectoryTreeView() {
-  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    // onKey routes chords to the server's keymap in server mode (so C-x C-f /
-    // M-x reach it), else the in-renderer dispatchKey. Flag-off byte-for-byte.
+    // onKey routes chords to the server's keymap (so C-x C-f / M-x reach it).
     ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     // Colour file/folder icons from the vendored Material Icon Theme set.
     iconUrlFor: (name, isDirectory, expanded) =>
       materialIconUrlForEntry(name, isDirectory, expanded),
-    openPath: (path) => {
-      // Server mode: open the file by path through the server's find-file
-      // (visitFile), switching the focused leaf onto it.
-      if (serverMode) {
-        if (serverViewClient) serverViewClient.visitPath(path);
-        return;
-      }
-      // Route through the `directory-tree-open-file` Lisp function so the
-      // target honours `*directory-tree-open-target*` and stays user-
-      // overridable. Fall back to the focused-pane open if the stdlib
-      // routing isn't available yet.
-      if (keymapReady) {
-        try {
-          interpreter.call('directory-tree-open-file', path);
-          return;
-        } catch {
-          /* fall through to the default */
-        }
-      }
-      openFileInTabAdjacent(path);
+    openPath: (path, targetPaneId) => {
+      // Open the file by path through the server's find-file (visitFile). The
+      // dir-tree passes its wired `openTargetPaneId` (the project's editing
+      // tabline, computed by reapplyProjectDirTreeTarget) so the file lands
+      // THERE, not in the tree's own focused pane. Falls back to the focused
+      // leaf when no target is wired (a standalone directory-tree).
+      if (serverViewClient) serverViewClient.visitPath(path, targetPaneId);
     },
     closeBuffer: () => {
-      // Server mode: closing a directory pane isn't wired server-side yet
-      // (follow-on). The pane is replaced when a file is opened from it.
-      if (serverMode) return;
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
+      // Closing a directory pane isn't wired server-side yet (follow-on); the
+      // pane is replaced when a file is opened from it.
     },
   };
 }
@@ -8989,9 +6007,11 @@ function viewListRecords() {
 
 function configureViewListView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    ...serverMediaKeyOption(),
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     getViews: viewListRecords,
     selectView: (id) => {
       // Server mode: the id is a server buffer id — switch to it (the server
@@ -9102,9 +6122,11 @@ function discardSnapshot(key) {
 
 function configureRecoverView() {
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    ...serverMediaKeyOption(),
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     getEntries: recoverViewRecords,
     recover: recoverSnapshot,
     discard: discardSnapshot,
@@ -9121,183 +6143,6 @@ recoverView.configure(configureRecoverView());
 editorPaneElement().append(recoverView);
 recoverView.style.display = 'none';
 
-// The *RefTeX Select* picker — RefTeX's label / cite picker, mounted as a
-// right-edge drawer overlaid on the editor (NOT a pane view). The panel
-// is populated and driven entirely from Lisp (reftex-refs.lisp): the
-// candidate model, the origin view+point, and the select / peek / cancel
-// actions all live there. The host closures are thin bridges that marshal
-// Lisp records into the renderer's plain-JS candidate objects and forward
-// the user's choices back. See plans/RefTeX.md "The interactive views".
-//
-// reftexSelectCandidates reads a flat list the Lisp side prepared when
-// the picker opened; each Lisp candidate is a list (name type macro
-// context), which we map positionally into {name,type,macro,context}.
-function reftexSelectCandidates() {
-  if (!keymapReady) return [];
-  try {
-    const rows = listToArray(interpreter.call('reftex-select-candidates'));
-    return rows.map((row) => {
-      const fields = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-      return {
-        name: fields[0] ?? '',
-        type: fields[1] ?? '',
-        macro: fields[2] ?? '',
-        context: fields[3] ?? '',
-      };
-    });
-  } catch (error) {
-    repl.appendError(`reftex-select: ${error.lispMessage ?? error.message}`);
-    return [];
-  }
-}
-
-/** Invoke a RefTeX-select Lisp callback (select / peek / cancel),
- *  swallowing and reporting any Lisp error so the picker never crashes
- *  the renderer. */
-function reftexSelectCallback(name, arg) {
-  if (!keymapReady) return;
-  try {
-    if (arg === undefined) interpreter.call(name);
-    else interpreter.call(name, arg);
-  } catch (error) {
-    repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
-  }
-}
-
-/** The cite *format menu* rows the Lisp side prepared: each Lisp row is
- *  `(key macro desc)`, mapped positionally to `{key, macro, desc}`. */
-function reftexCiteFormats() {
-  if (!keymapReady) return [];
-  try {
-    return listToArray(interpreter.call('reftex-cite-formats')).map((row) => {
-      const f = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-      return { key: f[0] ?? '', macro: f[1] ?? '', desc: f[2] ?? '' };
-    });
-  } catch (error) {
-    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
-    return [];
-  }
-}
-
-/** The cheap cite *index* the Lisp side prepared: each Lisp row is
- *  `(key plain)`, mapped to `{key, plain}`. The picker filters this
- *  client-side; the CSL HTML is fetched lazily via `reftexCiteFormatted`
- *  for the rows actually shown, so a big bibliography isn't formatted
- *  whole. */
-function reftexCiteIndex() {
-  if (!keymapReady) return [];
-  try {
-    return listToArray(interpreter.call('reftex-cite-index')).map((row) => {
-      const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-      return { key: r[0] ?? '', plain: r[1] ?? '' };
-    });
-  } catch (error) {
-    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
-    return [];
-  }
-}
-
-/** CSL-format just the entries named in KEYSCSV (the rows the picker is
- *  about to show), as `{key, html}` pairs. Backed by `reftex-cite-format`
- *  → `citation-format-keys` over a sub-handle. */
-function reftexCiteFormatted(keysCsv) {
-  if (!keymapReady || !keysCsv) return [];
-  try {
-    return listToArray(interpreter.call('reftex-cite-format', keysCsv)).map((row) => {
-      const r = listToArray(row).map((v) => (v === NIL ? '' : String(v)));
-      return { key: r[0] ?? '', html: r[1] ?? '' };
-    });
-  } catch (error) {
-    repl.appendError(`reftex-cite: ${error.lispMessage ?? error.message}`);
-    return [];
-  }
-}
-
-/** Invoke a cite-flow Lisp callback (format-chosen / insert / cancel),
- *  reporting errors without crashing the renderer. */
-function reftexCiteCallback(name, arg) {
-  if (!keymapReady) return;
-  try {
-    if (arg === undefined) interpreter.call(name);
-    else interpreter.call(name, arg);
-  } catch (error) {
-    repl.appendError(`${name}: ${error.lispMessage ?? error.message}`);
-  }
-}
-
-/** R2: the *RefTeX Select* label/reference picker, as a utility-pane tab.
- *  Modal (captures keys, beats a focused webview); SPC-peek drives the editor
- *  pane underneath via the peek callback, then re-focuses the dock so the next
- *  key still feeds the panel. */
-function openReftexSelectOverlay() {
-  utilityDock.openUtilityPanel({
-    id: 'reftex-select',
-    title: 'RefTeX Select',
-    icon: 'fa-solid fa-anchor',
-    modal: true,
-    makePanel: (dock) => createReftexSelectPanel({
-      getCandidates: reftexSelectCandidates,
-      onSelect: (name) => {
-        // Lisp inserts at the origin + re-points editorView; closing the tab
-        // then returns focus to that origin view.
-        reftexSelectCallback('reftex-select-on-select', name);
-        dock.close();
-      },
-      onPeek: (name) => {
-        reftexSelectCallback('reftex-select-on-peek', name);
-        dock.focus();
-      },
-      onCancel: () => {
-        reftexSelectCallback('reftex-select-on-cancel');
-        dock.close();
-      },
-    }),
-  });
-}
-
-/** R3 step 1: the cite *format menu* (choose \cite / \citep / …) as the
- *  `reftex-cite` tab. Picking a format runs the Lisp callback, which calls
- *  open-reftex-cite-select! — re-opening the SAME tab id replaces the format
- *  menu with the picker in place (the swap). */
-function openReftexCiteFormat() {
-  utilityDock.openUtilityPanel({
-    id: 'reftex-cite',
-    title: 'Select citation format',
-    icon: 'fa-solid fa-quote-right',
-    modal: true,
-    makePanel: (dock) => createReftexCiteFormatPanel({
-      getFormats: reftexCiteFormats,
-      onPick: (macro) => reftexCiteCallback('reftex-cite-format-chosen', macro),
-      onCancel: () => {
-        reftexCiteCallback('reftex-cite-on-cancel');
-        dock.close();
-      },
-    }),
-  });
-}
-
-/** R3 step 2: the cite *picker* (cheap index, lazily formats shown rows, mark
- *  + insert). Re-opens the `reftex-cite` tab, replacing the format menu. */
-function openReftexCiteSelect() {
-  utilityDock.openUtilityPanel({
-    id: 'reftex-cite',
-    title: 'Insert citation',
-    icon: 'fa-solid fa-book',
-    modal: true,
-    makePanel: (dock) => createReftexCitePanel({
-      getIndex: reftexCiteIndex,
-      getFormatted: reftexCiteFormatted,
-      onInsert: (keysCsv) => {
-        reftexCiteCallback('reftex-cite-insert', keysCsv);
-        dock.close();
-      },
-      onCancel: () => {
-        reftexCiteCallback('reftex-cite-on-cancel');
-        dock.close();
-      },
-    }),
-  });
-}
 
 // The placeholder view — the chooser a freshly-split pane shows until
 // the user decides what it should hold (replacing split's old silent
@@ -9334,17 +6179,14 @@ function configurePlaceholderView(view) {
     leafPanes(rootPane).find((l) => l.view === view) ?? null;
   const origin = () => (view && view.previousView) || null;
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     cloneEnabled: !!origin(),
     cloneLabel: placeholderCloneLabel(origin()),
     defaultAction: () => {
-      let raw = null;
-      try {
-        if (keymapReady) raw = interpreter.evaluate('*placeholder-default-action*');
-      } catch {
-        raw = null;
-      }
-      return resolvePlaceholderAction(raw);
+      // `*placeholder-default-action*` was a renderer-interpreter customvar; the
+      // server-mode placeholder chooser doesn't surface (a split shows the shared
+      // buffer), so this resolves to the JS default. (Interpreter gone — B7.)
+      return resolvePlaceholderAction(null);
     },
     onOpen: () => {
       const leaf = findLeaf();
@@ -9423,9 +6265,8 @@ function disposePlaceholderElementForView(view) {
 // Phase 3g: directory-columns is a custom element now. Factory reused
 // by the tabline mount path for per-tab `<directory-columns-view>` instances.
 function configureDirectoryColumnsView() {
-  const serverMode = !!(window.host && window.host.serverMode);
   return {
-    // onKey routes to the server's keymap in server mode; flag-off byte-for-byte.
+    // onKey routes to the server's keymap.
     ...serverMediaKeyOption(),
     listDirectory: (path) => window.host.listDirectoryDetailedSync(path),
     getPreview: (path) => buildColumnPreview(path),
@@ -9433,12 +6274,8 @@ function configureDirectoryColumnsView() {
     // preview pane colourises the file the same way as if it were open.
     highlighters,
     openPath: (path) => {
-      // Server mode: open by path through the server's find-file (visitFile).
-      if (serverMode) {
-        if (serverViewClient) serverViewClient.visitPath(path);
-        return;
-      }
-      openFileInTabAdjacent(path);
+      // Open by path through the server's find-file (visitFile).
+      if (serverViewClient) serverViewClient.visitPath(path);
     },
     onRevealInFolder: (path) => window.host.revealInFolder(path),
     onTrash: (path) => window.host.trashFile(path),
@@ -9448,16 +6285,9 @@ function configureDirectoryColumnsView() {
       const to = parent === '' ? newName : `${parent}/${newName}`;
       return window.host.renameFile(path, to);
     },
-    closeBuffer: () => {
-      // Server mode: closing a directory pane isn't wired server-side yet.
-      if (serverMode) return;
-      if (!keymapReady) return;
-      try {
-        interpreter.call('kill-view');
-      } catch (error) {
-        repl.appendError(`kill-view: ${error.lispMessage ?? error.message}`);
-      }
-    },
+    // Closing a directory pane isn't wired server-side yet (the pane is
+    // replaced when a file opens from it).
+    closeBuffer: () => {},
   };
 }
 const directoryColumnsView = /** @type {*} */ (document.createElement('directory-columns-view'));
@@ -9491,13 +6321,15 @@ function configureBookmarkView() {
     };
   }
   return {
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
     // While a chord is mid-flight (C-x just pressed) the outline must
     // forward the *next* key — even a plain one like the `0` of `C-x 0`
     // — to the keymap instead of swallowing it; otherwise focus is
     // trapped in the outline and prefix chords (C-x 0/1/2/b/p …) die.
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     closeBuffer: () => {
       // q collapses the outline's pane (the source returns full-width);
       // the single outline view persists hidden and re-opens on C-x r l.
@@ -9618,8 +6450,10 @@ function configureGnuplotView() {
       window.host && typeof window.host.onGnuplotExit === 'function'
         ? window.host.onGnuplotExit(callback)
         : () => {},
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
+    // Server-owned: the renderer interpreter's chord state is always empty in
+    // server mode (keys route to the spine), so a chord is never "in progress"
+    // here.
+    chordPending: () => false,
     exportSvg: (svg, name) =>
       window.host && typeof window.host.gnuplotSaveSvg === 'function'
         ? window.host.gnuplotSaveSvg(svg, name)
@@ -9628,7 +6462,7 @@ function configureGnuplotView() {
       window.host && typeof window.host.gnuplotSetTheme === 'function'
         ? window.host.gnuplotSetTheme(sessionId, theme)
         : Promise.resolve({ ok: false }),
-    ...(keymapReady ? { onKey: dispatchKey } : {}),
+    ...serverMediaKeyOption(),
   };
 }
 const gnuplotView = /** @type {*} */ (document.createElement('gnuplot-view'));
@@ -9636,81 +6470,6 @@ gnuplotView.configure(configureGnuplotView());
 editorPaneElement().append(gnuplotView);
 gnuplotView.style.display = 'none';
 themeListeners.add(() => gnuplotView.applyTheme());
-
-// The notebook view — a reactive Lisp notebook (a sheet of `(cell …)`
-// cells). Per-view-instance like gnuplot: this singleton is the
-// leaf-direct element and the factory is reused by the tabline mount
-// path for per-tab `<notebook-view>` instances. Evaluation is in-process
-// through the shared interpreter's reactive engine, so the only
-// callbacks are `evaluate` (run the engine for this notebook id, marshal
-// the per-cell records to plain JS) and chord-key forwarding so the host
-// keymap fires while a cell editor is focused. `onSourceChange` (mirror
-// the canonical source into a backing buffer) is wired with persistence.
-const NOTEBOOK_KEYS = {
-  name: keyword('name'),
-  output: keyword('output'),
-  state: keyword('state'),
-  error: keyword('error'),
-  graphic: keyword('graphic'),
-  deps: keyword('deps'),
-};
-/** Marshal one Lisp cell-record map into a plain JS object. */
-function marshalNotebookCell(m) {
-  return {
-    name: String(m.get(NOTEBOOK_KEYS.name) ?? ''),
-    output: String(m.get(NOTEBOOK_KEYS.output) ?? ''),
-    state: String(m.get(NOTEBOOK_KEYS.state) ?? 'ok'),
-    error: String(m.get(NOTEBOOK_KEYS.error) ?? ''),
-    graphic: String(m.get(NOTEBOOK_KEYS.graphic) ?? ''),
-    deps: listToArray(m.get(NOTEBOOK_KEYS.deps) ?? NIL).map(String),
-  };
-}
-function configureNotebookView() {
-  return {
-    evaluate: (id, source) => {
-      try {
-        const cells = listToArray(
-          interpreter.call('notebook-eval!', id, source)
-        );
-        return cells.map(marshalNotebookCell);
-      } catch {
-        return [];
-      }
-    },
-    chordPending: () =>
-      keymapReady && interpreter.call('chord-in-progress?') === true,
-    // A cell edit changed the canonical source (the view already wrote it
-    // into buffer.text). Mark the buffer dirty so C-x C-s saves it and the
-    // modeline shows the unsaved indicator.
-    onSourceChange: (buffer) => {
-      if (buffer) {
-        dirtyBuffers.add(buffer);
-        recovery.save();
-        updateModeline();
-      }
-    },
-    // The notebook picker: list the open notebooks and switch to one.
-    listNotebooks: () =>
-      views
-        .filter((v) => v.kind === 'notebook')
-        .map((v) => ({ id: v.notebookId, name: v.name ?? '*notebook*' })),
-    selectNotebook: (id) => {
-      const idx = views.findIndex(
-        (v) => v.kind === 'notebook' && v.notebookId === id
-      );
-      if (idx !== -1) switchToViewIndex(idx);
-    },
-    renameNotebook: (id, name) => renameNotebookById(id, name),
-    // Forward editor chords (C-x b, M-x, …) to the host keymap. Always
-    // present and guarded at call time, so it works regardless of whether
-    // the keymap had finished loading when this factory ran.
-    onKey: (key) => keymapReady && dispatchKey(key),
-  };
-}
-const notebookView = /** @type {*} */ (document.createElement('notebook-view'));
-notebookView.configure(configureNotebookView());
-editorPaneElement().append(notebookView);
-notebookView.style.display = 'none';
 
 // --- kind dispatch -----------------------------------------------------
 //
@@ -9748,7 +6507,6 @@ const SINGLETON_VIEWS = [
   { kind: 'bookmark',          el: bookmarkView,          releasesBuffer: false },
   { kind: 'shell',             el: shellView,             releasesBuffer: true  },
   { kind: 'gnuplot',           el: gnuplotView,           releasesBuffer: true  },
-  { kind: 'notebook',          el: notebookView,          releasesBuffer: false },
 ];
 
 /** Side-effect bundle for mounting a text view: rebind the cursor,
@@ -9772,6 +6530,25 @@ function applyTextMountSideEffects(view, instance) {
     if (instance) {
       editorView = instance;
       instance.setView(view);
+      // B4: wire the overlay managers to THIS server-backed editor so inline-eval
+      // pills + sticky-note overlays render on it. The non-server branch below
+      // does this, but server-backed views early-return — so under Model B the
+      // overlays were never bound to any editor. Guarded: stickyNotes / inlineEval
+      // are module-level consts declared LATER, so a mount during the initial
+      // paint would hit their TDZ (the app.js init-TDZ trap); a later reconcile
+      // re-mount wires them once they exist.
+      if (instance.overlayLayer) {
+        try {
+          stickyNotes.setOverlayLayer(instance.overlayLayer);
+          inlineEval.setOverlayLayer(instance.overlayLayer);
+        } catch { /* declared later — a reconcile re-mount binds them */ }
+      }
+      // The hover-doc tooltip listens on the ACTIVE `<text-view>`; re-point it
+      // here (same per-instance problem as inline-eval's overlay). Without this
+      // the listeners stay on whatever element existed when createHoverDoc ran —
+      // often NOT the server-mounted view — so hover never fires. TDZ-guarded:
+      // hoverDoc is a module const declared later, bound by a reconcile re-mount.
+      try { hoverDoc.setEditorEl(instance); } catch { /* declared later */ }
       if (typeof instance.focus === 'function') instance.focus();
     }
     return;
@@ -9803,9 +6580,9 @@ function applyTextMountSideEffects(view, instance) {
   // If the bookmark outline is open beside us, follow focus to this buffer.
   followBookmarkView(view.buffer);
   watchCurrentBuffer();
-  ensureMajorMode();
   if (editorView && typeof editorView.focus === 'function') editorView.focus();
-  refreshModeMenu();
+  // The mode menu rides the server's VIEW push (applyServerModeMenu) on a buffer
+  // switch — no local recompute.
   syncMarkdownPreviewToBuffer();
 }
 
@@ -9836,12 +6613,14 @@ function mountKindView(view, context) {
     return;
   }
   if (view.kind === 'browser') {
-    // Per-instance: mount THIS view's own browser element in its pane.
+    // Per-instance: mount THIS view's own browser element in its pane. Honor the
+    // focus context — a non-focused browser re-mounting on a fan-out reconcile
+    // must not yank the keyboard into its <webview> (same rule as proc/bookmark).
     const leaf = leafPanes(rootPane).find((l) => l.view === view);
-    const paneEl = leaf ? paneElements.get(leaf.id) : null;
+    const paneEl = (context && context.paneEl) || (leaf ? paneElements.get(leaf.id) : null);
     const el = ensureBrowserElementForView(view, paneEl);
     el.style.display = '';
-    el.focus();
+    if (!context || context.focus !== false) el.focus();
     return;
   }
   if (view.kind === 'doc') {
@@ -9885,15 +6664,15 @@ function mountKindView(view, context) {
     if (!context || context.focus !== false) el.focus();
     return;
   }
-  if (view.kind === 'shell' && view._serverMedia) {
+  if (isProcViewKind(view.kind) && view._serverMedia) {
     // Per-instance in SERVER mode (flag-off keeps the singleton below): each
-    // shell owns its own <shell-view> + xterm + pty, so several render at once
-    // (a split, or — via mountTablineActiveChild, which routes here too — a
-    // bottom tabline of shell tabs). Honor the focus context: a shell
-    // re-mounting on a reconcile must not steal focus from the document.
+    // live-process view (shell/gnuplot) owns its own element + child, so several
+    // render at once (a split, or — via mountTablineActiveChild, which routes
+    // here too — a bottom tabline of process tabs). Honor the focus context: a
+    // re-mount on a reconcile must not steal focus from the document.
     const leaf = leafPanes(rootPane).find((l) => l.view === view);
     const paneEl = (context && context.paneEl) || (leaf ? paneElements.get(leaf.id) : null);
-    const el = ensureShellElementForView(view, paneEl);
+    const el = ensureProcViewElement(view, paneEl);
     el.style.display = '';
     if (!context || context.focus !== false) el.focus();
     return;
@@ -9991,18 +6770,6 @@ function disposeKindView(view, context) {
       }
     } catch {
       // Process is already gone — nothing to do.
-    }
-    return;
-  }
-  if (view.kind === 'notebook') {
-    // No subprocess; just drop the engine's stored notebook record so a
-    // closed notebook's cell values don't linger.
-    if (typeof view.notebookId === 'string') {
-      try {
-        if (keymapReady) interpreter.call('notebook-forget!', view.notebookId);
-      } catch {
-        // Engine not ready / already gone — nothing to do.
-      }
     }
     return;
   }
@@ -10117,9 +6884,11 @@ function ensureTablineState(view) {
       if (view._serverLeafTabline) {
         const target = view.tabs[i];
         if (!target || !serverViewClient) return;
-        const id = target === serverFacadeView
-          ? serverViewClient.currentBufferId()
-          : target._serverBufferId;
+        // Every tab — the active façade included — carries the wire's
+        // bufferId (stamped in buildServerLeafTabline); currentBufferId()
+        // is only a fallback, since it can lag the server's re-points.
+        const id = target._serverBufferId
+          ?? (target === serverFacadeView ? serverViewClient.currentBufferId() : null);
         if (!id) return;
         serverViewClient.sendPaneIntent({ op: 'focus-pane', paneId: view._serverLeafId });
         serverViewClient.sendPaneIntent({ op: 'close-tab', paneId: view._serverLeafId, bufferId: id });
@@ -10127,6 +6896,18 @@ function ensureTablineState(view) {
       }
       const target = view.tabs[i];
       if (!target) return;
+      // In server mode a tab can back a SERVER buffer (a server text leaf shown
+      // through a renderer tab strip, or the live façade) that is NOT in the
+      // global `views` array — so `views.indexOf` is -1 and the renderer-only
+      // `removeTabInTabline` below would drop the tab while the buffer lives on
+      // in the spine (visible in C-x C-b). Kill it server-side instead (switch +
+      // C-x k, which re-homes the client onto a survivor and re-pushes the list).
+      if (serverViewClient) {
+        const serverId = target === serverFacadeView
+          ? serverViewClient.currentBufferId()
+          : target._serverBufferId;
+        if (serverId) { serverViewClient.closeBuffer(serverId); return; }
+      }
       const globalIdx = views.indexOf(target);
       if (globalIdx >= 0) killViewAtIndex(globalIdx);
       else removeTabInTabline(view, i);
@@ -10258,7 +7039,7 @@ function perKindConfigureFactory(kind) {
     case 'recover':           return configureRecoverView;
     case 'shell':             return configureShellView;
     case 'gnuplot':           return configureGnuplotView;
-    case 'notebook':          return configureNotebookView;
+    case 'customize':         return configureCustomizeView;
     default:                  return null;
   }
 }
@@ -10294,7 +7075,7 @@ function ensureTabElement(state, child) {
     el.configure({
       ...(serverBacked
         ? { onKey: (key) => (serverViewClient ? serverViewClient.dispatchKey(key) : false) }
-        : (keymapReady ? { onKey: dispatchKey } : {})),
+        : {}),
       highlighters,
       foldCaptures,
       getPoint: () => typeof child.point === 'number' ? child.point : 0,
@@ -10377,12 +7158,11 @@ function mountTablineActiveChild(tablineView) {
   // they're safe to create hidden.
   for (const tab of tablineView.tabs) {
     // Skip TEXT (its editor measures the container bounding box, which is zero
-    // under display:none) AND SHELL (xterm measures its host the same way at
-    // term.open — eager creation in a hidden/unsized content area leaves the
-    // canvas renderer stuck at zero cols/rows and it never paints, even though
-    // the pty spawns and bytes arrive). Both are created LAZILY on activation
-    // below, when the content area is visible + sized.
-    if (tab.kind !== 'text' && tab.kind !== 'shell') ensureTabElement(state, tab);
+    // under display:none) AND LIVE-PROCESS views (shell's xterm measures its host
+    // the same way at term.open; gnuplot likewise — eager creation in a hidden/
+    // unsized content area leaves it mis-rendered even though the child spawns).
+    // These are created LAZILY on activation below, when the content is sized.
+    if (tab.kind !== 'text' && !isProcViewKind(tab.kind)) ensureTabElement(state, tab);
   }
 
   const child = (typeof tablineView.active === 'number' &&
@@ -10508,22 +7288,18 @@ function elementForViewInstance(view) {
   return singletonElementForKind(view.kind);
 }
 
-/** Invoke a Lisp callback with the given JS-side arguments. The
- *  callback may be either a symbol (looked up as a global procedure
- *  name) or a procedure value (lambda / primitive); errors raised
- *  during the call land in the REPL under PRIMNAME so an async result
- *  delivery can't crash the surrounding event. */
+/** Invoke a hosted-element callback (a plain JS function) with the given
+ *  arguments; errors land in the REPL under PRIMNAME so an async result
+ *  delivery can't crash the surrounding event. The Lisp-callback path (a
+ *  Sym/procedure run through the renderer interpreter) is gone with the
+ *  interpreter — B7; element on-ready callbacks are plain JS now, and a
+ *  non-function callback is a no-op. */
 function deliverLispCallback(callback, callArgs, primName) {
+  if (typeof callback !== 'function') return;
   try {
-    if (callback instanceof Sym) {
-      interpreter.call(callback.name, ...callArgs);
-    } else {
-      applyProcedure(callback, callArgs);
-    }
+    callback(...callArgs);
   } catch (error) {
-    repl.appendError(
-      `${primName} callback: ${error.lispMessage ?? error.message ?? error}`
-    );
+    repl.appendError(`${primName} callback: ${error?.message ?? error}`);
   }
 }
 
@@ -10567,7 +7343,6 @@ function activateTabInTabline(tablineView, index) {
     if (child) {
       const viewIdx = views.indexOf(child);
       if (viewIdx >= 0) currentViewIndex = viewIdx;
-      updateModeline();
     }
   }
 }
@@ -10712,51 +7487,31 @@ async function buildColumnPreview(path) {
  *  `open-doc`: pre-built manifest first, then the live docstring. */
 const hoverDoc = createHoverDoc(editorView, {
   offsetFromPoint: (x, y) => editorView.offsetFromPoint(x, y),
-  symbolAtOffset: (offset) => {
-    if (!keymapReady) return null;
-    try {
-      const result = interpreter.evaluate(
-        `(symbol-at-offset (buffer-text) ${offset})`
-      );
-      return typeof result === 'string' ? result : null;
-    } catch {
-      return null;
+  // Resolve the symbol + doc summary on the SPINE (docs.lisp, against the LIVE
+  // active buffer) — the renderer interpreter's buffer is idle in server mode, so
+  // the old `(symbol-at-offset (buffer-text) …)` there saw an empty buffer and the
+  // tooltip never resolved. The Markdown preview is rendered here (the renderer
+  // owns `renderMarkdown`); the spine returns the raw docstring source.
+  resolveHover: async (offset) => {
+    if (!serverViewClient) return null;
+    const r = await serverViewClient.requestDocHover(offset);
+    if (!r || typeof r.name !== 'string' || r.name === '') return null;
+    if (r.kind === 'manifest') {
+      return { symbol: r.name, summary: { kind: 'manifest', name: r.name } };
     }
-  },
-  summarise: (symbol) => {
-    if (!keymapReady) return null;
-    let value;
-    try {
-      value = interpreter.call('doc-summary-for', symbol);
-    } catch {
-      return null;
-    }
-    if (value === NIL || value === null || value === undefined) return null;
-    const parts = listToArray(value);
-    if (parts.length < 2) return null;
-    const [kind, name, source] = parts.map((part) =>
-      typeof part === 'string' ? part : String(part)
-    );
-    if (kind === 'manifest') return { kind: 'manifest', name };
-    if (kind === 'live') {
+    if (r.kind === 'live') {
       let preview = '';
       try {
-        const trimmed = (source ?? '').slice(0, 320);
-        preview = renderMarkdown(trimmed);
+        preview = renderMarkdown((r.source ?? '').slice(0, 320));
       } catch {
         preview = '';
       }
-      return { kind: 'live', name, preview };
+      return { symbol: r.name, summary: { kind: 'live', name: r.name, preview } };
     }
     return null;
   },
-  openDoc: (symbol) => {
-    if (!keymapReady) return;
-    try {
-      interpreter.call('open-doc', symbol);
-    } catch (error) {
-      repl.appendError(`open-doc: ${error.lispMessage ?? error.message}`);
-    }
+  openDoc: (name) => {
+    if (serverViewClient) serverViewClient.docOpen(name);
   },
 });
 
@@ -10767,93 +7522,6 @@ const inlineEval = createInlineEval({
   getBuffer: () => currentTextBuffer,
 });
 
-/** Most-recent-first log of evaluations, capped at `EVAL_LOG_MAX`. */
-const EVAL_LOG_MAX = 50;
-const evalLog = [];
-
-/** Take a substring out of the current buffer with the same bounds
- *  the Lisp side computed. */
-function bufferSlice(start, end) {
-  if (!currentTextBuffer || typeof currentTextBuffer.text !== 'string') {
-    return '';
-  }
-  const text = currentTextBuffer.text;
-  if (start < 0 || end > text.length || start >= end) return '';
-  return text.slice(start, end);
-}
-
-/** Format a short result label for the pill: writeString-quoted,
- *  collapsed to a single line, truncated to keep the pill compact. */
-function formatResultLabel(value) {
-  let raw;
-  try {
-    raw = writeString(value);
-  } catch (error) {
-    raw = String(value);
-  }
-  const oneLine = raw.replace(/\s+/g, ' ').trim();
-  return oneLine.length > 80 ? oneLine.slice(0, 77) + '…' : oneLine;
-}
-
-function formatErrorLabel(error) {
-  const message = error?.lispMessage ?? error?.message ?? String(error);
-  const oneLine = String(message).replace(/\s+/g, ' ').trim();
-  return oneLine.length > 80 ? oneLine.slice(0, 77) + '…' : oneLine;
-}
-
-/** Record an eval in the log. */
-function pushEvalLog(entry) {
-  evalLog.unshift({ ...entry, at: new Date().toISOString() });
-  if (evalLog.length > EVAL_LOG_MAX) evalLog.length = EVAL_LOG_MAX;
-}
-
-/** Evaluate the source in [start, end), show a pill at `end`, and
- *  log the eval. Errors surface on the pill AND in the REPL with
- *  the full stack trace. */
-function evalRegionWithOverlay(start, end) {
-  const source = bufferSlice(start, end);
-  if (source === '') {
-    repl.appendError('eval: nothing to evaluate');
-    return;
-  }
-  try {
-    const result = interpreter.evaluate(source);
-    const label = formatResultLabel(result);
-    inlineEval.showResult(end, label);
-    pushEvalLog({ source, ok: true, label });
-  } catch (error) {
-    const label = formatErrorLabel(error);
-    inlineEval.showError(end, `! ${label}`);
-    pushEvalLog({ source, ok: false, label });
-    repl.appendError(
-      `eval ${source}\n  ${error.lispMessage ?? error.message ?? String(error)}`
-    );
-  }
-}
-
-/** Open (or reuse) a text view showing the eval log. */
-function openEvalLogBuffer() {
-  const name = '*Eval log*';
-  const text = evalLog.length === 0
-    ? '(no evaluations yet)'
-    : evalLog.map((entry) => {
-        const marker = entry.ok ? '⇒' : '!';
-        return `${entry.at}\n  ${entry.source}\n  ${marker} ${entry.label}`;
-      }).join('\n\n');
-  let index = views.findIndex(
-    (v) => v.kind === 'text' && v.name === name
-  );
-  if (index < 0) {
-    views.push(createView({
-      kind: 'text',
-      buffer: createBuffer(text, { name }),
-    }));
-    index = views.length - 1;
-  } else {
-    views[index].buffer.setText(text);
-  }
-  switchToViewIndex(index);
-}
 
 // The Markdown renderer used for sticky notes and the live-docstring
 // path in the doc-view. Driven by the `*markdown-interpreter*` Lisp
@@ -10862,15 +7530,11 @@ function openEvalLogBuffer() {
 // on stdin and prints HTML on stdout.
 const DEFAULT_MARKDOWN_INTERPRETER = 'marked';
 
-/** The current `*markdown-interpreter*` setting, falling back to the
- *  default if the Lisp side isn't ready or the value is empty. */
+/** The current `*markdown-interpreter*` setting, from the config cache,
+ *  falling back to the default if the value is empty. */
 function currentMarkdownInterpreter() {
-  try {
-    const value = interpreter.evaluate('*markdown-interpreter*');
-    if (typeof value === 'string' && value.trim() !== '') return value;
-  } catch {
-    // Not yet defined — fall through to the default.
-  }
+  const value = rendererConfig['*markdown-interpreter*'];
+  if (typeof value === 'string' && value.trim() !== '') return value;
   return DEFAULT_MARKDOWN_INTERPRETER;
 }
 
@@ -10899,7 +7563,20 @@ const stickyNotes = createStickyNotes({
   overlayLayer: editorView.overlayLayer,
   getBuffer: () => currentTextBuffer,
   render: renderNoteHtml,
-  onChange: () => scheduleMetadataWrite(currentTextBuffer),
+  // B4: under Model B the server owns the file + its sidecar, so ship note changes
+  // up (NOTES_CHANGED → spine.setBufferNotes → persist) instead of writing
+  // render-side (the mirror has no filePath). Flag-off, the old renderer write.
+  onChange: () => {
+    if (serverViewClient && typeof serverViewClient.notesChanged === 'function') {
+      serverViewClient.notesChanged(
+        currentTextBuffer && currentTextBuffer.metadata
+          ? currentTextBuffer.metadata.notes
+          : []
+      );
+    } else {
+      scheduleMetadataWrite(currentTextBuffer);
+    }
+  },
 });
 stickyNotes.setBuffer(currentTextBuffer);
 
@@ -10915,33 +7592,20 @@ const bookmarks = createBookmarks({
 bookmarks.setBuffer(currentTextBuffer);
 
 // --- Markdown preview pane ---------------------------------------------
-// A toggleable pane (markdown-preview, C-c v) that renders the current
-// markdown-mode buffer to HTML through the same JMarkdown pipeline the
-// sticky notes use, refreshing — debounced — as the buffer is edited.
-
-/** Typeset mathematics inside the preview iframe, once its own MathJax
- *  has started. The iframe loads its own MathJax (see buildPreviewHead),
- *  so this runs against THAT instance, not the editor's. `elements` is
- *  the set to typeset: the whole body `[body]` after a rebuild, or just
- *  the math spans morphdom brought in fresh on the incremental path. */
-function typesetPreview(frameWindow, elements) {
-  const mathJax = frameWindow && frameWindow.MathJax;
-  if (!mathJax) return;
-  if (!Array.isArray(elements) || elements.length === 0) return;
-  const run = () => {
-    if (typeof mathJax.typesetPromise === 'function') {
-      mathJax.typesetPromise(elements).catch(() => {});
-    }
-  };
-  const ready = mathJax.startup && mathJax.startup.promise;
-  if (ready) ready.then(run).catch(() => {});
-  else run();
-}
+// A toggleable pane (markdown-preview, C-c v) that shows the current
+// Markdown / JMarkdown FILE rendered by the real `jmarkdown watch` server
+// (apps/desktop/src/jmarkdown-watch.js) inside an iframe — the same pipeline
+// the book build uses, live-reloading (morphdom) on each save. The renderer
+// owns only the pane + the iframe's `src`; the rendering, CSS, and MathJax all
+// come from the watch server's output, so there is no in-app render path here.
+// The preview tracks the SAVED file, so it refreshes when the buffer is saved
+// (C-x C-s), not per keystroke; an unsaved / path-less buffer has nothing to
+// watch.
 
 /** Build an `app://editor/__host__/…` URL for an absolute file path —
  *  the renderer-side mirror of serve.js's `hostFileUrl` (keep in sync).
- *  Serves any local file same-origin, so the preview iframe can load the
- *  book's CSS and a file's relative assets. */
+ *  Serves any local file same-origin (e.g. resolving a bibliography that
+ *  lives outside an opened folder). */
 function hostFileUrl(filePath) {
   return (
     'app://editor/__host__' +
@@ -10949,138 +7613,403 @@ function hostFileUrl(filePath) {
   );
 }
 
-/** The MathJax config the preview iframe uses — mirrors index.html. */
-const PREVIEW_MATHJAX_CONFIG = {
-  tex: {
-    inlineMath: [['$', '$'], ['\\(', '\\)']],
-    displayMath: [['$$', '$$'], ['\\[', '\\]']],
-    // Honour `\$` as a literal dollar (renderMarkdown preserves it), so a
-    // price like "\$45" isn't paired into math.
-    processEscapes: true,
-  },
-  svg: { fontCache: 'local' },
-  startup: { typeset: false },
-};
-const PREVIEW_MATHJAX_SRC =
-  'app://editor/apps/desktop/vendor/mathjax/tex-svg.js';
-const PREVIEW_DEFAULT_CSS_URL =
-  'app://editor/apps/desktop/markdown-preview.css';
-
-/** The current markdown buffer's directory as a base URL the iframe
- *  resolves relative assets against — or null for an unsaved buffer. */
-function currentPreviewBaseUrl() {
-  const path = currentTextBuffer && currentTextBuffer.filePath;
-  if (typeof path !== 'string' || path === '') return null;
-  const dir = path.slice(0, path.lastIndexOf('/') + 1);
-  return dir ? hostFileUrl(dir) : null;
-}
-
-/** The user's `*markdown-preview-css*` paths as iframe-loadable URLs.
- *  Absolute (and `~`) paths go through the host-file scheme; a relative
- *  path is left as-is to resolve against the iframe's <base>. */
-function currentPreviewCssUrls() {
-  let paths = [];
+/** Build the `__host__` URL for an absolute PATH *and* vouch for its directory
+ *  in the serve allowlist — else the `app://editor/__host__` route 403s the
+ *  fetch (e.g. a bib symlinked outside an opened folder). Mirrors the
+ *  `host-file-url` primitive; shared by it and the plain-JS bib-search dispatch
+ *  (L4), which must NOT skip the allowlisting the way the bare builder does. */
+function vouchHostFileUrl(filePath) {
   try {
-    paths = listToArray(interpreter.evaluate('*markdown-preview-css*')).map(String);
-  } catch {
-    paths = [];
-  }
-  return paths.map((p) => {
-    let path = p;
-    if (path.startsWith('~/')) path = window.host.homeDirectory + path.slice(1);
-    return path.startsWith('/') ? hostFileUrl(path) : path;
-  });
+    if (window.host && typeof window.host.allowHostFile === 'function') {
+      window.host.allowHostFile(filePath);
+    }
+  } catch { /* ignore — fall through to the URL */ }
+  return hostFileUrl(filePath);
 }
 
-/** Whether the built-in preview stylesheet should be linked. */
-function previewDefaultStyleOn() {
-  try {
-    return interpreter.evaluate('*markdown-preview-default-style*') !== false;
-  } catch {
-    return true;
-  }
-}
+// The preview pane DOM: a header + an iframe inside #markdown-preview-host.
+// The CSS classes (.markdown-preview / -header / -frame, and the
+// body.markdown-preview-hidden toggle) are shared with the old in-app pane, so
+// styles.css needs no change. The iframe's `src` points at the watch server.
+const markdownPreviewPane = document.createElement('div');
+markdownPreviewPane.className = 'markdown-preview';
 
-/** The <head> for the preview iframe: base + stylesheets + MathJax. */
-function buildPreviewFrameHead() {
-  return buildPreviewHead({
-    baseUrl: currentPreviewBaseUrl(),
-    cssUrls: currentPreviewCssUrls(),
-    defaultCssUrl: previewDefaultStyleOn() ? PREVIEW_DEFAULT_CSS_URL : null,
-    mathjaxSrc: PREVIEW_MATHJAX_SRC,
-    mathjaxConfig: PREVIEW_MATHJAX_CONFIG,
-  });
-}
+// Header: a "PREVIEW" label + the file name on the left, action buttons (pop
+// out, close) on the right.
+const markdownPreviewHeader = document.createElement('div');
+markdownPreviewHeader.className = 'markdown-preview-header';
+const markdownPreviewTitle = document.createElement('span');
+markdownPreviewTitle.className = 'markdown-preview-title';
+markdownPreviewTitle.textContent = 'Preview';
+const markdownPreviewFilename = document.createElement('span');
+markdownPreviewFilename.className = 'markdown-preview-filename';
+markdownPreviewTitle.append(' ', markdownPreviewFilename);
 
-const markdownPreview = createMarkdownPreview(
-  document.getElementById('markdown-preview-host'),
-  {
-    render: renderNoteHtml,
-    buildHead: buildPreviewFrameHead,
-    typeset: typesetPreview,
-  }
-);
+const markdownPreviewActions = document.createElement('span');
+markdownPreviewActions.className = 'markdown-preview-actions';
+const markdownPreviewPopoutBtn = document.createElement('button');
+markdownPreviewPopoutBtn.className = 'markdown-preview-btn';
+markdownPreviewPopoutBtn.title = 'Open the preview in its own window';
+markdownPreviewPopoutBtn.setAttribute('aria-label', 'Pop out preview');
+markdownPreviewPopoutBtn.innerHTML = '<i class="fa-solid fa-arrow-up-right-from-square"></i>';
+const markdownPreviewCloseBtn = document.createElement('button');
+markdownPreviewCloseBtn.className = 'markdown-preview-btn markdown-preview-close';
+markdownPreviewCloseBtn.title = 'Close the preview (stops the watch process)';
+markdownPreviewCloseBtn.setAttribute('aria-label', 'Close preview');
+markdownPreviewCloseBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+markdownPreviewActions.append(markdownPreviewPopoutBtn, markdownPreviewCloseBtn);
+markdownPreviewHeader.append(markdownPreviewTitle, markdownPreviewActions);
+
+const markdownPreviewFrame = document.createElement('iframe');
+markdownPreviewFrame.className = 'markdown-preview-frame';
+markdownPreviewPane.append(markdownPreviewHeader, markdownPreviewFrame);
+document.getElementById('markdown-preview-host').append(markdownPreviewPane);
+
+markdownPreviewPopoutBtn.addEventListener('click', () => {
+  popOutMarkdownPreview();
+  editorView.focus();
+});
+markdownPreviewCloseBtn.addEventListener('click', () => {
+  hideMarkdownPreview();
+  editorView.focus();
+});
+
 // The pane starts hidden; markdown-preview reveals it.
 document.body.classList.add('markdown-preview-hidden');
 
-/** Whether the current buffer is in markdown-mode. */
-function currentBufferIsMarkdown() {
-  if (!keymapReady) return false;
-  try {
-    return interpreter.call('major-mode-name') === 'Markdown';
-  } catch {
-    return false;
+/** The absolute path of the file the preview is currently watching, or null
+ *  when the preview is off. Lets a buffer switch skip a respawn when the new
+ *  buffer is backed by the same file. */
+let previewWatchedPath = null;
+/** The watch server's port while the preview is open (for the pop-out URL). */
+let previewPort = null;
+/** True while the preview lives in a popped-out window: forward search routes to
+ *  it (via main) instead of the in-app iframe, and inverse search arrives back
+ *  the same way. Cleared when the popped-out window closes or the in-app preview
+ *  is reopened. */
+let previewPoppedOut = false;
+
+// --- debounced live preview (save-free refresh on a typing pause) -------
+// While the preview is open (in-app OR popped out), edits to the previewed
+// buffer are pushed to main after a pause, which rewrites the shadow the watch
+// server reads — so the render updates without a save. See jmarkdown-watch.js
+// and plans/JMD-LIVE-PREVIEW.md.
+/** The real source path the preview was opened on — the sync key. Persists
+ *  across a pop-out (unlike previewWatchedPath); null when no preview is live. */
+let previewSourcePath = null;
+/** The buffer the preview is showing — identified by its stable server buffer
+ *  id (the mirror object is rebuilt on every switch, so identity is not stable;
+ *  the id is). A sync only fires while this is the focused buffer, so editing a
+ *  different buffer never rewrites this shadow. `previewBuffer` is the fallback
+ *  identity when there is no server client (id unavailable). */
+let previewBuffer = null;
+let previewBufferId = null;
+/** The pending debounce timer id, or null. */
+let previewSyncTimer = null;
+/** The text last pushed to the shadow — skips a rewrite when only the cursor
+ *  moved (setModeline fires on cursor moves too, not just edits). */
+let lastPreviewSyncedText = null;
+
+// --- preview ⇄ source sync (forward / inverse search) ------------------
+// The preview iframe is cross-origin (localhost vs app://), so source↔preview
+// position sync goes through postMessage with the watch page's injected
+// `sync.js` (contract: plans/JMARKDOWN-PREVIEW-SYNC.md). Forward search: when
+// the server-pushed cursor line changes, ask the preview to scroll to it.
+// Inverse search: a ⌘/Ctrl-click in the preview posts a source line back; we
+// move the editor cursor there via a server GOTO_LINE intent (the renderer's
+// own buffer mirror can't move the server cursor).
+const PREVIEW_SYNC_SOURCE = 'jmarkdown-sync';
+const PREVIEW_SYNC_VERSION = 1;
+/** The most recent 1-based cursor line the server pushed (for replay on `ready`). */
+let lastKnownCursorLine = null;
+/** The last line we asked the preview to scroll to (de-dupes per-keystroke posts). */
+let lastPostedPreviewLine = null;
+
+/** Post a sync message to the preview iframe. No-op if it isn't mounted. */
+function postToPreview(msg) {
+  const win = markdownPreviewFrame && markdownPreviewFrame.contentWindow;
+  if (!win) return;
+  win.postMessage(
+    { source: PREVIEW_SYNC_SOURCE, version: PREVIEW_SYNC_VERSION, ...msg },
+    '*' // line numbers only; '*' avoids the localhost-port origin dance
+  );
+}
+
+/** Whether forward search (preview-follows-cursor) is enabled. Reads the
+ *  `*markdown-preview-follow-cursor*` value from the config cache (seeded on,
+ *  refreshed by the spine's config-snapshot/config-apply pushes). */
+function previewFollowCursorOn() {
+  return rendererConfig['*markdown-preview-follow-cursor*'] !== false;
+}
+
+/** Scroll the preview to `line` — the in-app iframe, or (when detached) the
+ *  popped-out window via main. `flash` requests the yellow location flash
+ *  (reserved for the explicit C-c C-v sync; auto-follow scrolls silently).
+ *  Returns whether a preview was targeted. */
+function postPreviewScroll(line, flash) {
+  const target = markdownPreviewVisible() ? 'inapp' : (previewPoppedOut ? 'popout' : null);
+  if (!target) return false;
+  if (target === 'popout') {
+    if (window.host && typeof window.host.previewForward === 'function') {
+      window.host.previewForward(line, !!flash);
+    }
+  } else {
+    postToPreview({ type: 'scroll-to-line', line, behavior: 'smooth', flash: !!flash });
+  }
+  return true;
+}
+
+/** Auto-follow (preview-follows-cursor on): as the server-pushed cursor line
+ *  changes, scroll the preview to it — SILENTLY (no flash). Skips when no
+ *  preview is showing, the toggle is off, or the line is unchanged. */
+function previewScrollToCursor(line) {
+  if (typeof line !== 'number') return;
+  lastKnownCursorLine = line;
+  if (line === lastPostedPreviewLine) return;
+  if (!previewFollowCursorOn()) return;
+  lastPostedPreviewLine = line;
+  postPreviewScroll(line, false);
+}
+
+/** Explicit forward search (C-c C-v): scroll the preview to `line` (or the last
+ *  known cursor line) AND flash the spot — regardless of the follow-cursor
+ *  toggle. A no-op when no preview is showing. */
+function previewSyncToCursor(line) {
+  const target = typeof line === 'number' ? line : lastKnownCursorLine;
+  if (typeof target !== 'number') return;
+  lastKnownCursorLine = target;
+  if (postPreviewScroll(target, true)) lastPostedPreviewLine = target;
+}
+
+/** Debounce interval for the live preview (ms), from live config; floored so a
+ *  misconfigured 0 can't busy-rewrite the shadow. */
+function previewDebounceMs() {
+  const ms = Number(rendererConfig['*markdown-preview-debounce-ms*']);
+  return Number.isFinite(ms) && ms > 0 ? Math.max(50, ms) : 400;
+}
+
+/** Whether the previewed buffer is the one currently focused. Prefers the stable
+ *  server buffer id; falls back to mirror identity when no client is present. */
+function previewBufferIsActive() {
+  if (
+    previewBufferId !== null &&
+    serverViewClient &&
+    typeof serverViewClient.currentBufferId === 'function'
+  ) {
+    return serverViewClient.currentBufferId() === previewBufferId;
+  }
+  return currentTextBuffer !== null && currentTextBuffer === previewBuffer;
+}
+
+/** (Re)arm the debounced preview sync after an edit. Fires only while a preview
+ *  is live for the focused buffer, and only when the text actually changed — the
+ *  driving `setModeline` push also fires on cursor moves, which must not reset
+ *  the edit debounce. Each real edit resets the timer. */
+function schedulePreviewSync() {
+  if (!previewSourcePath || !previewBufferIsActive()) return;
+  if (!currentTextBuffer || currentTextBuffer.text === lastPreviewSyncedText) return;
+  if (previewSyncTimer !== null) clearTimeout(previewSyncTimer);
+  previewSyncTimer = setTimeout(flushPreviewSync, previewDebounceMs());
+}
+
+/** Push the current buffer text to main (which rewrites the preview shadow),
+ *  unless nothing changed since the last push. */
+function flushPreviewSync() {
+  previewSyncTimer = null;
+  if (!previewSourcePath || !currentTextBuffer || !previewBufferIsActive()) return;
+  const text = currentTextBuffer.text;
+  if (typeof text !== 'string' || text === lastPreviewSyncedText) return;
+  lastPreviewSyncedText = text;
+  if (typeof window.host?.syncJmarkdownWatch === 'function') {
+    window.host.syncJmarkdownWatch(previewSourcePath, text);
   }
 }
+
+/** Begin live-syncing PATH's preview from the current buffer (called on open).
+ *  Seeds `lastPreviewSyncedText` so the first edit — not the open — triggers a
+ *  rewrite. Returns the seed text for the initial shadow. */
+function beginPreviewSync(path) {
+  previewSourcePath = path;
+  previewBuffer = currentTextBuffer;
+  previewBufferId =
+    serverViewClient && typeof serverViewClient.currentBufferId === 'function'
+      ? serverViewClient.currentBufferId()
+      : null;
+  lastPreviewSyncedText = currentTextBuffer ? currentTextBuffer.text : '';
+  return lastPreviewSyncedText;
+}
+
+/** Stop live-syncing (in-app close or popped-out window closed). */
+function clearPreviewSyncState() {
+  if (previewSyncTimer !== null) { clearTimeout(previewSyncTimer); previewSyncTimer = null; }
+  previewSourcePath = null;
+  previewBuffer = null;
+  previewBufferId = null;
+  lastPreviewSyncedText = null;
+}
+
+// Relay from a popped-out preview window (via main): inverse-search clicks and
+// the preview's `ready`. Registered once.
+if (window.host && typeof window.host.onPreviewUp === 'function') {
+  window.host.onPreviewUp((msg) => {
+    if (!msg) return;
+    if (msg.type === 'ready') {
+      // The popped-out preview is up — replay the current cursor line.
+      lastPostedPreviewLine = null;
+      if (previewPoppedOut && typeof lastKnownCursorLine === 'number') {
+        previewScrollToCursor(lastKnownCursorLine);
+      }
+    } else if (msg.type === 'source-line-click' && typeof msg.line === 'number') {
+      if (serverViewClient && typeof serverViewClient.sendGotoLine === 'function') {
+        serverViewClient.sendGotoLine(msg.line);
+      }
+    }
+  });
+}
+if (window.host && typeof window.host.onPreviewPopoutClosed === 'function') {
+  window.host.onPreviewPopoutClosed(() => {
+    previewPoppedOut = false;
+    lastPostedPreviewLine = null;
+    clearPreviewSyncState(); // the popped-out preview is gone — stop live-sync
+  });
+}
+
+// Inverse search + handshake from the preview's sync.js. Registered once;
+// filters to the localhost preview origin and our protocol, ignores all else.
+window.addEventListener('message', (event) => {
+  if (!/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(event.origin)) return;
+  const d = event.data;
+  if (!d || d.source !== PREVIEW_SYNC_SOURCE) return;
+  if (d.type === 'ready') {
+    // The preview (re)loaded its sync bridge — replay the current cursor line so
+    // the view aligns immediately.
+    lastPostedPreviewLine = null;
+    if (typeof lastKnownCursorLine === 'number') previewScrollToCursor(lastKnownCursorLine);
+  } else if (d.type === 'source-line-click' && typeof d.line === 'number') {
+    if (serverViewClient && typeof serverViewClient.sendGotoLine === 'function') {
+      serverViewClient.sendGotoLine(d.line);
+    }
+  }
+});
 
 /** Whether the preview pane is currently visible. */
 function markdownPreviewVisible() {
   return !document.body.classList.contains('markdown-preview-hidden');
 }
 
-/** Render the current buffer into the preview pane, debounced. Used on
- *  edits; a no-op when the pane is hidden. */
-function refreshMarkdownPreview() {
-  if (!markdownPreviewVisible()) return;
-  markdownPreview.update(currentTextBuffer.text);
+/** The trailing path segment (file name) of an absolute path. */
+function previewBasename(path) {
+  return String(path).split('/').pop() || String(path);
 }
 
-/** Re-point the preview pane after a buffer switch: render the new
- *  buffer if the pane is open and the buffer is Markdown; otherwise
- *  hide the pane, since it only makes sense for a markdown-mode
- *  buffer. A no-op when the pane is already hidden. */
-function syncMarkdownPreviewToBuffer() {
-  if (!markdownPreviewVisible()) return;
-  if (currentBufferIsMarkdown()) {
-    markdownPreview.refreshNow(currentTextBuffer.text);
-  } else {
-    document.body.classList.add('markdown-preview-hidden');
-    markdownPreview.clear();
+/** Reset the in-app preview pane chrome: hide it and clear its state. Shared by
+ *  close (which also stops the watch) and pop-out (which hands the watch to the
+ *  new window and so keeps it alive). */
+function resetMarkdownPreviewPane() {
+  document.body.classList.add('markdown-preview-hidden');
+  previewWatchedPath = null;
+  previewPort = null;
+  lastPostedPreviewLine = null; // a re-open re-scrolls to the cursor
+  markdownPreviewFrame.src = 'about:blank';
+  markdownPreviewFilename.textContent = '';
+}
+
+/** Hide the preview pane and stop this window's watch subprocess. */
+function hideMarkdownPreview() {
+  resetMarkdownPreviewPane();
+  clearPreviewSyncState(); // in-app close ends live-sync (pop-out keeps it)
+  if (window.host && typeof window.host.stopJmarkdownWatch === 'function') {
+    window.host.stopJmarkdownWatch();
   }
 }
 
-/** Toggle the Markdown preview pane. Showing it renders the current
- *  buffer at once; the pane only makes sense for a markdown-mode
- *  buffer, so opening it on any other buffer is reported and skipped. */
-function toggleMarkdownPreview() {
+/** Pop the preview out into its own Godot window. Main moves the watch's
+ *  ownership to the new window, so the in-app pane DETACHES (closes) without
+ *  stopping the watch. A no-op until the watcher's port is known. */
+async function popOutMarkdownPreview() {
+  if (previewPort == null) return;
+  // Pass the file name + the editor's resolved chrome colours so the popped-out
+  // window's title bar matches the active theme.
+  const cs = getComputedStyle(document.body);
+  const opts = {
+    name: previewBasename(previewWatchedPath || ''),
+    bg: cs.getPropertyValue('--bg-chrome').trim(),
+    fg: cs.getPropertyValue('--fg-dim').trim(),
+  };
+  let result;
+  try {
+    result = await window.host.popOutPreview(opts);
+  } catch (error) {
+    result = { error: String(error && error.message ? error.message : error) };
+  }
+  if (result && result.ok) {
+    resetMarkdownPreviewPane(); // the popped-out window owns the watch now
+    previewPoppedOut = true;    // forward search now routes to that window
+  } else {
+    repl.appendNote(`markdown-preview: ${result?.error ?? 'could not pop out the preview'}`);
+  }
+}
+
+/** Reveal the pane and point the iframe at a `jmarkdown watch` server on
+ *  `path`. Starting the watcher is async (the server builds before it serves);
+ *  the header shows a "starting…" state until the port is ready. A failure
+ *  re-hides the pane and reports the reason. */
+async function showMarkdownPreview(path) {
+  document.body.classList.remove('markdown-preview-hidden');
+  previewPoppedOut = false; // reopening in-app takes over forwarding
+  markdownPreviewFilename.textContent = `${previewBasename(path)} · starting…`;
+  previewWatchedPath = path;
+  // Begin live-syncing: seed the preview shadow with the current (even unsaved)
+  // buffer, then debounce refreshes on edits.
+  const seedText = beginPreviewSync(path);
+  let result;
+  try {
+    result = await window.host.startJmarkdownWatch(path, seedText);
+  } catch (error) {
+    result = { error: String(error && error.message ? error.message : error) };
+  }
+  // A later toggle/switch may have moved on while we awaited; honour it.
+  if (previewWatchedPath !== path) return;
+  if (!result || result.error) {
+    hideMarkdownPreview();
+    repl.appendNote(`markdown-preview: ${result?.error ?? 'could not start preview'}`);
+    return;
+  }
+  previewPort = result.port;
+  markdownPreviewFilename.textContent = previewBasename(path);
+  markdownPreviewFrame.src = `http://localhost:${result.port}/`;
+}
+
+/** Re-point the preview after a buffer switch. The server owns the buffer's
+ *  mode AND file path: a server-backed buffer never updates the renderer's
+ *  `currentTextBuffer`, and the pushed mirror carries no file path — so the
+ *  renderer can't learn a newly-focused buffer's path. The preview therefore
+ *  stays PINNED to the file it was opened on; re-open (C-c v) on another file
+ *  to preview it instead. (Server-driven re-point is a follow-up; in server
+ *  mode this isn't even reached — applyTextMountSideEffects returns first.) */
+function syncMarkdownPreviewToBuffer() {
+  // intentionally a no-op — see above.
+}
+
+/** Toggle the Markdown preview pane (C-c v). The server emits this directive
+ *  only for a Markdown / JMarkdown buffer (it guards the mode) and sends the
+ *  active buffer's saved `path` ('' when unsaved). So the renderer just
+ *  toggles: open on a saved file, else report "save the file first". */
+function toggleMarkdownPreview(path) {
   if (markdownPreviewVisible()) {
-    document.body.classList.add('markdown-preview-hidden');
-    markdownPreview.clear();
+    hideMarkdownPreview();
     editorView.focus();
     return;
   }
-  if (!currentBufferIsMarkdown()) {
-    repl.appendNote('markdown-preview: the current buffer is not in Markdown mode');
+  if (typeof path !== 'string' || path === '') {
+    repl.appendNote('markdown-preview: save the file first');
     return;
   }
-  document.body.classList.remove('markdown-preview-hidden');
-  markdownPreview.refreshNow(currentTextBuffer.text);
+  showMarkdownPreview(path);
   editorView.focus();
 }
 
 watchCurrentBuffer();
-ensureMajorMode();
-updateModeline();
 editorView.focus();
 
 // --- splitters ---------------------------------------------------------
@@ -11157,18 +8086,17 @@ if (typeof window.host?.readPanes === 'function') {
     });
 }
 
-// Native menus: run a command chosen from a menu, and publish the
-// current buffer's mode menu to the host.
+// Native menus: run a command chosen from a menu. The mode menu itself is
+// computed + pushed by the server (applyServerModeMenu), not built here.
 window.host.onMenuCommand((command) => {
   editorView.focus();
-  try {
-    interpreter.evaluate(`(run-command (quote ${command}))`);
-  } catch (error) {
-    repl.appendError(error.lispMessage ?? error.message ?? String(error));
+  // Menu clicks dispatch through the SPINE (like keys), not the inert renderer
+  // interpreter — the server routes server vs element-view commands and reports
+  // errors via status. The mode menu refresh rides the server's next VIEW push.
+  if (serverViewClient && typeof serverViewClient.runCommand === 'function') {
+    serverViewClient.runCommand(command);
   }
-  refreshModeMenu();
 });
-refreshModeMenu();
 
 // A native Quit (Cmd+Q / app-menu Quit) is intercepted in the main
 // process and routed here, so it gets the same unsaved-changes confirm
@@ -11180,27 +8108,9 @@ if (window.host && typeof window.host.onConfirmQuit === 'function') {
   });
 }
 
-// Wire the one-shot process runner's completion channel exactly once.
-// When a `(run-process! …)` child exits, the host sends one
-// `process:exit` with the buffered output; we look up the parked
-// on-exit Lisp procedure (keyed by runId), build the result hash-map
-// `{:stdout :stderr :code}`, apply the procedure, and forget the entry.
-if (window.host && typeof window.host.onRunProcessExit === 'function') {
-  window.host.onRunProcessExit(({ runId, stdout, stderr, code }) => {
-    const proc = runProcessCallbacks.get(runId);
-    runProcessCallbacks.delete(runId);
-    if (proc == null || proc === NIL) return;
-    const result = new Map();
-    result.set(keyword('stdout'), typeof stdout === 'string' ? stdout : '');
-    result.set(keyword('stderr'), typeof stderr === 'string' ? stderr : '');
-    result.set(keyword('code'), typeof code === 'number' ? code : NIL);
-    try {
-      applyProcedure(proc, [result]);
-    } catch (error) {
-      repl.appendError(error.lispMessage ?? error.message ?? String(error));
-    }
-  });
-}
+// (The renderer `(run-process! …)` exit channel was deleted with the interpreter
+// — B7. Processes (latex compile, shell, gnuplot) run server-side now; the spine
+// owns run-process! + its on-exit callbacks.)
 
 // The startup splash: the editor's own Lisp, behind the welcome text.
 // It lives in the view's background layer and is dismissed — faded out
@@ -11314,16 +8224,6 @@ function ensureDirectoryTreeViewForPath(rootPath) {
   return view;
 }
 
-/** Find the single *View List* view, or build it and push it into
- *  `views`. There is only ever one (it lists all the others), so this is
- *  a find-or-create by kind rather than by name. */
-function ensureViewListView() {
-  const existing = views.find((v) => v.kind === 'view-list');
-  if (existing) return existing;
-  const view = createView({ kind: 'view-list', name: '*View List*' });
-  views.push(view);
-  return view;
-}
 
 /** Find the single *Recover* view, or build it and push it into `views`.
  *  Like the *View List*, there is only ever one. */
@@ -11449,83 +8349,6 @@ function refreshBookmarkOutline() {
   bookmarkView.setBuffer(view);
 }
 
-/** Open a file from a directory-tree / directory-columns row and place
- *  it as a NEW TAB in the focused pane, promoting the pane to a
- *  tabline first if it's still a plain leaf. The previous behaviour
- *  was to call `openFileByPath` directly, which replaced the
- *  directory view with the opened file's view — losing the user's
- *  navigation context. Now the column / tree stays put and the file
- *  appears alongside it. */
-/**
- * Open FILEPATH from a directory tree-view, honouring TARGET (the value of
- * `*directory-tree-open-target*`). Unlike `openFileInTabAdjacent` — which
- * opens in the *focused* pane and so lands the file in the tree's own pane
- * when you double-click there — this routes the file to the main editing
- * area (a tabline / text pane that isn't the tree or another sidebar), so a
- * project's left-sidebar tree opens files in its middle tabline.
- *
- * - `this-pane`     → the old behaviour (the tree's own pane).
- * - `editing-pane`  → the main editing pane (default).
- * - `other-pane`    → the next editing pane after the tree.
- * When no editing pane exists, the file opens in a split beside the tree.
- */
-async function openFileFromTree(filePath, target) {
-  if (target === 'this-pane') {
-    await openFileInTabAdjacent(filePath);
-    return;
-  }
-  const opened = await openFileByPath(filePath, { switch: false });
-  if (!opened) return;
-  const leaves = leafPanes(rootPane);
-  let targetLeaf = null;
-  // An explicit pane-id target (a leaf id wired into the dir-tree by the
-  // project — see reapplyProjectDirTreeTarget) wins: no guessing which pane
-  // is "the editing area", and it's robust to focus / sidebar passivity.
-  if (target !== 'editing-pane' && target !== 'other-pane') {
-    targetLeaf = leaves.find((leaf) => leaf.id === target) ?? null;
-  }
-  // Otherwise — or when the wired pane no longer exists — fall back to the
-  // symbolic heuristic (a standalone M-x directory-tree has no wired target).
-  if (!targetLeaf) {
-    const descriptors = leaves.map((leaf) => {
-      const peeled = peelTabline(leaf.view);
-      return {
-        id: leaf.id,
-        kind: peeled ? peeled.kind : null,
-        isTabline: isTablineView(leaf.view),
-      };
-    });
-    const symbolic = target === 'other-pane' ? 'other-pane' : 'editing-pane';
-    const targetId = pickEditingLeaf(descriptors, currentPane()?.id ?? null, symbolic);
-    targetLeaf = targetId ? leaves.find((leaf) => leaf.id === targetId) : null;
-  }
-  if (!targetLeaf) {
-    // No suitable editing pane (e.g. the tree is the only pane): open the
-    // file beside the current pane in a new split rather than inside a sidebar.
-    const here = currentPane();
-    if (here && here.kind === 'leaf') {
-      splitPaneAtLeafWith(here, SPLIT_HORIZONTAL, 0.3, 'after', opened);
-    } else {
-      switchToViewIndex(views.indexOf(opened));
-    }
-    return;
-  }
-  // Promote the target to a tabline if needed, add the file as a tab, focus
-  // the editing pane, and activate the new tab.
-  const tlv = isTablineView(targetLeaf.view)
-    ? targetLeaf.view
-    : promoteToTablineOnPane(targetLeaf);
-  if (!tlv) {
-    switchToViewIndex(views.indexOf(opened));
-    return;
-  }
-  if (!tlv.tabs.includes(opened)) {
-    addTabToTabline(tlv, opened, tlv.tabs.length);
-  }
-  setCurrentPaneId(targetLeaf.id);
-  const idx = tlv.tabs.indexOf(opened);
-  if (idx >= 0) activateTabInTabline(tlv, idx);
-}
 
 async function openFileInTabAdjacent(filePath) {
   const pane = currentPane();
@@ -11788,7 +8611,6 @@ function installRootPane(newRoot, savedCurrentPaneId) {
     rootTablineLeafId = null;
   }
   notifyViewsChanged();
-  updateModeline();
 }
 
 /** Wrap the root leaf's view in a tabline-view whose tabs are every
@@ -11878,71 +8700,10 @@ function promoteToTablineOnPane(pane) {
   const paneEl = paneElements.get(pane.id);
   if (paneEl) mountKindView(tabline, { paneEl });
   refreshPaneTabStrips();
-  updateModeline();
   scheduleMinimapReconcile(); // promotion changed the leaf's view shape
   return tabline;
 }
 
-/** Replace the leaf holding TLV with TLV's active child's view (or
- *  the first tab when there's no active). The tabline's per-state DOM
- *  is disposed; the active child takes over. Returns the surviving
- *  view, or null when TLV isn't actually installed on a leaf in the
- *  current tree. */
-function demoteTablineView(tlv) {
-  if (!isTablineView(tlv)) return null;
-  // Find the leaf this tabline lives in.
-  let host = null;
-  for (const leaf of leafPanes(rootPane)) {
-    if (leaf.view === tlv) { host = leaf; break; }
-  }
-  if (!host) return null;
-  // Pick the survivor: the active child, or the first tab if none.
-  const survivor = tablineActiveChild(tlv) ?? tlv.tabs[0] ?? null;
-  // The tabline's `activeEditor` (the single editor instance
-  // managed by mountTablineActiveChild) is what we want to keep
-  // alive for the surviving view. Move its element back into the
-  // pane element and re-register it in `editorViewByPaneId` so post-
-  // demotion code paths (focus changes, switchToView) find it. The
-  // tabline mount's dispose path then *won't* destroy it — we steal
-  // it before disposing.
-  const state = tablineStateByView.get(tlv);
-  let inheritedInstance = null;
-  if (state && state.activeEditor && survivor && survivor.kind === 'text') {
-    inheritedInstance = state.activeEditor;
-    state.activeEditor = null;
-    state.activeEditorChild = null;
-    // Drop the stolen instance from editorByChild so the upcoming
-    // disposeKindView call doesn't destroy what we just rescued. The
-    // map key is the survivor (which was the active child).
-    state.editorByChild.delete(survivor);
-    const paneEl = paneElements.get(host.id);
-    if (paneEl && inheritedInstance.parentNode !== paneEl) {
-      paneEl.append(inheritedInstance);
-    }
-    editorViewByPaneId.set(host.id, inheritedInstance);
-  }
-  // Dispose the tabline-view's remaining state. disposeKindView for
-  // tabline destroys any *remaining* editor instances in
-  // editorByChildId (we removed the inherited one above) and detaches
-  // the container.
-  disposeKindView(tlv);
-  if (rootTablineView === tlv) {
-    rootTablineView = null;
-    rootTablineLeafId = null;
-  }
-  // Install the survivor on the leaf and re-mount through the kind
-  // registry. For a text survivor with an inherited editor instance
-  // already in place, the text mount's `ensureEditorViewForLeaf`
-  // finds it and just calls `setView(survivor)`.
-  host.view = survivor;
-  if (survivor) {
-    hideInactiveRendererViews(survivor.kind);
-    mountKindView(survivor);
-  }
-  updateModeline();
-  scheduleMinimapReconcile(); // demotion changed the leaf's view shape
-  return survivor;
-}
 
 /** Append VIEW to TLV's tabs at INDEX (or the end when undefined).
  *  Refreshes the strip; does not activate. Returns the tabline-view. */
@@ -11975,129 +8736,10 @@ function addTabToTabline(tlv, view, index) {
   return tlv;
 }
 
-/** Move the tab at SRC-IDX in SRC-TLV into DST-TLV at DST-IDX (or the
- *  end when undefined). Idempotent on src === dst with no index
- *  change. The moved view becomes the active tab in the destination.
- *  When the destination is the same as the source, this collapses to
- *  a reorder. Returns the destination tabline-view. */
-function moveTabAcrossTablines(srcTlv, srcIdx, dstTlv, dstIdx) {
-  if (!isTablineView(srcTlv) || !isTablineView(dstTlv)) return dstTlv;
-  if (
-    typeof srcIdx !== 'number' ||
-    srcIdx < 0 || srcIdx >= srcTlv.tabs.length
-  ) return dstTlv;
-  const view = srcTlv.tabs[srcIdx];
-  if (!view) return dstTlv;
-  // Same-tabline move → reorder. Compute the destination index
-  // accounting for the splice that removed the source tab.
-  if (srcTlv === dstTlv) {
-    let target =
-      typeof dstIdx !== 'number' || dstIdx < 0 || dstIdx > srcTlv.tabs.length
-        ? srcTlv.tabs.length - 1
-        : (dstIdx > srcIdx ? dstIdx - 1 : dstIdx);
-    if (target === srcIdx) return srcTlv;
-    reorderTabInTabline(srcTlv, srcIdx, target);
-    activateTabInTabline(srcTlv, target);
-    return srcTlv;
-  }
-  // Cross-tabline: remove from src (without killing the view), insert
-  // into dst, activate.
-  removeTabInTabline(srcTlv, srcIdx);
-  const target =
-    typeof dstIdx === 'number' && dstIdx >= 0 && dstIdx <= dstTlv.tabs.length
-      ? dstIdx
-      : dstTlv.tabs.length;
-  addTabToTabline(dstTlv, view, target);
-  activateTabInTabline(dstTlv, target);
-  return dstTlv;
-}
 
-/** Every leaf pane handle in clockwise-spiral badge order (the numbering
- *  swap-views / permute-views show). Slot 0 is the top-left pane. */
-function spiralOrderedLeaves() {
-  const hostRect = editorHostEl.getBoundingClientRect();
-  const { ordered } = spiralOrder(rootPane, {
-    width: hostRect.width,
-    height: hostRect.height,
-  });
-  return ordered;
-}
 
-/** Swap which view PANE-A and PANE-B show by *moving the frames*: exchange
- *  the two leaves' positions in the tree and relayout. No view DOM moves —
- *  relayout only repositions the existing `.pane` divs by id — so a
- *  browser/pdf/shell guest is never recreated, and the per-leaf maps stay
- *  valid (the leaf nodes keep their ids + contents, just land in new
- *  slots; focus follows the view). Returns true on success, false on a
- *  no-op (same leaf, missing handle, or a non-leaf). */
-function swapPaneFrames(paneA, paneB) {
-  if (!paneA || !paneB || paneA === paneB) return false;
-  if (paneA.kind !== 'leaf' || paneB.kind !== 'leaf') return false;
-  rootPane = swapLeaves(rootPane, paneA, paneB);
-  syncPaneElements();
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-  updateModeline();
-  // Pane positions changed (not the view set) — refresh the View List so
-  // its spiral Pane column tracks the move, and re-pickle the session.
-  notifyViewsChanged();
-  return true;
-}
 
-/** Rearrange every pane's view by moving the frames. DESTS is a 1-based
- *  destination slot per pane in spiral order: the content of pane K
- *  (1-based) moves to slot DESTS[K]. DESTS must be a permutation of 1..N.
- *  Returns true on success, false on a malformed / non-bijective DESTS or
- *  a mismatched length. Same frame-move guarantees as swapPaneFrames. */
-function permutePaneFrames(dests) {
-  const hostRect = editorHostEl.getBoundingClientRect();
-  const dims = { width: hostRect.width, height: hostRect.height };
-  const { ordered, indexByLeaf } = spiralOrder(rootPane, dims);
-  const n = ordered.length;
-  if (!Array.isArray(dests) || dests.length !== n) return false;
-  // occupantBySlot[slot] = the leaf whose content should land at that
-  // slot. Pane k (ordered[k]) goes to slot dests[k] - 1.
-  const occupantBySlot = new Array(n);
-  const seen = new Set();
-  for (let k = 0; k < n; k += 1) {
-    const dest = dests[k] - 1;
-    if (!Number.isInteger(dest) || dest < 0 || dest >= n || seen.has(dest)) {
-      return false;
-    }
-    seen.add(dest);
-    occupantBySlot[dest] = ordered[k];
-  }
-  rootPane = permuteLeaves(rootPane, indexByLeaf, occupantBySlot);
-  syncPaneElements();
-  refreshPaneFocusIndicators();
-  refreshSplitterHandles();
-  scheduleRelayout();
-  updateModeline();
-  // Pane positions changed (not the view set) — refresh the View List so
-  // its spiral Pane column tracks the move, and re-pickle the session.
-  notifyViewsChanged();
-  return true;
-}
 
-/** Update TLV.edge to EDGE and refresh the strip's data-edge attribute
- *  + the CSS flex direction (the kind-registry mount drives both via
- *  the per-pane state). Returns the tabline-view. */
-function setTablineEdgeOnTabline(tlv, edge) {
-  if (!isTablineView(tlv)) return tlv;
-  if (
-    edge !== 'top' && edge !== 'bottom' &&
-    edge !== 'left' && edge !== 'right'
-  ) return tlv;
-  tlv.edge = edge;
-  const state = tablineStateByView.get(tlv);
-  if (state) {
-    state.container.dataset.edge = edge;
-    state.strip.setEdge(edge);
-    applyTablineStripWidth(tlv);
-  }
-  return tlv;
-}
 
 // --- persistent session -------------------------------------------------
 // On change (debounced 500ms) or pagehide, pickle the open views and
@@ -12320,6 +8962,18 @@ async function rememberProject(root) {
   await writeProjectList(upsertProject(list, root, projectNameFromRoot(root)));
 }
 
+/** Ask the SERVER to open ROOT as a project (Model B Stage 3: each project opens
+ *  in a NEW window). The native dialog / chooser run renderer-side, but the open
+ *  itself is server-authoritative (spine.openProjectAt → a project window), so the
+ *  chosen path goes UP as PROJECT_OPEN rather than the old in-renderer in-place
+ *  `openProject`. */
+function requestOpenProject(root) {
+  const path = expandTilde(String(root ?? '')).replace(/\/+$/, '');
+  if (path !== '' && godotServerPort) {
+    godotServerPort.postMessage({ type: MSG.PROJECT_OPEN, path });
+  }
+}
+
 /** Open the Project Chooser launcher modal — read the known projects, then
  *  show the grid. All of the chooser's side effects (open / add / set
  *  thumbnail / remove / read a thumbnail image) are wired to the host here;
@@ -12332,14 +8986,13 @@ function showProjectChooser() {
       let list = initial;
       openProjectChooser({
         getProjects: () => list,
-        openProject: (path) => {
-          openProject(path).catch(reportErr);
-        },
+        // Model B: opening a project is server-authoritative (a new window).
+        openProject: (path) => requestOpenProject(path),
         // Pick a folder and open it immediately (the chooser closes first).
         openFolder: () => {
           window.host
             .openDirectory()
-            .then((path) => (path ? openProject(path) : undefined))
+            .then((path) => { if (path) requestOpenProject(path); })
             .catch(reportErr);
         },
         // Pick a folder and add it to the catalogue WITHOUT opening.

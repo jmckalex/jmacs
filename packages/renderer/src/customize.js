@@ -51,9 +51,6 @@ function cssEscape(value) {
  * @param {object} [options]
  * @param {(key: string) => boolean} [options.onKey] - Dispatches a key
  *   typed outside a form control, so `C-x b`/`M-x` work here too.
- * @param {(scope: object) => (object | null)} [options.getModel] -
- *   The model for a buffer's scope: `{title, doc, parent, groups,
- *   settings, faces}`.
  * @param {(name: string, value: *) => void} [options.applySetting]
  * @param {(name: string, value: *) => void} [options.saveSetting]
  * @param {(name: string) => void} [options.resetSetting]
@@ -68,7 +65,6 @@ function cssEscape(value) {
 function createCustomizeView(container, options = {}) {
   const doc = container.ownerDocument;
   const onKey = typeof options.onKey === 'function' ? options.onKey : null;
-  const getModel = options.getModel ?? (() => null);
   const applySetting = options.applySetting ?? (() => {});
   const saveSetting = options.saveSetting ?? (() => {});
   const resetSetting = options.resetSetting ?? (() => {});
@@ -187,7 +183,7 @@ function createCustomizeView(container, options = {}) {
     reset.addEventListener('click', () => {
       resetSetting(setting.name);
       staged.delete(setting.name);
-      render();
+      // B2.3b: the server reset pushes a refreshed model, which re-renders.
     });
 
     const controls = doc.createElement('div');
@@ -198,11 +194,13 @@ function createCustomizeView(container, options = {}) {
     return row;
   }
 
-  /** Commit every staged edit through `commitFn`, then re-render. */
+  /** Commit every staged edit through `commitFn`. B2.3b: no local re-render — the
+   *  server applies the edit and pushes a refreshed model (setState fan-out ->
+   *  setBuffer), which clears `staged` and re-renders the panel. Keeping `staged`
+   *  until then means the widget keeps showing the just-picked value (no flash to
+   *  the old value), and the badge flips edited -> set when the push lands. */
   function commit(commitFn) {
     for (const [name, value] of staged) commitFn(name, value);
-    staged.clear();
-    render();
   }
 
   /** Build one face row — name, doc, live swatch, and all the
@@ -295,7 +293,6 @@ function createCustomizeView(container, options = {}) {
     reset.title = 'Drop overrides for this face';
     reset.addEventListener('click', () => {
       resetFace(face.name);
-      render();
     });
 
     const controls = doc.createElement('div');
@@ -319,7 +316,6 @@ function createCustomizeView(container, options = {}) {
     input.value = value && value.startsWith('#') ? value : '#000000';
     input.addEventListener('change', () => {
       setFaceAttribute(faceName, attr, input.value);
-      render();
     });
     field.append(labelEl, input);
     return field;
@@ -341,7 +337,6 @@ function createCustomizeView(container, options = {}) {
     }
     select.addEventListener('change', () => {
       setFaceAttribute(faceName, attr, select.value);
-      render();
     });
     field.append(labelEl, select);
     return field;
@@ -356,7 +351,6 @@ function createCustomizeView(container, options = {}) {
     input.checked = value === true;
     input.addEventListener('change', () => {
       setFaceAttribute(faceName, attr, input.checked);
-      render();
     });
     const labelEl = doc.createElement('span');
     labelEl.textContent = label;
@@ -382,7 +376,6 @@ function createCustomizeView(container, options = {}) {
       const v = input.value.trim();
       if (v === '') return; // inherit; Reset clears an override
       setFaceAttribute(faceName, attr, v);
-      render();
     });
     field.append(labelEl, input);
     return field;
@@ -400,17 +393,23 @@ function createCustomizeView(container, options = {}) {
     input.value = value ?? '';
     input.addEventListener('change', () => {
       setFaceAttribute(faceName, attr, input.value);
-      render();
     });
     field.append(labelEl, input);
     return field;
   }
 
-  /** Render the view for the current buffer's scope. */
-  function render() {
-    root.replaceChildren();
-    const model = buffer ? getModel(buffer.scope) : null;
+  /** Render the view for the current buffer's scope. PRESERVESCROLL keeps the
+   *  current scroll position across the rebuild — an in-place update (toggling a
+   *  face checkbox, applying, resetting) must not jump back to the top. A fresh
+   *  buffer renders at the top (or at `scrollToFace`). */
+  function render(preserveScroll = false) {
+    // B2.3b: the model is server-computed and pushed in the leaf state
+    // (buffer.model); the panel renders ONLY from it. A missing model (not yet
+    // pushed) keeps the current DOM rather than blanking — a push will deliver it.
+    const model = buffer ? buffer.model : null;
     if (!model) return;
+    const prevScroll = preserveScroll ? root.scrollTop : 0;
+    root.replaceChildren();
 
     if (model.parent) {
       const back = doc.createElement('button');
@@ -482,7 +481,7 @@ function createCustomizeView(container, options = {}) {
       revert.title = 'Discard staged changes';
       revert.addEventListener('click', () => {
         staged.clear();
-        render();
+        render(true);
       });
       footer.append(apply, save, revert);
     }
@@ -496,6 +495,10 @@ function createCustomizeView(container, options = {}) {
       if (el && typeof el.scrollIntoView === 'function') {
         el.scrollIntoView({ block: 'start' });
       }
+    } else {
+      // Restore the pre-render scroll: 0 for a fresh buffer, the live position
+      // for an in-place re-render.
+      root.scrollTop = prevScroll;
     }
   }
 

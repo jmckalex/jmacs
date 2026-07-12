@@ -166,6 +166,32 @@ test('the mounted view is given onKey + the mirror-reading closures', () => {
   assert.deepEqual(opts.getCursors(), mirror.cursors);
 });
 
+// --- visitPath → VISIT_FILE intent (with an optional target leaf) ------
+
+test('visitPath sends VISIT_FILE; a leafId rides only when provided', () => {
+  const { port, client } = connectedClient();
+  client.visitPath('/proj/a.md'); // no target → the focused leaf (default)
+  client.visitPath('/proj/b.md', 'leaf-mid'); // route into a specific leaf
+  const visits = port.sent.filter(
+    (m) => m.type === MSG.INTENT && m.intent.kind === INTENT.VISIT_FILE
+  );
+  assert.equal(visits.length, 2);
+  assert.equal(visits[0].intent.path, '/proj/a.md');
+  assert.equal('leafId' in visits[0].intent, false, 'no leafId when omitted');
+  assert.equal(visits[1].intent.path, '/proj/b.md');
+  assert.equal(visits[1].intent.leafId, 'leaf-mid', 'leafId carried when given');
+});
+
+test('visitPath ignores an empty/blank leafId (falls back to the focused leaf)', () => {
+  const { port, client } = connectedClient();
+  client.visitPath('/proj/c.md', '');
+  const visit = port.sent.find(
+    (m) => m.type === MSG.INTENT && m.intent.kind === INTENT.VISIT_FILE
+  );
+  assert.ok(visit);
+  assert.equal('leafId' in visit.intent, false);
+});
+
 // --- key routing → intents --------------------------------------------
 
 test('a bare printable routes as a pure KEY intent (the keymap decides) — no local echo', () => {
@@ -658,31 +684,18 @@ test('closeBuffer(id) switches to the buffer then sends C-x k to kill it', () =>
   assert.deepEqual(keys, ['C-x', 'k']);
 });
 
-// --- C-x C-c quit (client-resolved; the server leaves it unbound) -------
+// --- C-x C-c quit (server-resolved now; forwarded as keys) --------------
 
-test('C-x then C-c asks the host to quit and does NOT forward C-c as a key', () => {
+test('C-x C-c is forwarded to the server as keys; the client does not quit itself', () => {
   const { port, chrome, client } = connectedClientWithChrome();
   const before = port.sent.length;
-  assert.equal(client.dispatchKey('C-x'), true); // forwarded (prefix)
-  assert.equal(client.dispatchKey('C-c'), true); // intercepted
-  assert.equal(chrome.quitRequests, 1);
-  // C-x went up as a KEY; C-c did NOT (only one new intent).
+  assert.equal(client.dispatchKey('C-x'), true);
+  assert.equal(client.dispatchKey('C-c'), true);
+  // Both go up as KEY intents — the server's keymap owns quit (C-x C-c ->
+  // quit-editor); the client no longer intercepts the chord.
   const newKeys = port.sent.slice(before)
     .filter((m) => m.type === MSG.INTENT && m.intent.kind === INTENT.KEY)
     .map((m) => m.intent.key);
-  assert.deepEqual(newKeys, ['C-x']);
-});
-
-test('a key between C-x and C-c resets the chord (no quit)', () => {
-  const { chrome, client } = connectedClientWithChrome();
-  client.dispatchKey('C-x');
-  client.dispatchKey('C-g'); // abort the prefix
-  client.dispatchKey('C-c');
-  assert.equal(chrome.quitRequests, 0);
-});
-
-test('a bare C-c (no preceding C-x) does not quit', () => {
-  const { chrome, client } = connectedClientWithChrome();
-  client.dispatchKey('C-c');
-  assert.equal(chrome.quitRequests, 0);
+  assert.deepEqual(newKeys, ['C-x', 'C-c']);
+  assert.equal(chrome.quitRequests ?? 0, 0, 'the client does not request quit itself');
 });

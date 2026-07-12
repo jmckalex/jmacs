@@ -460,9 +460,10 @@
                 "C-r" 'latex-previous-section)
          "%" 'latex-goto-matching-env))
 
-;; Re-install latex-mode-map: keep the (mutated) C-c prefix map, and add
-;; the two top-level keys. Reading `latex-c-c-map` here means we don't
-;; drop any of the chain's accumulated bindings.
+;; Extend latex-mode-map (never `{...}`-replace it — load order differs
+;; between the stdlib index and SPINE_STDLIB; see latex.lisp): refresh the
+;; "C-c" slot to the just-extended prefix map and add the two top-level
+;; keys.
 ;;
 ;; M-RET is normalised by the renderer as "M-enter", NOT "M-return":
 ;; keymap.js maps the Enter key's name to "enter" (NAMED_KEYS/NAMED_CODES),
@@ -471,6 +472,6 @@
 ;; emitted, so it would be a dead binding. We bind the live name "M-enter"
 ;; so M-RET actually inserts an \item. (Flagged in architect-notes.md.)
 (set! latex-mode-map
-  {"C-c" latex-c-c-map
-   "M-enter" 'latex-insert-item
-   "\"" 'latex-smart-quote})
+  (assoc (assoc (assoc latex-mode-map "C-c" latex-c-c-map)
+                "M-enter" 'latex-insert-item)
+         "\"" 'latex-smart-quote))

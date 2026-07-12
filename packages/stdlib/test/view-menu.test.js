@@ -271,17 +271,17 @@ test('find-view returns the view by name, #f when none matches', async () => {
   );
 });
 
-test('buffer-menu is an alias that opens the *View List*', async () => {
+test('list-views is an alias that opens the *View List*', async () => {
   const editor = await buildEditor();
-  editor.interpreter.evaluate('(buffer-menu)');
+  editor.interpreter.evaluate('(list-views)');
   assert.equal(editor.openViewListCalls(), 1);
 });
 
-test('C-x C-b is bound to buffer-menu and opens the *View List*', async () => {
+test('C-x C-b is bound to list-views and opens the *View List*', async () => {
   const editor = await buildEditor();
   assert.ok(
     editor.interpreter.evaluate(
-      '(eq? (get c-x-keymap "C-b") (quote buffer-menu))'
+      '(eq? (get c-x-keymap "C-b") (quote list-views))'
     )
   );
   press(editor.interpreter, 'C-x');
@@ -289,9 +289,9 @@ test('C-x C-b is bound to buffer-menu and opens the *View List*', async () => {
   assert.equal(editor.openViewListCalls(), 1);
 });
 
-test('view-list and buffer-menu are registered commands', async () => {
+test('view-list and list-views are registered commands', async () => {
   const editor = await buildEditor();
-  for (const name of ['view-list!', 'buffer-menu']) {
+  for (const name of ['view-list!', 'list-views']) {
     assert.ok(
       editor.interpreter.evaluate(`(command-registered? (quote ${name}))`),
       `expected ${name} to be a command`

@@ -122,6 +122,12 @@ test('renderModeline omits the mode parenthetical when there is no mode', () => 
   assert.ok(!s.includes('('), `expected no mode parens, got: ${s}`);
 });
 
+test('renderModeline omits the position for a no-cursor view (noPosition)', () => {
+  const s = renderModeline({ name: 'Notebook', modified: false, mode: 'element', noPosition: true });
+  assert.equal(s, '–  Notebook   (element)');
+  assert.ok(!/L\d+:C\d+/.test(s), 'no L:C for a cursorless view');
+});
+
 test('MINIBUFFER_IDLE is an inactive, empty prompt', () => {
   assert.equal(MINIBUFFER_IDLE.active, false);
   assert.equal(MINIBUFFER_IDLE.prompt, '');

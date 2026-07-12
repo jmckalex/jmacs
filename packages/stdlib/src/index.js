@@ -41,6 +41,9 @@ export const STDLIB_FILES = Object.freeze([
   'indent.lisp',
   'files.lisp',
   'views.lisp',
+  // browser-view: open an Electron <webview> in a pane (M-x browser-view).
+  // Needs `defcommand` (commands.lisp); the host supplies `open-browser-view!`.
+  'browser.lisp',
   // element-views: register a view backed by an arbitrary custom element
   // (define-element-view). Needs `defcommand` (commands.lisp, loaded
   // first); the host supplies `open-element-view!`.
@@ -56,6 +59,11 @@ export const STDLIB_FILES = Object.freeze([
   // The <svg-editor-view> tag is bundled with the renderer (index.js), so
   // :module is empty — the wrapper just creates the registered tag.
   'element-view-svg-editor.lisp',
+  // The Architecture-A cell notebook (M-x notebook-cells): all cells in ONE
+  // real editor over a unified buffer; chrome rides the block-widget layer.
+  // Cells eval in the spine's Node context (renderer can't — CSP), via the
+  // NOTEBOOK_EVAL round-trip.
+  'element-view-notebook-cells.lisp',
   'panes.lisp',
   'tabline.lisp',
   'minimap.lisp',
@@ -82,6 +90,12 @@ export const STDLIB_FILES = Object.freeze([
   // host primitive `set-highlight-overrides!` recompiles queries live.
   'highlight-rules.lisp',
   'keymap.lisp',
+  // auto-fill — wrap-as-you-type minor mode. Loads right after keymap.lisp:
+  // it registers on that file's `*post-self-insert-hook*` at load time, and
+  // its glue needs editing.lisp (atomic-change-group / with-marker),
+  // custom.lisp (defcustom) and modes.lisp (define-mode / minor modes), all
+  // earlier in this list.
+  'auto-fill.lisp',
   // multi-cursor.lisp needs `expand-region-word-bounds` (expand-region.lisp)
   // and rebinds `keyboard-quit` (keymap.lisp), so it loads after both.
   // The keymap binds C-c d / C-c D to the commands by *symbol*; symbols
@@ -120,8 +134,6 @@ export const STDLIB_FILES = Object.freeze([
   'project.lisp',
   'shell.lisp',
   'gnuplot.lisp',
-  'notebook.lisp',
-  'notebook-commands.lisp',
   'palette.lisp',
   'docs.lisp',
   'help.lisp',
@@ -186,6 +198,19 @@ export const STDLIB_FILES = Object.freeze([
   // `register-mode-menu!` from menus.lisp; purely additive (the flat
   // `mode-menu-entries` and every other mode's menu are unaffected).
   'latex-menu.lisp',
+  // --- the JMarkdown authoring layer ("AUCTeX for JMarkdown") ------------
+  // A compile/view loop, smart insertion, structural navigation and a
+  // RefTeX-style reference manager for jmarkdown-mode. All TOP-LEVEL files
+  // (they define commands + defcustoms + pure helpers only — the keymap and
+  // menu are wired in languages/jmarkdown.lisp, which loads last, so these
+  // must NOT touch jmarkdown-mode-map). Load after markdown.lisp (reuse
+  // `insert-at-line-start`) and the base `minibuffer-tab-complete`.
+  // Order: compile first (its `jmarkdown` defgroup), then insert (the shared
+  // completing-minibuffer machinery), then nav + ref which reuse it.
+  'jmarkdown-compile.lisp',
+  'jmarkdown-insert.lisp',
+  'jmarkdown-nav.lisp',
+  'jmarkdown-ref.lisp',
 ]);
 
 /**

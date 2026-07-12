@@ -36,6 +36,7 @@ import {
 } from './folding.js';
 import { lineIndentColumns, computeIndentGuides } from './indent-guides.js';
 import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
+import { createFollowTracker } from './follow-cursor.js';
 
 /** Keys that are only modifiers — never a keystroke on their own. */
 const MODIFIER_KEYS = new Set([
@@ -156,6 +157,13 @@ export function createEditorView(buffer, container, options = {}) {
     typeof options.getTabWidth === 'function'
       ? options.getTabWidth
       : () => 4;
+  // The highlighter grammar for the active buffer. The MAJOR MODE is the source
+  // of truth (server-pushed `highlightLang`), so a file whose extension was
+  // re-registered to another mode — e.g. `.md` in jmarkdown-mode — highlights by
+  // that mode, not by its filename. Falls back to the filename when no mode hint
+  // is present (a plain L2 buffer, or before the first server VIEW).
+  const activeLanguage = () =>
+    (activeBuffer && activeBuffer.highlightLang) || languageForName(activeBuffer.name);
   // Face-tagged decoration ranges (snippet fields + mirrors). Read every
   // render so the boxes recompute from live offsets and survive edits —
   // unlike the inline-eval pill, which hides on any mutation. Default to
@@ -291,7 +299,7 @@ export function createEditorView(buffer, container, options = {}) {
   /** Recompute and cache the fold index for the current buffer text. */
   function refreshFoldIndex() {
     const text = activeBuffer.text;
-    const language = languageForName(activeBuffer.name);
+    const language = activeLanguage();
     if (text === foldCacheText && language === foldCacheLanguage) {
       return foldCache;
     }
@@ -369,25 +377,97 @@ export function createEditorView(buffer, container, options = {}) {
   /** True while an IME composition is in progress — key dispatch is
    *  suppressed and the committed text is inserted on `compositionend`. */
   let composing = false;
+  // macOS press-and-hold accent support. Holding a bare printable key opens
+  // the OS accent chooser instead of repeating (see the keydown handler's
+  // repeat guard). The chooser does NOT drive a web composition here: the
+  // selection (a digit or a click on the popup) arrives solely as the sink's
+  // `input insertText` whose data is the ACCENT, REPLACING the held base char
+  // in the sink ("e" → "é", value length unchanged) — verified against a bare
+  // textarea on this Electron; see plans/PRESS-AND-HOLD-ACCENTS.md. So:
+  //   - `printableBaseCandidate` marks the just-typed printable as a possible
+  //     base char (self-inserted into the buffer AND kept in the sink);
+  //   - `accentPopupPending` arms when that base is HELD (repeat keydowns
+  //     observed) — the popup may now be open;
+  //   - while armed, the next bare printable's dispatch is DEFERRED
+  //     (`deferredAccentKey`) until the sink's `input` event discloses whether
+  //     it was a popup selection or ordinary typing (the input listener below).
+  // The composition base-replace below is KEPT as a defensive parallel path:
+  // should some macOS/Electron combination commit press-and-hold through a
+  // composition over a self-inserted base, it replaces rather than appends.
+  // A plain dead-key / CJK composition never self-inserts a base, so the flag
+  // stays false there and nothing is deleted.
+  let printableBaseCandidate = false;
+  let compositionReplacesBase = false;
+  let accentPopupPending = false;
+  let deferredAccentKey = null;
   input.addEventListener('compositionstart', () => {
     composing = true;
+    compositionReplacesBase = printableBaseCandidate;
   });
   input.addEventListener('compositionend', (event) => {
     composing = false;
     const text = typeof event.data === 'string' ? event.data : '';
     input.value = ''; // the sink only hosts composition — never accumulate
+    const replaceBase = compositionReplacesBase;
+    compositionReplacesBase = false;
+    printableBaseCandidate = false;
     if (text) {
+      // Press-and-hold commit: drop the base char the keydown already inserted
+      // so the chosen accent takes its place ("e" → "é", not "eé").
+      if (replaceBase && typeof activeBuffer.deleteBackward === 'function') {
+        activeBuffer.deleteBackward(1);
+      }
       activeBuffer.insert(text);
       followCursor = true;
       schedule();
     }
+    // A composition that opened over a base char but committed nothing (Escape /
+    // cancel) leaves the base char as already typed — nothing to do.
   });
-  // Any non-composition text reaching the sink (a rare unhandled printable
-  // key whose keydown wasn't preventDefault'd) is unwanted — the buffer
-  // holds the text, not the sink — so drop it. During composition the
-  // value is left alone so the IME can build it up.
-  input.addEventListener('input', () => {
-    if (!composing) input.value = '';
+  // The sink is deliberately NOT cleared on every `input`. A bare printable
+  // flows INTO it (its keydown isn't preventDefault'd — see the keydown
+  // handler) and must REMAIN there as the accent popup's replacement target.
+  // The stale char is dropped at the start of the NEXT keystroke (keydown),
+  // by `compositionend`, and by the deferred-dispatch resolution below.
+  // During a composition the value is the IME's marked text — never touched.
+  //
+  // Press-and-hold resolution: while `accentPopupPending`, this listener is
+  // the second half of key dispatch. A popup SELECTION replaced the sink's
+  // whole value with the accent (value === data, "e" → "é" — also the shape
+  // of a mouse click on the popup, which has no keydown at all); any other
+  // insert is ordinary typing that APPENDED to the sink, so the deferred key
+  // goes through the keymap exactly as it would have at keydown time.
+  input.addEventListener('input', (event) => {
+    if (!onKey) return; // standalone fallback dispatches at keydown — nothing deferred
+    if (composing || event.isComposing) return; // composition commits via compositionend
+    const type = event.inputType || '';
+    const data = typeof event.data === 'string' ? event.data : '';
+    const deferredKey = deferredAccentKey;
+    deferredAccentKey = null;
+    if (
+      accentPopupPending &&
+      (type === 'insertText' || type === 'insertReplacementText') &&
+      data !== '' &&
+      input.value === data
+    ) {
+      // Popup commit: replace the base char the hold's first keydown already
+      // self-inserted, so "e" + popup-pick "é" yields "é", not "eé" or "e2".
+      accentPopupPending = false;
+      printableBaseCandidate = false;
+      if (typeof activeBuffer.deleteBackward === 'function') {
+        activeBuffer.deleteBackward(1);
+      }
+      activeBuffer.insert(data);
+      followCursor = true;
+      schedule();
+      return;
+    }
+    if (deferredKey !== null) {
+      // Ordinary typing after a hold — complete the deferred dispatch.
+      accentPopupPending = false;
+      printableBaseCandidate = onKey(deferredKey) === true;
+      input.value = data; // keep just this char as the next possible base
+    }
   });
 
   /** Focus the editor: focus the hidden input sink (a child of root), so
@@ -685,7 +765,7 @@ export function createEditorView(buffer, container, options = {}) {
    */
   function renderLines() {
     const lineHeight = cursorEl.getBoundingClientRect().height || 22;
-    const language = languageForName(activeBuffer.name);
+    const language = activeLanguage();
     const lines = toLines(activeBuffer.text);
     const lineCount = lines.length;
 
@@ -1220,7 +1300,7 @@ export function createEditorView(buffer, container, options = {}) {
     const match = matchingBracket(
       activeBuffer.text,
       getPoint(),
-      languageForName(activeBuffer.name)
+      activeLanguage()
     );
     if (match === null) {
       bracketLayer.replaceChildren();
@@ -1285,7 +1365,19 @@ export function createEditorView(buffer, container, options = {}) {
     const caretLineEl = linesEl.querySelector(
       `.editor-line[data-line="${primaryPos.line}"]`
     );
-    if (caretLineEl && hasWide(caretLineEl.textContent)) {
+    // A line with inline widgets (math preview) is already positioned by
+    // columnToXPx, which subtracts each widget's real width — do NOT re-measure
+    // from the DOM there. measureCaretXPxIn walks the line's text nodes counting
+    // characters, but a MathJax widget carries a hidden assistive-MathML copy of
+    // the formula whose (math-italic Unicode) text both trips `hasWide` and gets
+    // counted, so a source column mis-maps to the wrong DOM offset — the caret
+    // drifts a few glyphs and shifts on re-render. The DOM measurement is only
+    // for wide (CJK / emoji) glyphs on widget-free lines.
+    if (
+      caretLineEl &&
+      !inlineWidgetsByLine.has(primaryPos.line) &&
+      hasWide(caretLineEl.textContent)
+    ) {
       const caretPoint = cursors[0] ? cursors[0].point : 0;
       const caretCol = activeBuffer.positionAt(caretPoint).column;
       const measured = measureCaretXPxIn(caretLineEl, caretCol);
@@ -1350,6 +1442,14 @@ export function createEditorView(buffer, container, options = {}) {
   // must not: pulling the cursor back into view would yank the viewport
   // back, so the user could never scroll past the cursor's line.
   let followCursor = false;
+  // WHICH follow renders actually scroll the caret into view: only when the
+  // caret may have moved. A real edit or a switch/reveal forces it; otherwise
+  // the follow is gated on the offset having changed since the last follow, so
+  // a pure repaint (an overlay refresh, a redundant server view/cursor
+  // reconcile, a status tick) preserves a viewport the user scrolled away from
+  // instead of yanking it back to the caret (the "autosave scrolls my editor"
+  // bug). See follow-cursor.js.
+  const followTracker = createFollowTracker();
   // Recenter / flash are *deferred to the end of a render*, not run
   // synchronously by their callers. `goto-line!` (and any buffer move)
   // repositions the cursor on the next animation frame, so a recenter or
@@ -1443,10 +1543,22 @@ export function createEditorView(buffer, container, options = {}) {
       if (pendingRecenter) {
         pendingRecenter = false;
         followCursor = false;
+        followTracker.recentered(getPoint());
+        globalThis.__godotTrace?.('follow', { why: 'recenter', point: getPoint() });
         cursorEl.scrollIntoView({ block: 'center', inline: 'nearest' });
       } else if (followCursor) {
         followCursor = false;
-        cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        // Follow only when the caret moved since the last follow, a real edit
+        // forced it, or a switch/reveal did. Otherwise this is a pure repaint
+        // (an overlay refresh, a redundant view/cursor reconcile) — leave the
+        // user's scroll where it is. `scrollIntoView({block:'nearest'})` is
+        // already a no-op when the caret is on screen, so this only changes
+        // the scrolled-away case, which is exactly the yank we must not do.
+        const willScroll = followTracker.shouldScroll(getPoint());
+        globalThis.__godotTrace?.('follow', { why: 'followCursor', point: getPoint(), willScroll });
+        if (willScroll) {
+          cursorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
       }
       if (pendingFlash) {
         pendingFlash = false;
@@ -1464,8 +1576,16 @@ export function createEditorView(buffer, container, options = {}) {
     frame = win.requestAnimationFrame(render);
   }
 
-  /** Schedule a render that also keeps the cursor on screen. */
-  function scheduleFollowingCursor() {
+  /** Schedule a render that keeps the cursor on screen. A real text edit
+   *  (`event.change` non-null) FORCES the follow — Emacs keeps the caret
+   *  visible on self-insert / delete even when the offset itself did not
+   *  advance. A change-less event (an overlay refresh, a cursor-only adopt)
+   *  does not force it, so the follow is gated on the caret actually having
+   *  moved and a decoration repaint never yanks a scrolled-away viewport. */
+  function scheduleFollowingCursor(event) {
+    const forced = !!(event && event.change !== null);
+    if (forced) followTracker.forceOnce();
+    globalThis.__godotTrace?.('scheduleFollow', { forced, hasEvent: !!event });
     followCursor = true;
     schedule();
   }
@@ -1497,8 +1617,40 @@ export function createEditorView(buffer, container, options = {}) {
     // keyCode 229 is the IME "still processing" sentinel that also covers
     // the first keydown of a composition, before `isComposing` flips.
     if (composing || event.isComposing || event.keyCode === 229) return;
+    const keyString = keyEventToString(event);
+    const barePrintable = [...keyString].length === 1;
+    // macOS press-and-hold: a HELD bare printable must NOT repeat-insert — the
+    // OS opens the accent chooser instead. Navigation / editing keys (arrows,
+    // Backspace, …) keep auto-repeating. The repeats also ARM the popup state:
+    // once a self-inserted base has repeated, the chooser may be open, and the
+    // next key needs the deferred treatment below.
+    if (event.repeat && barePrintable) {
+      if (printableBaseCandidate) accentPopupPending = true;
+      return;
+    }
+    // A fresh keydown supersedes any unresolved deferral (a deferred key whose
+    // default action produced no `input` at all — e.g. a popup digit beyond
+    // the last option, which macOS swallows).
+    deferredAccentKey = null;
+    if (accentPopupPending && barePrintable && onKey) {
+      // The accent popup may be open. This key could be a popup SELECTION
+      // (digit) or ordinary typing — indistinguishable until its default
+      // action lands in the sink, so dispatch is deferred to the sink's
+      // `input` listener. Crucially, do NOT touch the sink: the held base
+      // char in it is the popup's replacement target. (Clearing it here was
+      // the bug that broke press-and-hold — the popup's commit died against
+      // an emptied sink and the digit self-inserted instead.)
+      deferredAccentKey = keyString;
+      return;
+    }
+    accentPopupPending = false;
+    // Drop the char the PREVIOUS keystroke left in the sink (we no longer
+    // clear it on `input`, so a held base char survives as the popup's
+    // replacement target). This key's own char is inserted into the sink by
+    // the browser AFTER this handler returns, so the sink ends holding just it.
+    if (input.value !== '') input.value = '';
     let handled = onKey
-      ? onKey(keyEventToString(event))
+      ? onKey(keyString)
       : handleKeyEvent(activeBuffer, event);
     // An unbound Option chord that composed a printable character
     // (curly quotes, accents) self-inserts the composed character — a
@@ -1506,7 +1658,21 @@ export function createEditorView(buffer, container, options = {}) {
     if (!handled && onKey && altComposedInsert(event)) {
       handled = onKey(event.key);
     }
-    if (handled) event.preventDefault();
+    // Do NOT preventDefault a bare printable. Marking the key "handled" tells
+    // Chromium to swallow it, which SUPPRESSES the native macOS press-and-hold
+    // accent COMPOSITION — the popup then detaches to the window corner and a
+    // number-select types the digit instead of picking the accent. We already
+    // self-inserted the char via onKey (through the keymap, so auto-pair /
+    // electric keys still fire); the stray copy that lands in the hidden sink is
+    // dropped by the sink's `input` handler. Command keys, chords and named keys
+    // (Enter / Tab / Space / …) are still preventDefaulted so the textarea sink
+    // never acts on them.
+    if (handled && !barePrintable) event.preventDefault();
+    // Remember a just-typed bare printable as a possible accent BASE char (for a
+    // press-and-hold composition that may open next); any OTHER handled key
+    // clears the candidacy. A suppressed repeat returned above, so the flag
+    // survives the hold.
+    printableBaseCandidate = handled && barePrintable;
   });
 
   // Scrolling changes which lines are visible — re-render the window.
@@ -1663,7 +1829,7 @@ export function createEditorView(buffer, container, options = {}) {
       if (contentStickyLayer.firstChild) contentStickyLayer.replaceChildren();
       if (gutterStickyLayer.firstChild) gutterStickyLayer.replaceChildren();
     };
-    const language = languageForName(activeBuffer.name);
+    const language = activeLanguage();
     if (!stickyHeaderLanguages.has(language) || !displayRowForLine) {
       clearSticky();
       return;
@@ -1981,6 +2147,9 @@ export function createEditorView(buffer, container, options = {}) {
   // count on mousedown is unaffected.
   root.addEventListener('mousedown', (event) => {
     focusInput();
+    // A click moves the caret away from a just-typed printable, so it is no
+    // longer an accent base char for a press-and-hold composition.
+    printableBaseCandidate = false;
     if (event.button !== 0) return;
     const offset = offsetFromPoint(event.clientX, event.clientY);
     if (offset === null) return;
@@ -2042,6 +2211,15 @@ export function createEditorView(buffer, container, options = {}) {
       schedule();
     },
 
+    /** Force a re-render on the next frame without moving the cursor or
+     *  scroll. For hosts that change a replaced-range widget's content
+     *  out of band (e.g. the notebook view, when a cell finishes running)
+     *  and need the widget layer to re-mount — there is no buffer edit to
+     *  trigger the usual onChange-driven render. */
+    refresh() {
+      schedule();
+    },
+
     /** Roughly how many lines fit in the viewport — used for paging. */
     pageLines() {
       const lineHeight = cursorEl.getBoundingClientRect().height || 22;
@@ -2076,14 +2254,15 @@ export function createEditorView(buffer, container, options = {}) {
      * @param {import('@editor/view').View} next - The view to show.
      *   `next.buffer` is the L2 buffer; the renderer subscribes to it.
      */
-    setView(next) {
+    setView(next, options = {}) {
       const nextBuffer = next && next.buffer ? next.buffer : null;
       if (nextBuffer === null) {
         // Defensive: a non-text view should never reach here; the
         // host's mount dispatch routes elsewhere. No-op rather than crash.
         return;
       }
-      if (nextBuffer !== activeBuffer) {
+      const bufferChanged = nextBuffer !== activeBuffer;
+      if (bufferChanged) {
         unsubscribe();
         activeBuffer = nextBuffer;
         unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
@@ -2093,6 +2272,19 @@ export function createEditorView(buffer, container, options = {}) {
       // and any render that fired while the view was hidden produced a
       // 0-height layout. The reveal pass redraws against the real
       // viewport.
+      //
+      // A switch / reveal (the default) FORCES the follow so the target's
+      // caret is shown. A server-driven reconcile passes `followMode: 'auto'`:
+      // then the follow is gated on the caret actually having moved, so a
+      // repaint that left the caret put (an overlay update, a redundant
+      // view/cursor message) preserves the user's scroll instead of yanking
+      // it back. A switch to a DIFFERENT buffer always forces (its caret may
+      // sit at the same numeric offset yet be off-screen).
+      const forced = options.followMode !== 'auto' || bufferChanged;
+      if (forced) followTracker.forceOnce();
+      globalThis.__godotTrace?.('setView', {
+        followMode: options.followMode ?? null, bufferChanged, forced,
+      });
       followCursor = true;
       render();
     },

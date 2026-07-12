@@ -5,8 +5,8 @@
  * The modal is a real in-app dialog (a backdrop plus a panel) with OK
  * and Cancel buttons, not a bare browser control. It does use a native
  * `<input type="color">` *inside* the panel as the actual picker — the
- * platform colour wheel — but the dialog framing, the live preview and
- * the OK / Cancel commitment are the editor's own.
+ * platform colour wheel, which doubles as the live swatch — but the dialog
+ * framing and the OK / Cancel commitment are the editor's own.
  *
  * The module is decoupled from the buffer: it is handed an initial
  * colour and an `onChoose` callback, and reports the chosen hex when
@@ -57,10 +57,10 @@ export function openColourPicker({ doc, initial, onChoose, onCancel }) {
   const row = doc.createElement('div');
   row.className = 'colour-picker-row';
 
-  const preview = doc.createElement('div');
-  preview.className = 'colour-picker-preview';
-  preview.style.background = inputHex;
-
+  // The native `<input type="color">` IS the swatch: it shows the current
+  // colour and opens the platform colour wheel on click. (An earlier build also
+  // had a separate static preview rectangle beside it — a redundant second copy
+  // of the same colour — now dropped.)
   const input = doc.createElement('input');
   input.type = 'color';
   input.className = 'colour-picker-input';
@@ -72,7 +72,7 @@ export function openColourPicker({ doc, initial, onChoose, onCancel }) {
   valueLabel.value = inputHex;
   valueLabel.spellcheck = false;
 
-  row.append(input, preview, valueLabel);
+  row.append(input, valueLabel);
 
   const buttons = doc.createElement('div');
   buttons.className = 'colour-picker-buttons';
@@ -93,9 +93,8 @@ export function openColourPicker({ doc, initial, onChoose, onCancel }) {
     return input.value;
   }
 
-  /** Mirror the picker's value into the preview and text field. */
+  /** Mirror the swatch's value into the text field. */
   function syncFromInput() {
-    preview.style.background = input.value;
     valueLabel.value = input.value;
   }
 
@@ -103,9 +102,7 @@ export function openColourPicker({ doc, initial, onChoose, onCancel }) {
   function syncFromText() {
     const hex = normaliseToHex(valueLabel.value);
     if (hex) {
-      const noAlpha = hex.slice(0, 7);
-      input.value = noAlpha;
-      preview.style.background = noAlpha;
+      input.value = hex.slice(0, 7);
     }
   }
 

@@ -43,3 +43,7 @@ yarn-debug.log*
 .env
 .env.local
 .env.*.local
+
+# JMarkdown live-preview shadow sidecars (transient; swept on preview close,
+# this catches any left by a crash). See plans/JMD-LIVE-PREVIEW.md.
+.*.godot-preview.*

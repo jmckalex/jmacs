@@ -27,6 +27,8 @@ import {
   closeSync,
   renameSync,
   unlinkSync,
+  readdirSync,
+  statSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
@@ -72,4 +74,47 @@ export function atomicWriteSync(target, content) {
     }
     throw error;
   }
+}
+
+/** Matches an atomic-write temp sibling: `.<name>.tmp-<pid>-<epochMs>`. */
+const TEMP_RE = /^\..*\.tmp-\d+-\d+$/;
+
+/**
+ * Sweep ORPHANED atomic-write temp files out of DIR — siblings named like
+ * `.<name>.tmp-<pid>-<ms>` that a writer killed mid-write left behind (the
+ * process died between `openSync` and `renameSync`, so its catch-clause unlink
+ * never ran). These accumulate forever otherwise — beside session.json,
+ * custom.lisp, faces.json, … every time the app is force-quit during a write.
+ *
+ * Only temps OLDER than MAXAGEMS are removed: a real write renames its temp
+ * within milliseconds, so anything older is definitively abandoned — and a
+ * concurrent in-flight write (another live instance) is never touched. Wholly
+ * best-effort: a missing dir, or a file that vanishes mid-sweep, is ignored.
+ *
+ * @param {string} dir - Directory to sweep (e.g. the user-data / config home).
+ * @param {number} [maxAgeMs] - Minimum age to treat a temp as orphaned (default 60s).
+ * @returns {number} How many temp files were removed.
+ */
+export function sweepStaleTemps(dir, maxAgeMs = 60_000) {
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  let entries;
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return 0; // no such dir / unreadable — nothing to do
+  }
+  for (const name of entries) {
+    if (!TEMP_RE.test(name)) continue;
+    const p = join(dir, name);
+    try {
+      if (statSync(p).mtimeMs < cutoff) {
+        unlinkSync(p);
+        removed += 1;
+      }
+    } catch {
+      // raced with another sweep / a live write renamed it away — skip it
+    }
+  }
+  return removed;
 }

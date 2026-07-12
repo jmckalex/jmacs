@@ -12,6 +12,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { createSpine } from './spine.js';
 import { wireLeaves, wireFocusedLeafId } from './protocol.js';
@@ -20,20 +23,32 @@ import { wireLeaves, wireFocusedLeafId } from './protocol.js';
 function makeSpine(initialText = '', name = 'scratch.txt', extra = {}) {
   const log = {
     status: [], minibufferOpens: [], minibufferCloses: 0, scrolls: [], saves: [],
+    // The initial-value seed for each minibuffer open (find-file / find-project
+    // start at a sensible directory), parallel to minibufferOpens.
+    minibufferSeeds: [],
     // Each open generic-picker request (the G0b channel), as the server sees it.
     pickerOpens: [],
     // Each new-window request (the C-x 5 2 effect, G4).
     newWindows: 0,
+    // Each open-project-window request (B4 project): the parked { root } config.
+    projectWindows: [],
+    // Each close-project request (B4): { root, files, active, windowId }.
+    projectCloses: [],
+    // Each client directive raised (the multi-window round-trip): { ids, name, args }.
+    directives: [],
   };
   const spine = createSpine(
-    { initialText, name },
+    { initialText, name, initialPath: extra.initialPath },
     {
       onStatus: (s) => log.status.push(s),
-      onMinibufferOpen: (p) => log.minibufferOpens.push(p),
+      onMinibufferOpen: (p, initial) => { log.minibufferOpens.push(p); log.minibufferSeeds.push(initial ?? ''); },
       onMinibufferClose: () => { log.minibufferCloses += 1; },
       onScroll: (r) => log.scrolls.push(r),
       onPicker: (req) => log.pickerOpens.push(req),
       onNewWindow: () => { log.newWindows += 1; },
+      onOpenProjectWindow: (cfg) => log.projectWindows.push(cfg),
+      onCloseProject: (c) => log.projectCloses.push(c),
+      onClientDirective: (ids, name, args) => log.directives.push({ ids, name, args }),
       openFile: extra.openFile,
       // A recording save: capture the {path, text} the spine would write, and
       // return success unless the test injects a failure. Lets save-buffer /
@@ -80,9 +95,9 @@ test('motion: arrows + C-a/C-e move point through the real commands', () => {
 
 test('M-< / M-> jump to buffer start/end via real commands', () => {
   const { spine } = makeSpine('abcdef');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   assert.equal(spine.buffer.point, 6);
-  spine.handleKey('M-less');
+  spine.handleKey('M-S-comma');
   assert.equal(spine.buffer.point, 0);
 });
 
@@ -117,7 +132,7 @@ test('command-names comes from the REAL registry', () => {
   const names = spine.commandNames();
   assert.ok(names.includes('forward-char'), 'forward-char registered');
   assert.ok(names.includes('newline'), 'newline registered');
-  assert.ok(names.includes('execute-extended-command'), 'M-x registered');
+  assert.ok(names.includes('execute-command'), 'M-x registered');
   assert.ok(names.includes('find-file'), 'find-file registered');
 });
 
@@ -262,7 +277,7 @@ test('find-file on a missing file reports and keeps the current buffer', () => {
 });
 
 test('M-x flow: open the prompt, abort it, then host-run the chosen command', () => {
-  // execute-extended-command opens the "M-x " prompt. The host (server)
+  // execute-command opens the "M-x " prompt. The host (server)
   // recognises that prompt, aborts the placeholder command, then runs the
   // chosen command itself — here, end-of-buffer.
   const { spine } = makeSpine('abcdef');
@@ -391,6 +406,152 @@ test('C-x 5 2 resolves to new-window and raises the onNewWindow effect', () => {
   assert.equal(log.newWindows, 1, 'C-x 2 is split-vertical, not new-window');
 });
 
+// --- client directives: the multi-window round-trip (P2) ----------------
+
+test('emit-client-directive! to all-window-ids targets every window', () => {
+  const { spine, log } = makeSpine('x');
+  const idx2 = spine.addClientView(); // a 2nd window
+  spine.setActiveClient(0);
+  spine.interpreter.evaluate("(emit-client-directive! (all-window-ids) 'close-window)");
+  assert.equal(log.directives.length, 1);
+  assert.deepEqual([...log.directives[0].ids].sort(), [0, idx2].sort());
+  assert.equal(log.directives[0].name, 'close-window');
+  assert.deepEqual(log.directives[0].args, []);
+});
+
+test('emit-client-directive! to other-window-ids targets every window but the active one', () => {
+  const { spine, log } = makeSpine('x');
+  const idx2 = spine.addClientView();
+  spine.setActiveClient(idx2);
+  spine.interpreter.evaluate("(emit-client-directive! (other-window-ids) 'close-window)");
+  assert.deepEqual(log.directives[0].ids, [0]);
+  assert.equal(log.directives[0].name, 'close-window');
+});
+
+test('emit-client-directive! to (this-window-id) targets only the active window, with args', () => {
+  const { spine, log } = makeSpine('x');
+  spine.addClientView();
+  spine.setActiveClient(0);
+  spine.interpreter.evaluate(
+    "(emit-client-directive! (list (this-window-id)) 'reload-theme \"nova\")"
+  );
+  assert.deepEqual(log.directives[0].ids, [0]);
+  assert.equal(log.directives[0].name, 'reload-theme');
+  assert.deepEqual(log.directives[0].args, ['nova']);
+});
+
+test('C-x 5 0 close-window directs a close to this window only', () => {
+  const { spine, log } = makeSpine('x');
+  const idx2 = spine.addClientView();
+  spine.setActiveClient(idx2);
+  spine.handleKey('C-x');
+  spine.handleKey('5');
+  spine.handleKey('0');
+  assert.equal(log.directives.length, 1);
+  assert.deepEqual(log.directives[0].ids, [idx2]);
+  assert.equal(log.directives[0].name, 'close-window');
+});
+
+test('C-x 5 1 close-other-windows directs a close to every other window', () => {
+  const { spine, log } = makeSpine('x');
+  spine.addClientView();        // idx 1
+  const idx3 = spine.addClientView(); // idx 2
+  spine.setActiveClient(1);
+  spine.handleKey('C-x');
+  spine.handleKey('5');
+  spine.handleKey('1');
+  assert.equal(log.directives.length, 1);
+  assert.deepEqual([...log.directives[0].ids].sort(), [0, idx3].sort());
+  assert.equal(log.directives[0].name, 'close-window');
+});
+
+// --- quit-editor: the cross-window save-some-buffers walk (P2c) ----------
+
+test('quit-editor with nothing unsaved emits a quit directive straight away', () => {
+  const { spine, log } = makeSpine('clean', 'scratch.txt');
+  spine.runCommand('quit-editor');
+  assert.deepEqual(log.directives, [{ ids: [0], name: 'quit', args: [] }]);
+});
+
+test('quit-editor on an unsaved path-less buffer goes to the net; y quits', () => {
+  const { spine, log } = makeSpine('', 'scratch.txt');
+  spine.handleKey('x'); // dirty the path-less buffer (can't be saved in the walk)
+  spine.runCommand('quit-editor');
+  assert.equal(log.directives.length, 0, 'no per-buffer prompt; the net is pending');
+  spine.handleKey('y'); // quit anyway
+  assert.deepEqual(log.directives, [{ ids: [0], name: 'quit', args: [] }]);
+});
+
+test('quit-editor saves a path-backed buffer on y, then quits', () => {
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt'); // a path-backed buffer, now active
+  spine.handleKey('Z'); // dirty it
+  spine.runCommand('quit-editor');
+  assert.equal(log.directives.length, 0, 'prompting Save doc.txt?, not quit yet');
+  spine.handleKey('y'); // save it
+  assert.ok(log.saves.some((s) => s.path === '/tmp/doc.txt'), 'doc.txt was saved');
+  assert.deepEqual(log.directives, [{ ids: [0], name: 'quit', args: [] }]);
+});
+
+test('quit-editor: n skips the save, the net fires, and n aborts the quit', () => {
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt');
+  spine.handleKey('Z');
+  spine.runCommand('quit-editor');
+  spine.handleKey('n'); // skip saving doc.txt
+  assert.equal(log.saves.length, 0, 'nothing saved');
+  assert.equal(log.directives.length, 0, 'doc.txt still dirty → the net is pending');
+  spine.handleKey('n'); // do NOT quit
+  assert.equal(log.directives.length, 0, 'quit aborted');
+});
+
+test('quit-editor: C-g aborts cleanly so a fresh C-x C-c restarts the SAVE walk', () => {
+  // Regression: an aborted quit used to strand a pending key-reader (the else
+  // branch re-armed it), so the next C-x C-c was eaten by it and landed back in
+  // the net instead of re-prompting the save walk.
+  const { spine, log } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt');
+  spine.handleKey('Z'); // dirty (path-backed) → the walk will prompt to save it
+  spine.runCommand('quit-editor'); // "Save doc.txt?"
+  spine.handleKey('q'); // stop saving → the net
+  spine.handleKey('C-g'); // abort the net — must leave NO pending reader
+  assert.equal(log.directives.length, 0, 'aborted: nothing quit');
+  // A fresh quit via the keys must reach quit-editor (not a stale reader) and
+  // restart the SAVE walk from the first buffer.
+  spine.handleKey('C-x');
+  spine.handleKey('C-c');
+  const segs = spine.viewState().statusSegments;
+  assert.ok(
+    Array.isArray(segs) && segs[0].text === 'Save ',
+    'a fresh quit restarts the save walk, not the net'
+  );
+});
+
+test('quit-editor save prompt is styled (red text, bold filename)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt', {
+    openFile: (path) => ({ text: 'disk', name: 'doc.txt', path }),
+  });
+  spine.visitFile('/tmp/doc.txt');
+  spine.handleKey('Z'); // dirty the path-backed buffer
+  spine.runCommand('quit-editor'); // prompts "Save doc.txt?"
+  const segs = spine.viewState().statusSegments;
+  assert.ok(Array.isArray(segs) && segs.length === 3, 'styled 3-segment prompt');
+  assert.equal(segs[0].text, 'Save ', 'frame ends with a space before the filename');
+  assert.equal(segs[1].bold, true, 'the filename segment is bold');
+  assert.ok(segs[1].color, 'the filename segment has a colour');
+  assert.ok(
+    segs[1].text.startsWith('"') && segs[1].text.endsWith('"'),
+    'the filename is wrapped in double-quotes'
+  );
+  assert.ok(segs[2].text.includes('?'), 'the trailing prompt is present');
+});
+
 test('a fresh window opens on its own private *scratch* (hidden from window 1)', () => {
   const { spine } = makeSpine('the session file', 'session.txt');
   const before = spine.bufferCount;
@@ -442,7 +603,48 @@ test('viewState reports point, mark, name, modeline and modified flag', () => {
   assert.match(vs.modeline, /^●/);
 });
 
-// --- multi-buffer: the registry, switching, kill-buffer ----------------
+test('viewState carries the 1-based cursorLine (Markdown-preview forward search)', () => {
+  const { spine } = makeSpine('line one\nline two\nline three', 'doc.md');
+  assert.equal(spine.viewState().cursorLine, 1, 'point at start → line 1');
+  assert.equal(spine.viewStateOf(0).cursorLine, 1, 'viewStateOf agrees');
+  spine.buffer.moveTo(spine.buffer.offsetAt(2, 0)); // 0-based line 2 → 1-based line 3
+  assert.equal(spine.viewState().cursorLine, 3);
+  assert.equal(spine.viewStateOf(0).cursorLine, 3);
+});
+
+test('gotoLine is a quiet move (no scroll / no flash) and reports whether it moved', () => {
+  const { spine, log } = makeSpine('aaa\nbbb\nccc\nddd', 'doc.md');
+  assert.equal(spine.gotoLine(3), true, 'reports it moved');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, '1-based 3 → 0-based line 2');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).column, 0, 'lands at column 0');
+  assert.equal(spine.gotoLine(999), true); // clamped to the last line
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 3);
+  const before = spine.buffer.point;
+  assert.equal(spine.gotoLine(0), false, 'non-positive → no move');
+  assert.equal(spine.buffer.point, before);
+  assert.ok(!log.scrolls.some((s) => s.kind === 'recenter'), 'gotoLine does not recenter');
+  assert.ok(!log.directives.some((d) => d.name === 'flash-current-line'), 'gotoLine does not flash');
+});
+
+test('gotoLineReveal moves AND reveals: recenter scroll + flash-current-line directive', () => {
+  const { spine, log } = makeSpine('aaa\nbbb\nccc\nddd', 'doc.md');
+  spine.gotoLineReveal(3);
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, 'moved to the line');
+  const recenter = log.scrolls.find((s) => s.kind === 'recenter');
+  assert.ok(recenter, 'a recenter scroll was emitted');
+  assert.equal(recenter.line, 2, 'recenter targets the landed (0-based) line');
+  assert.ok(
+    log.directives.some((d) => d.name === 'flash-current-line' && d.ids.includes(0)),
+    'a flash-current-line directive went to the active window'
+  );
+  // A no-op reveals nothing.
+  log.scrolls.length = 0; log.directives.length = 0;
+  spine.gotoLineReveal(0);
+  assert.equal(log.scrolls.length, 0);
+  assert.equal(log.directives.length, 0);
+});
+
+// --- multi-buffer: the registry, switching, kill-view ----------------
 
 test('the server starts with one buffer; find-file adds a second', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
@@ -456,6 +658,115 @@ test('the server starts with one buffer; find-file adds a second', () => {
   assert.equal(spine.currentBufferIdOf(0), id);
   assert.equal(spine.buffer.name, 'b.md');
   assert.ok(spine.bufferIdByName('scratch.txt'));
+});
+
+test('close-tab KILLS the view by default; *close-tab-kills-view* #f un-curates', () => {
+  const files = {
+    '/a.md': { text: 'A\n', name: 'a.md', path: '/a.md' },
+    '/b.md': { text: 'B\n', name: 'b.md', path: '/b.md' },
+  };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const aId = spine.visitFile('/a.md');
+  const bId = spine.visitFile('/b.md');
+  // Window 0's focused leaf is a tabline of [a, b], active = b.
+  spine.seedClientTabline(0, [aId, bId], bId);
+  assert.equal(spine.bufferCount, 3, 'scratch + a + b');
+
+  // DEFAULT (#t): closing a's tab KILLS it — gone from the registry/buffer list.
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: aId }));
+  assert.ok(
+    !spine.bufferListRecords(0).some((r) => r.id === aId),
+    'killed buffer is off the buffer list'
+  );
+  assert.equal(spine.bufferCount, 2, 'scratch + b remain');
+
+  // OPT-OUT (#f): closing a tab only un-curates — the buffer survives the pool.
+  spine.interpreter.evaluate('(set! *close-tab-kills-view* #f)');
+  const scratchId = spine.bufferListRecords(0).find((r) => r.name === 'scratch.txt').id;
+  spine.seedClientTabline(0, [scratchId, bId], bId);
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: bId }));
+  assert.ok(
+    spine.bufferListRecords(0).some((r) => r.id === bId),
+    'un-curated buffer survives in the buffer list'
+  );
+  assert.equal(spine.bufferCount, 2, 'nothing killed under the opt-out');
+});
+
+test('closing the ACTIVE tab switches the client onto the re-pointed neighbour', () => {
+  // Regression: close-tab re-pointed the pane model but never switched the
+  // client — the renderer's currentBufferId() (and the modeline) stayed on
+  // the killed buffer, so the NEXT active-tab × resolved a dead bufferId
+  // and silently no-op'd, and the interpreter kept editing the detached
+  // buffer.
+  const files = {
+    '/a.md': { text: 'A\n', name: 'a.md', path: '/a.md' },
+    '/b.md': { text: 'B\n', name: 'b.md', path: '/b.md' },
+  };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const aId = spine.visitFile('/a.md');
+  const bId = spine.visitFile('/b.md');
+  spine.seedClientTabline(0, [aId, bId], bId); // active = b
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: bId }));
+  assert.equal(spine.currentBufferIdOf(0), aId, 'the client follows the re-point');
+  assert.equal(spine.buffer.name, 'a.md', 'the interpreter is bound to the survivor');
+});
+
+test('closing the LAST tab collapses the tabline to a bare *scratch* leaf', () => {
+  const files = { '/a.md': { text: 'A\n', name: 'a.md', path: '/a.md' } };
+  const { spine } = makeSpine('seed', 'doc.txt', { openFile: (p) => files[p] ?? null });
+  const aId = spine.visitFile('/a.md');
+  spine.seedClientTabline(0, [aId], aId); // a tabline with a SINGLE tab
+  assert.equal(wireLeaves(spine.paneSnapshot(0))[0].tabline, true, 'starts as a tabline');
+
+  // Close the last tab → collapse to a bare *scratch* leaf; a is killed.
+  assert.ok(spine.applyPaneIntent(0, { op: 'close-tab', bufferId: aId }));
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.ok(!leaf.tabline, 'the tabline is gone (a bare leaf)');
+  assert.equal(
+    spine.bufferListRecords(0).find((r) => r.current).name, '*scratch*',
+    'the bare leaf shows *scratch*'
+  );
+  assert.ok(!spine.bufferListRecords(0).some((r) => r.id === aId), 'the closed view was killed');
+});
+
+test('markdown-preview directive carries the active buffer SAVED path', () => {
+  const { spine, log } = makeSpine('# hi\n', 'doc.md', { initialPath: '/docs/doc.md' });
+  spine.runCommand('markdown-preview'); // the command body calls markdown-preview!
+  const d = log.directives.find((x) => x.name === 'markdown-preview');
+  assert.ok(d && d.ids.includes(0), 'a markdown-preview directive went to the active window');
+  assert.deepEqual(d.args, ['/docs/doc.md'], 'the saved path travels as the sole directive arg');
+});
+
+test('markdown-preview sends an empty path for an unsaved buffer', () => {
+  // No initialPath → a path-less buffer; the renderer then says "save first".
+  const { spine, log } = makeSpine('# hi\n', 'doc.md');
+  spine.runCommand('markdown-preview');
+  const d = log.directives.find((x) => x.name === 'markdown-preview');
+  assert.deepEqual(d.args, [''], 'an unsaved buffer sends an empty path');
+});
+
+test('markdown-preview on a NON-markdown buffer emits no directive (mode guarded server-side)', () => {
+  // A .txt buffer is Fundamental mode, not Markdown — the server guards the
+  // mode (the renderer can't see it reliably) and reports a status instead.
+  const { spine, log } = makeSpine('plain text\n', 'notes.txt', { initialPath: '/notes.txt' });
+  spine.runCommand('markdown-preview');
+  assert.ok(
+    !log.directives.some((x) => x.name === 'markdown-preview'),
+    'no markdown-preview directive for a non-markdown buffer'
+  );
+  assert.ok(
+    log.status.some((s) => /not in Markdown mode/i.test(s)),
+    'a "not in Markdown mode" status was shown'
+  );
+});
+
+test('markdown-preview-sync (C-c C-v) emits a directive with the 1-based cursor line', () => {
+  const { spine, log } = makeSpine('# h\nline two\nline three\n', 'doc.md');
+  spine.buffer.moveTo(spine.buffer.offsetAt(2, 0)); // 0-based line 2 → 1-based line 3
+  spine.runCommand('markdown-preview-sync');
+  const d = log.directives.find((x) => x.name === 'markdown-preview-sync');
+  assert.ok(d && d.ids.includes(0), 'a markdown-preview-sync directive went to the active window');
+  assert.deepEqual(d.args, [3], 'carries the 1-based cursor line');
 });
 
 test('find-file of a MEDIA file creates a data-source leaf (no garbage text buffer)', () => {
@@ -665,30 +976,60 @@ test('each M-x shell mints a FRESH shell (no dedup), with distinct sessionIds', 
   assert.equal(new Set(shells.map((r) => r.id)).size, 2, 'distinct sessionIds');
 });
 
-test('shellSessionsOf lists open shells; kill-buffer reaps the focused one', () => {
+test('liveProcessSessionsOf lists open shells; kill-view reaps the focused one', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
   spine.runCommand('shell');
   const shellId = wireLeaves(spine.paneSnapshot(0))[0].bufferId;
-  // Fanned to the client per PANE_TREE so it knows which pty sessions are live.
-  assert.deepEqual(spine.shellSessionsOf(0), [shellId], 'the open shell is in the live set');
+  // Fanned to the client per PANE_TREE so it knows which process sessions are live.
+  assert.deepEqual(spine.liveProcessSessionsOf(0), [shellId], 'the open shell is in the live set');
   // C-x k on the focused shell removes the SOURCE (not just a registry buffer):
   // it leaves the open-set, so the client reaps its pty.
-  spine.runCommand('kill-buffer');
-  assert.deepEqual(spine.shellSessionsOf(0), [], 'the killed shell left the live set');
+  spine.runCommand('kill-view');
+  assert.deepEqual(spine.liveProcessSessionsOf(0), [], 'the killed shell left the live set');
   assert.equal(spine.isDataSource(shellId), false, 'the shell data-source is gone');
   // The focused leaf re-homed onto a surviving text buffer, not the dead source.
   assert.notEqual(wireLeaves(spine.paneSnapshot(0))[0].bufferId, shellId);
 });
 
-test('kill-buffer on a shell bypasses the "only buffer" guard (data-source path)', () => {
+test('kill-view on a shell bypasses the "only buffer" guard (data-source path)', () => {
   // Even with a single TEXT buffer (scratch), killing a shell succeeds — the
   // registry-count guard only governs registry buffers, not data-sources.
   const { spine } = makeSpine('seed', 'scratch.txt');
   assert.equal(spine.bufferCount, 1, 'one text buffer (scratch)');
   spine.runCommand('shell');
-  spine.runCommand('kill-buffer');
-  assert.equal(spine.shellSessionsOf(0).length, 0, 'the shell was reaped, not refused');
+  spine.runCommand('kill-view');
+  assert.equal(spine.liveProcessSessionsOf(0).length, 0, 'the shell was reaped, not refused');
   assert.equal(spine.bufferCount, 1, 'the text buffer survived');
+});
+
+test('M-x gnuplot mints a server-owned gnuplot data-source leaf (full Lisp path)', () => {
+  // The same shape as M-x shell: gnuplot.lisp (gnuplot) → (open-gnuplot-buffer!)
+  // → openProcessView('gnuplot'). Proves gnuplot.lisp loaded in SPINE_STDLIB.
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('gnuplot');
+  assert.equal(spine.bufferCount, 1, 'a gnuplot did NOT add a text buffer');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.match(leaf.bufferId, /^ds\d+$/, 'a data-source id');
+  assert.equal(leaf.viewKind, 'gnuplot');
+  assert.equal(leaf.name, '*gnuplot*');
+  assert.equal(leaf.state.sessionId, leaf.bufferId, 'sessionId is the source id');
+  // Tracked as a live process, and reaped on kill-view.
+  assert.deepEqual(spine.liveProcessSessionsOf(0), [leaf.bufferId]);
+  spine.runCommand('kill-view');
+  assert.equal(spine.liveProcessSessionsOf(0).length, 0, 'the gnuplot was reaped');
+});
+
+test('serializeWindow/loadWindowLayout round-trips a gnuplot as a FRESH source', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('gnuplot');
+  const before = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'gnuplot');
+  assert.ok(before, 'a gnuplot leaf exists before save');
+  const blob = spine.serializeWindow(0);
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const after = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'gnuplot');
+  assert.ok(after, 'restored as a gnuplot (not text, not dropped)');
+  assert.notEqual(after.bufferId, before.bufferId, 'a FRESH gnuplot source on restore');
+  assert.equal(after.state.sessionId, after.bufferId, 'fresh sessionId tied to the new source');
 });
 
 test('serializeWindow/loadWindowLayout round-trips a shell as a FRESH source', () => {
@@ -718,6 +1059,88 @@ test('a restored shell keeps its cwd (fresh process, same dir)', () => {
   assert.equal(after.state.cwd, '/proj', 'restored shell starts in the saved cwd');
 });
 
+test('M-x browser-view mints a server-owned browser data-source at the typed URL', () => {
+  // The full Lisp path: browser.lisp (browser-view) prompts for a URL →
+  // (open-browser-view! url) → openBrowserSource. Proves browser.lisp loaded in
+  // SPINE_STDLIB and the interactive prompt round-trips server-side.
+  const { spine, log } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('browser-view');
+  assert.deepEqual(log.minibufferOpens, ['Browse URL: '], 'prompts for a URL');
+  spine.deliverMinibuffer('example.com');
+  assert.equal(spine.bufferCount, 1, 'a browser did NOT add a text buffer');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.match(leaf.bufferId, /^ds\d+$/, 'a data-source id');
+  assert.equal(leaf.viewKind, 'browser');
+  assert.equal(leaf.state.url, 'example.com', 'carries the typed URL on the wire state');
+});
+
+test('browser-view with an empty URL opens the home page (about:blank)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.runCommand('browser-view');
+  spine.deliverMinibuffer(''); // submit empty → home page
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.equal(leaf.viewKind, 'browser');
+  assert.equal(leaf.state.url, 'about:blank', 'empty URL falls back to the home page');
+});
+
+test('liveBrowserSourcesOf lists open browsers; kill-view reaps the focused one', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const browserId = spine.openBrowserSource('https://example.com');
+  // Fanned to the client per PANE_TREE so it reaps the <webview> on a real close
+  // (not a switch-away — the source stays in the set then).
+  assert.deepEqual(spine.liveBrowserSourcesOf(0), [browserId], 'the open browser is in the live set');
+  spine.runCommand('kill-view');
+  assert.deepEqual(spine.liveBrowserSourcesOf(0), [], 'the killed browser left the live set');
+  assert.equal(spine.isDataSource(browserId), false, 'the browser data-source is gone');
+});
+
+test('kill-view on a browser bypasses the "only buffer" guard (data-source path)', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  assert.equal(spine.bufferCount, 1, 'one text buffer (scratch)');
+  spine.openBrowserSource('https://example.com');
+  spine.runCommand('kill-view');
+  assert.equal(spine.liveBrowserSourcesOf(0).length, 0, 'the browser was reaped, not refused');
+  assert.equal(spine.bufferCount, 1, 'the text buffer survived');
+});
+
+test('serializeWindow/loadWindowLayout round-trips a browser as a FRESH source at its URL', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  spine.openBrowserSource('https://example.com/page');
+  const before = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'browser');
+  assert.ok(before, 'a browser leaf exists before save');
+  const blob = spine.serializeWindow(0);
+  assert.equal(spine.loadWindowLayout(0, blob), true, 'layout restored');
+  const after = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'browser');
+  assert.ok(after, 'restored as a browser (not text, not dropped)');
+  // A workspace saves the ARRANGEMENT: a fresh source, but at the same saved URL.
+  assert.notEqual(after.bufferId, before.bufferId, 'a fresh browser source on restore');
+  assert.equal(after.state.url, 'https://example.com/page', 'restored at the saved URL');
+});
+
+test('setBrowserSourceUrl tracks navigation so restore reopens the current page', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const id = spine.openBrowserSource('https://example.com');
+  // The user navigates within the page (a link / the URL bar): the view reports
+  // the new URL up, and the source quietly tracks it (no fan-out / view emit).
+  spine.setBrowserSourceUrl(id, 'https://example.com/deep/page');
+  assert.equal(wireLeaves(spine.paneSnapshot(0))[0].state.url, 'https://example.com/deep/page',
+    'the data-source now carries the navigated URL');
+  // A saved workspace therefore restores the page the user is ON, not the opener.
+  const blob = spine.serializeWindow(0);
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const after = wireLeaves(spine.paneSnapshot(0)).find((l) => l.viewKind === 'browser');
+  assert.equal(after.state.url, 'https://example.com/deep/page', 'restored at the navigated URL');
+});
+
+test('setBrowserSourceUrl ignores a bad id / non-browser source / empty url', () => {
+  const { spine } = makeSpine('seed', 'scratch.txt');
+  const id = spine.openBrowserSource('https://example.com');
+  spine.setBrowserSourceUrl('nope', 'https://evil.example'); // unknown id → no-op
+  spine.setBrowserSourceUrl(id, '');                          // empty url → keep current
+  assert.equal(wireLeaves(spine.paneSnapshot(0))[0].state.url, 'https://example.com',
+    'a bad id / empty url leaves the URL untouched');
+});
+
 test('find-file of an already-open file REUSES its buffer (no name<2>; shared across windows)', () => {
   const files = { '/a/b.md': { text: '# heading\n', name: 'b.md' } };
   const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
@@ -739,7 +1162,7 @@ test('find-file of an already-open file REUSES its buffer (no name<2>; shared ac
   assert.equal(spine.currentBufferIdOf(1), firstId, 'the second window shows the shared buffer');
 });
 
-test('switch-to-buffer moves the active client between buffers, keeping cursor', () => {
+test('switch-view moves the active client between buffers, keeping cursor', () => {
   const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
   const { spine } = makeSpine('alpha beta', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
@@ -786,13 +1209,13 @@ test('bufferListRecords is per-window: a window shows only its OWN buffers', () 
 // channel itself is provider-agnostic — these prove it on buffers, and the
 // stale-id guard proves the round-trip is robust to a superseded picker.
 
-test('list-buffers opens a generic PICKER over the open buffers', () => {
+test('list-views opens a generic PICKER over the open buffers', () => {
   const files = { '/x.js': { text: 'const x = 1;\n', name: 'x.js' } };
   const { spine, log } = makeSpine('alpha', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
   });
   spine.visitFile('/x.js'); // now two buffers; active client on x.js
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   // The command suspended on a PICKER (not the minibuffer): one open request.
   assert.equal(log.pickerOpens.length, 1);
   assert.equal(log.minibufferOpens.length, 0);
@@ -818,7 +1241,7 @@ test('PICKER round-trip: choosing a buffer row switches the window to it', () =>
   spine.visitFile('/x.js'); // active client now on x.js
   assert.equal(spine.buffer.name, 'x.js');
   // Open the picker, then deliver a choice of the SEED buffer's id.
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   const req = log.pickerOpens[0];
   const seedRow = req.rows.find((r) => r.value === seedId);
   assert.ok(seedRow, 'the seed buffer is a row');
@@ -839,7 +1262,7 @@ test('PICKER cancel resumes the command with nil and leaves the window put', () 
   });
   spine.visitFile('/x.js');
   assert.equal(spine.buffer.name, 'x.js');
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   const req = log.pickerOpens[0];
   const cancelled = spine.cancelPicker(req.id);
   assert.equal(cancelled, true);
@@ -855,7 +1278,7 @@ test('a stale PICKER reply (wrong id) is dropped, not resumed', () => {
   });
   const seedId = spine.currentBufferIdOf(0);
   spine.visitFile('/x.js');
-  spine.runCommand('list-buffers');
+  spine.runCommand('list-views');
   const req = log.pickerOpens[0];
   // A reply tagged with a DIFFERENT (stale) picker id must be ignored.
   assert.equal(spine.deliverPicker(seedId, 'picker-999'), false);
@@ -927,6 +1350,15 @@ test('viewState reports the major-mode name + math-preview-active flag', () => {
   assert.equal(spine.viewStateOf(0).majorModeName, 'Markdown');
   assert.equal(spine.viewStateOf(0).mathPreviewActive, false);
 
+  // The mode MENU rides the VIEW too, computed server-side (the client's own
+  // interpreter is inert) so the macOS app menu can follow the buffer's mode.
+  const menu = spine.viewStateOf(0).modeMenu;
+  assert.ok(menu, 'the server computes a mode menu for a text buffer');
+  assert.equal(menu.label, 'Markdown', 'the menu is for the focused buffer mode');
+  assert.ok(Array.isArray(menu.entries) && menu.entries.length > 0,
+    'the menu carries the mode keymap entries');
+  assert.ok(Array.isArray(menu.sections), 'and the structured sections');
+
   spine.runCommand('toggle-math-preview'); // enable on this buffer
   assert.equal(spine.viewStateOf(0).mathPreviewActive, true,
     'the server reports math-preview-mode on once toggled');
@@ -935,7 +1367,7 @@ test('viewState reports the major-mode name + math-preview-active flag', () => {
   assert.equal(spine.viewStateOf(0).mathPreviewActive, false);
 });
 
-test('kill-buffer removes the active buffer and re-homes the client', () => {
+test('kill-view removes the active buffer and re-homes the client', () => {
   const files = { '/x.js': { text: 'x', name: 'x.js' } };
   const { spine } = makeSpine('seed', 'scratch.txt', {
     openFile: (p) => files[p] ?? null,
@@ -948,7 +1380,7 @@ test('kill-buffer removes the active buffer and re-homes the client', () => {
   assert.equal(spine.buffer.name, 'scratch.txt');
 });
 
-test('kill-buffer refuses to kill the only buffer', () => {
+test('kill-view refuses to kill the only buffer', () => {
   const { spine } = makeSpine('only', 'scratch.txt');
   spine.setActiveClient(0);
   spine.killActiveBuffer();
@@ -1074,7 +1506,7 @@ test('sort-lines: an interactive region command sorts the selected lines', () =>
   const { spine } = makeSpine('banana\napple\ncherry');
   spine.buffer.moveTo(0);
   spine.handleKey('C-space');
-  spine.handleKey('M-greater'); // select to end of buffer
+  spine.handleKey('M-S-period'); // select to end of buffer
   spine.runCommand('sort-lines'); // interactive region → uses the selection
   assert.equal(spine.buffer.text, 'apple\nbanana\ncherry');
 });
@@ -1407,7 +1839,7 @@ test('a recovered buffer with no disk baseline is conservatively dirty', () => {
 
 test('C-/ undoes the last edit through the real command (text + point)', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
-  spine.handleKey('M-greater'); // end of buffer
+  spine.handleKey('M-S-period'); // end of buffer
   for (const ch of 'XY') spine.handleKey(ch);
   assert.equal(spine.buffer.text, 'seedXY');
   spine.handleKey('C-slash'); // C-/ → undo
@@ -1418,7 +1850,7 @@ test('C-/ undoes the last edit through the real command (text + point)', () => {
 
 test('C-x u is also bound to undo', () => {
   const { spine } = makeSpine('ab', 'scratch.txt');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   spine.handleKey('c');
   assert.equal(spine.buffer.text, 'abc');
   spine.handleKey('C-x');
@@ -1428,7 +1860,7 @@ test('C-x u is also bound to undo', () => {
 
 test('redo (C-S-/) reapplies an undone edit', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   spine.handleKey('Z');
   spine.handleKey('C-slash'); // undo → 'seed'
   assert.equal(spine.buffer.text, 'seed');
@@ -1439,7 +1871,7 @@ test('redo (C-S-/) reapplies an undone edit', () => {
 
 test('undo/redo set the history-op flag (consumeHistoryOp) for the server resync', () => {
   const { spine } = makeSpine('seed', 'scratch.txt');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   spine.handleKey('Q');
   // An ordinary self-insert is NOT a history op.
   assert.equal(spine.consumeHistoryOp(), false);
@@ -1454,7 +1886,7 @@ test('the ● dirty flag agrees with undo against the saved baseline', () => {
   // Baseline = the seed text (a path-less buffer baselines its initial text).
   const { spine } = makeSpine('seed', 'scratch.txt');
   assert.equal(spine.activeModified, false, 'clean at the start');
-  spine.handleKey('M-greater');
+  spine.handleKey('M-S-period');
   for (const ch of 'AB') spine.handleKey(ch); // 'seedAB' → dirty
   assert.equal(spine.activeModified, true);
   assert.ok(spine.viewState().modeline.startsWith('●'), 'dirty shows ●');
@@ -1697,4 +2129,766 @@ test('loadWindowLayout resets the window open-set to exactly its restored buffer
   assert.equal(spine.loadWindowLayout(0, blob), true);
   const shownPaths = spine.bufferListRecords(0).map((r) => r.filePath).filter(Boolean);
   assert.deepEqual(shownPaths, ['/tmp/a.js'], 'only the restored buffer remains in the open-set');
+});
+
+test('loadWindowLayout preserves pane ids across a serialize/restore round-trip', () => {
+  // Stable pane identity: a serialized layout carries its leaf/split ids, and a
+  // restore re-creates them verbatim (so a stored target — e.g. a dir-tree's
+  // editing-pane openTargetPaneId — still resolves after a session restore
+  // instead of pointing at a since-re-minted leaf).
+  const files = { '/tmp/a.js': { text: 'a', name: 'a.js' }, '/tmp/b.js': { text: 'b', name: 'b.js' } };
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const idA = spine.visitFile('/tmp/a.js');
+  const idB = spine.visitFile('/tmp/b.js');
+  spine.switchClientToBuffer(0, idA);
+  spine.paneModelOf(0).split('horizontal', 0.4, 'after');
+  spine.switchClientToBuffer(0, idB);
+
+  const blob = spine.serializeWindow(0);
+  assert.ok(typeof blob.id === 'string' && blob.id !== '', 'the split blob carries an id');
+  assert.ok(typeof blob.first.id === 'string', 'a leaf blob carries an id');
+  const idsBefore = spine.paneModelOf(0).leaves().map((l) => l.id).sort();
+
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const idsAfter = spine.paneModelOf(0).leaves().map((l) => l.id).sort();
+  assert.deepEqual(idsAfter, idsBefore, 'leaf ids are identical after the restore');
+  assert.deepEqual(spine.serializeWindow(0), blob, 'serialize ∘ load is a fixed point (ids included)');
+});
+
+test('visitFile into a NONEXISTENT target leaf falls back to the editing leaf', () => {
+  // Regression: a stale/mismatched target id (a client held one across a re-mint)
+  // must not fall through to focusPane's no-op and open the file in the focused
+  // SIDEBAR. It degrades to the editing (text) leaf — the dir-tree open-in-ID is
+  // fail-safe.
+  const files = {
+    '/proj': { directory: true, kind: 'directory-tree', name: 'proj', path: '/proj' },
+    '/proj/a.js': { text: 'const a = 1;\n', name: 'a.js', path: '/proj/a.js' },
+    '/proj/b.js': { text: 'const b = 2;\n', name: 'b.js', path: '/proj/b.js' },
+  };
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  spine.visitFile('/proj');
+  spine.visitFile('/proj/a.js');
+  // Restore a  dir-tree | editing-tabline  layout (the project shape).
+  const blob = {
+    kind: 'split', orientation: 'horizontal', ratio: 0.2,
+    first: { kind: 'leaf', view: { kind: 'directory-tree', path: '/proj' } },
+    second: {
+      kind: 'leaf', focused: true,
+      view: { kind: 'tabline', active: 0, tabs: [{ kind: 'text', path: '/proj/a.js', point: 0, mark: null }] },
+    },
+  };
+  assert.equal(spine.loadWindowLayout(0, blob), true);
+  const model = spine.paneModelOf(0);
+  const treeLeaf = model.leaves().find((l) => spine.isDataSource(model.stateOf(l.id)?.bufferId));
+  const tablineLeaf = model.leaves().find((l) => model.stateOf(l.id)?.tabline);
+  model.focusPane(treeLeaf.id); // activating a file in the tree focuses it
+  const treeSourceBefore = model.stateOf(treeLeaf.id).bufferId;
+
+  spine.visitFile('/proj/b.js', 'pane-leaf-DOES-NOT-EXIST');
+
+  assert.equal(model.stateOf(treeLeaf.id).bufferId, treeSourceBefore, 'the dir-tree pane is untouched');
+  assert.equal(model.focusedId, tablineLeaf.id, 'the open landed in (and focused) the editing tabline');
+});
+
+test('loadWindowLayout clamps a restored point past a since-shortened file', () => {
+  // Regression (the "MSc dissertation feedback" freeze): a session saved with the
+  // cursor at offset N, then the file shrank on disk to < N. Restoring the stale
+  // offset must NOT reach positionAt out of range (which threw and aborted the
+  // window's view send → painted-but-frozen, dead keys). The point clamps to the
+  // file's current end, and viewState — the throwing path — succeeds.
+  const files = { '/tmp/short.md': { text: 'abc', name: 'short.md' } }; // length 3
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  spine.visitFile('/tmp/short.md');
+  const blob = {
+    kind: 'leaf',
+    focused: true,
+    view: { kind: 'text', path: '/tmp/short.md', point: 999, mark: 500 },
+  };
+  assert.equal(spine.loadWindowLayout(0, blob), true, 'layout restored');
+  assert.doesNotThrow(() => spine.viewState(), 'viewState must not throw on a stale offset');
+  const vs = spine.viewState();
+  assert.equal(vs.point, 3, 'point clamped to the file length');
+  assert.equal(vs.mark, 3, 'mark clamped to the file length');
+  assert.equal(vs.cursorLine, 1, 'the clamped cursor resolves to a real line');
+});
+
+test('loadWindowLayout clamps a stale point inside a restored tabline (MSc freeze)', () => {
+  // The exact shape of the frozen session: a tabline leaf whose active text tab
+  // carries a point past the file's current length.
+  const files = { '/tmp/feedback.md': { text: 'x'.repeat(213), name: 'feedback.md' } };
+  const { spine } = makeSpine('scratch', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  spine.visitFile('/tmp/feedback.md');
+  const blob = {
+    kind: 'leaf',
+    focused: true,
+    view: {
+      kind: 'tabline',
+      active: 0,
+      tabs: [{ kind: 'text', path: '/tmp/feedback.md', point: 215, mark: null }],
+    },
+  };
+  assert.equal(spine.loadWindowLayout(0, blob), true, 'tabline layout restored');
+  assert.doesNotThrow(() => spine.viewState(), 'viewState must not throw');
+  assert.equal(spine.viewState().point, 213, 'the tab point clamped to the file length');
+});
+
+// --- Notebook: server-side cell eval (M-x notebook-cells) --------------------
+// The renderer can't eval (CSP forbids unsafe-eval); cells run HERE in the
+// spine's Node context and return a SERIALIZABLE result the client materializes.
+
+test('runNotebookCell evaluates a value cell → ok + serializable descriptor', async () => {
+  const { spine } = makeSpine('');
+  const r = await spine.runNotebookCell('1 + 1');
+  assert.equal(r.state, 'ok');
+  assert.equal(r.error, null);
+  // A number inspects to a text descriptor "2" (serializable — crosses the wire).
+  assert.ok(r.descriptor && (r.descriptor.text === '2' || r.descriptor.value === 2),
+    'descriptor represents the value 2');
+});
+
+test('runNotebookCell captures console output', async () => {
+  const { spine } = makeSpine('');
+  const r = await spine.runNotebookCell('console.log("hi"); 42');
+  assert.equal(r.state, 'ok');
+  assert.ok(r.logs.some((l) => String(l.text).includes('hi')), 'console.log captured');
+});
+
+test('runNotebookCell supports top-level await (AsyncFunction)', async () => {
+  const { spine } = makeSpine('');
+  const r = await spine.runNotebookCell('await Promise.resolve(7)');
+  assert.equal(r.state, 'ok');
+  assert.ok(r.descriptor.text === '7' || r.descriptor.value === 7);
+});
+
+test('runNotebookCell reports a thrown error instead of throwing', async () => {
+  const { spine } = makeSpine('');
+  const r = await spine.runNotebookCell('throw new Error("boom")');
+  assert.equal(r.state, 'error');
+  assert.equal(r.error.message, 'boom');
+});
+
+// --- cross-cell shared scope (Jupyter-style; the notebook-cells view) --------
+// A sessionId gives a notebook a PERSISTENT scope: a cell's top-level
+// declarations flow to later cells in the same session, and only that session.
+
+const num = (d) => (d && (d.text != null ? String(d.text) : String(d.value)));
+
+test('runNotebookCell: top-level const flows to a later cell in the same session', async () => {
+  const { spine } = makeSpine('');
+  const a = await spine.runNotebookCell('const total = 21;\ntotal', 'sessX');
+  assert.equal(a.state, 'ok');
+  const b = await spine.runNotebookCell('total * 2', 'sessX');
+  assert.equal(b.state, 'ok');
+  assert.equal(num(b.descriptor), '42');
+});
+
+test('runNotebookCell: a top-level function persists across cells', async () => {
+  const { spine } = makeSpine('');
+  await spine.runNotebookCell('function dbl(x) { return x * 2 }', 'sessF');
+  const r = await spine.runNotebookCell('dbl(20) + 2', 'sessF');
+  assert.equal(r.state, 'ok');
+  assert.equal(num(r.descriptor), '42');
+});
+
+test('runNotebookCell: scopes are isolated across sessions', async () => {
+  const { spine } = makeSpine('');
+  await spine.runNotebookCell('const secret = 99;\nsecret', 'sessA');
+  const r = await spine.runNotebookCell('typeof secret', 'sessB');
+  assert.equal(r.state, 'ok');
+  assert.match(num(r.descriptor), /undefined/);
+});
+
+test('runNotebookCell: with NO session id, cells stay isolated (no leak)', async () => {
+  const { spine } = makeSpine('');
+  await spine.runNotebookCell('const loose = 5;\nloose');
+  const r = await spine.runNotebookCell('typeof loose');
+  assert.equal(r.state, 'ok');
+  assert.match(num(r.descriptor), /undefined/);
+});
+
+// --- B4: latex-compile port (run-process! + the compile/view loop) ---------
+// The spine is a Node utilityProcess, so run-process! spawns build children
+// directly and applies the on-exit Lisp procedure async; latex-compile.lisp
+// rides that seam. These exercise the real spawn + the compile flow's dock
+// directives + the latex-view pane split, all server-side.
+
+/** Poll until PRED() is truthy or the budget runs out (async spawn waits). */
+async function until(pred, ms = 4000, step = 20) {
+  for (let waited = 0; waited < ms; waited += step) {
+    if (pred()) return true;
+    await new Promise((r) => setTimeout(r, step));
+  }
+  return pred();
+}
+
+test('B4 run-process!: spawns a child and delivers {:stdout :stderr :code} to the Lisp on-exit', async () => {
+  const { spine } = makeSpine('');
+  spine.interpreter.evaluate('(define *rp* nil)');
+  spine.interpreter.evaluate(
+    `(run-process! "node" (list "-e" "process.stdout.write('OUT'); process.stderr.write('ERR'); process.exit(2)") nil (lambda (r) (set! *rp* r)))`
+  );
+  await until(() => spine.interpreter.evaluate('(nil? *rp*)') === false);
+  assert.equal(spine.interpreter.evaluate('(get *rp* :stdout "")'), 'OUT');
+  assert.equal(spine.interpreter.evaluate('(get *rp* :stderr "")'), 'ERR');
+  assert.equal(spine.interpreter.evaluate('(get *rp* :code -1)'), 2);
+});
+
+test('B4 run-process!: a missing program reports :code nil + ENOENT in stderr (fallback trigger)', async () => {
+  const { spine } = makeSpine('');
+  spine.interpreter.evaluate('(define *rp2* nil)');
+  spine.interpreter.evaluate(
+    `(run-process! "no-such-program-zzz" (list) nil (lambda (r) (set! *rp2* r)))`
+  );
+  await until(() => spine.interpreter.evaluate('(nil? *rp2*)') === false);
+  assert.equal(spine.interpreter.evaluate('(nil? (get *rp2* :code nil))'), true);
+  assert.equal(spine.interpreter.evaluate('(-latex-spawn-failed? *rp2*)'), true);
+});
+
+test('B4 latex-compile: saves, runs the build, and writes *TeX output*/*TeX errors* dock tabs', async () => {
+  const { spine, log } = makeSpine('\\documentclass{article}', 'paper.tex', {
+    initialPath: '/tmp/paper.tex',
+    openFile: (p) => (p.endsWith('.tex') ? { text: '% tex', name: 'paper.tex', path: p } : null),
+  });
+  // Use `node` as a deterministic stand-in for the LaTeX toolchain (no latexmk
+  // needed in CI): it prints a line and exits 0; the .tex basename is appended
+  // as an ignored extra arg. The compile flow still parses + tabs the output.
+  spine.interpreter.evaluate(
+    `(custom-apply! (quote *latex-command*) (list "node" "-e" "process.stdout.write('build ok')"))`
+  );
+  spine.interpreter.evaluate('(run-command (quote latex-compile))');
+  const sawOutput = () =>
+    log.directives.some((d) => d.name === 'utility-panel-set' && d.args[0] === 'tex-output');
+  await until(sawOutput, 6000);
+  assert.ok(log.saves.length >= 1, 'saved the buffer before building');
+  assert.ok(
+    log.directives.some((d) => d.name === 'utility-panel-open' && d.args[1] === 'tex-output'),
+    'opened the *TeX output* dock tab'
+  );
+  assert.ok(sawOutput(), 'wrote the build log to *TeX output*');
+  assert.ok(
+    log.directives.some((d) => d.name === 'utility-panel-set' && d.args[0] === 'tex-errors'),
+    'wrote diagnostics to *TeX errors*'
+  );
+});
+
+test('B4 open-file-in-split!: splits the focused pane and opens the pdf in the new leaf', () => {
+  const { spine } = makeSpine('% tex', 'paper.tex', {
+    initialPath: '/tmp/paper.tex',
+    openFile: (p) =>
+      p.endsWith('.pdf') ? { media: true, kind: 'pdf', name: 'paper.pdf', path: p } : null,
+  });
+  spine.interpreter.evaluate('(open-file-in-split! "/tmp/paper.pdf" (quote horizontal) (quote after))');
+  const snap = spine.paneSnapshot(0);
+  assert.equal(snap.kind, 'split');
+  assert.equal(snap.orientation, 'horizontal');
+  // source on the left (unfocused), the freshly-opened pdf on the right (focused).
+  assert.equal(snap.first.name, 'paper.tex');
+  assert.equal(snap.second.viewKind, 'pdf');
+  assert.equal(snap.second.focused, true);
+});
+
+test('B4 view-list: surfaces an open pdf data-source so latex-view can find it (reload vs split)', () => {
+  const { spine } = makeSpine('% tex', 'paper.tex', {
+    initialPath: '/tmp/paper.tex',
+    openFile: (p) =>
+      p.endsWith('.pdf') ? { media: true, kind: 'pdf', name: 'paper.pdf', path: p } : null,
+  });
+  // not open yet
+  assert.equal(spine.interpreter.evaluate('(nil? (-latex-find-view-by-file "/tmp/paper.pdf"))'), true);
+  spine.interpreter.evaluate('(open-file-in-split! "/tmp/paper.pdf" (quote horizontal) (quote after))');
+  // now open: -latex-find-view-by-file matches it via view-list + view-file-path
+  assert.equal(spine.interpreter.evaluate('(nil? (-latex-find-view-by-file "/tmp/paper.pdf"))'), false);
+});
+
+// --- B4: project port (find-project / open-project-at! -> a NEW window) -----
+// Each project now opens in its OWN window (the old in-renderer path reconfigured
+// the single window in place because it couldn't). open-project-at! validates the
+// directory + raises onOpenProjectWindow; the server spawns a window and assembles
+// the 3-column Nova layout (dir-tree | editing | bookmark) on its HELLO via
+// spine.loadProjectWindow.
+
+function projectSpine() {
+  return makeSpine('', 'home.txt', {
+    initialPath: '/home/home.txt',
+    openFile: (path) => {
+      if (path === '/proj/btt' || path === '/proj/btt/') {
+        return { directory: true, kind: 'directory-tree', name: 'btt', path: '/proj/btt' };
+      }
+      if (path.endsWith('.txt')) return { text: 'hi', name: path.split('/').pop(), path };
+      return null;
+    },
+  });
+}
+
+test('B4 project: commands registered + find-project minibuffer helpers resolve', () => {
+  const { spine } = projectSpine();
+  for (const c of ['find-project', 'open-project', 'close-project', 'project-chooser']) {
+    assert.notEqual(spine.interpreter.evaluate(`(member "${c}" (registered-command-names))`), false);
+  }
+  assert.equal(typeof spine.interpreter.evaluate('(-initial-find-file-value)'), 'string');
+  assert.equal(spine.interpreter.evaluate('(-expand-tilde "/proj/btt")'), '/proj/btt');
+});
+
+test('B4 project: open-project-at! validates the dir + raises onOpenProjectWindow', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project-at! "/proj/btt")');
+  assert.equal(log.projectWindows.length, 1);
+  assert.equal(log.projectWindows[0].root, '/proj/btt');
+  // a non-directory is rejected — no window spawn
+  spine.interpreter.evaluate('(open-project-at! "/home/home.txt")');
+  assert.equal(log.projectWindows.length, 1);
+});
+
+test('B4 project: loadProjectWindow assembles the 3-column layout in a spawned window', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project-at! "/proj/btt")');
+  const cfg = log.projectWindows[0];
+  const idx = spine.addClientView(); // simulate the freshly-spawned window
+  assert.equal(spine.loadProjectWindow(idx, cfg), true);
+  const snap = spine.paneSnapshot(idx);
+  assert.equal(snap.kind, 'split');
+  assert.equal(snap.orientation, 'horizontal');
+  assert.equal(snap.first.viewKind, 'directory-tree'); // left column
+  assert.equal(snap.second.kind, 'split'); // right block = editing | bookmark
+  const leaves = [];
+  (function walk(n) { if (!n) return; if (n.kind === 'leaf') leaves.push(n); else { walk(n.first); walk(n.second); } })(snap);
+  assert.equal(leaves.length, 3);
+  assert.ok(leaves.some((l) => l.viewKind === 'directory-tree'), 'directory-tree leaf');
+  assert.ok(leaves.some((l) => l.viewKind === 'bookmark'), 'bookmark outline leaf');
+  const editing = leaves.find((l) => l.viewKind !== 'directory-tree' && l.viewKind !== 'bookmark');
+  assert.ok(editing && editing.focused === true, 'the editing pane is focused');
+});
+
+// --- B4: project Stage 2 — restore saved files + close-project save/close ---
+
+test('B4 project Stage 2: a project window restores its saved files into the middle tabline', () => {
+  const { spine } = projectSpine();
+  // mirror server.js: open the project's saved files, then assemble the window.
+  const idx = spine.addClientView();
+  spine.setActiveClient(idx);
+  spine.visitFile('/proj/a.txt');
+  spine.visitFile('/proj/b.txt');
+  assert.equal(
+    spine.loadProjectWindow(idx, { root: '/proj/btt', files: ['/proj/a.txt', '/proj/b.txt'], active: '/proj/b.txt' }),
+    true
+  );
+  const snap = spine.paneSnapshot(idx);
+  const leaves = [];
+  (function walk(n) { if (!n) return; if (n.kind === 'leaf') leaves.push(n); else { walk(n.first); walk(n.second); } })(snap);
+  const tab = leaves.find((l) => Array.isArray(l.tabs));
+  assert.ok(tab, 'middle is a tabline');
+  const names = tab.tabs.map((t) => t.name);
+  assert.ok(names.includes('a.txt') && names.includes('b.txt'), `tabline holds both files: ${JSON.stringify(names)}`);
+});
+
+test('B4 project Stage 2: close-project! saves only the project files + closes the window', () => {
+  const { spine, log } = projectSpine();
+  const idx = spine.addClientView();
+  spine.setActiveClient(idx);
+  spine.visitFile('/proj/a.txt');
+  spine.visitFile('/proj/b.txt');
+  spine.loadProjectWindow(idx, { root: '/proj/btt', files: ['/proj/a.txt', '/proj/b.txt'], active: '/proj/b.txt' });
+  spine.setActiveClient(idx);
+  spine.interpreter.evaluate('(close-project!)');
+  assert.equal(log.projectCloses.length, 1);
+  const c = log.projectCloses[0];
+  assert.equal(c.root, '/proj/btt');
+  assert.equal(c.windowId, idx);
+  // ONLY the project's files — the home seed buffer must NOT leak into project.json
+  assert.deepEqual([...c.files].sort(), ['/proj/a.txt', '/proj/b.txt']);
+  assert.ok(!c.files.includes('/home/home.txt'), 'home buffer did not leak into the project save');
+});
+
+test('B4 project Stage 2: close-project! in a non-project window is a no-op', () => {
+  const { spine, log } = projectSpine();
+  spine.setActiveClient(0); // the home window (not a project)
+  spine.interpreter.evaluate('(close-project!)');
+  assert.equal(log.projectCloses.length, 0);
+});
+
+// --- B4: project Stage 3 — open-project (dialog) + chooser route to a window -
+
+test('B4 project Stage 3: open-project! / open-project-chooser! emit renderer directives', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project!)');
+  assert.ok(log.directives.some((d) => d.name === 'open-project-dialog'), 'open-project! → open-project-dialog');
+  log.directives.length = 0;
+  spine.interpreter.evaluate('(open-project-chooser!)');
+  assert.ok(log.directives.some((d) => d.name === 'open-project-chooser'), 'open-project-chooser! → open-project-chooser');
+});
+
+test('B4 project Stage 3: spine.openProjectAt (the PROJECT_OPEN path) opens a project window', () => {
+  const { spine, log } = projectSpine();
+  assert.equal(spine.openProjectAt('/proj/btt'), true);
+  assert.equal(log.projectWindows.length, 1);
+  assert.equal(log.projectWindows[0].root, '/proj/btt');
+  // a non-directory path is rejected — no window
+  assert.equal(spine.openProjectAt('/home/home.txt'), false);
+  assert.equal(log.projectWindows.length, 1);
+});
+
+test('B4 project Stage 3: opening a project records it in the central index (chooser grid)', () => {
+  const { spine, log } = projectSpine();
+  spine.interpreter.evaluate('(open-project-at! "/proj/btt")');
+  const remember = log.directives.find((d) => d.name === 'remember-project');
+  assert.ok(remember, 'emits a remember-project directive');
+  assert.equal(remember.args[0], '/proj/btt');
+});
+
+// --- B4: face-info (C-h F / C-h C-f) — the render-side tree-sitter round-trip --
+// describe-face-at-point / highlight-construct-at-point fetch render-side
+// tree-sitter data via with-tree-sitter-info (a tree-sitter-query directive →
+// the renderer replies → deliverTreeSitterInfo resumes), then run server-side.
+
+test('B4 face-info: describe-face-at-point suspends on a tree-sitter-query, then opens a doc page', () => {
+  const { spine, log } = makeSpine('function foo() {}', 'test.js', { initialPath: '/t/test.js' });
+  spine.buffer.moveTo(3); // inside `function`
+  spine.interpreter.evaluate('(run-command (quote describe-face-at-point))');
+  const q = log.directives.find((d) => d.name === 'tree-sitter-query');
+  assert.ok(q, 'emits a tree-sitter-query directive');
+  assert.equal(q.args[0], 3, 'carries point');
+  // the renderer replies with a covering capture → a *Face at point* doc opens
+  spine.deliverTreeSitterInfo({
+    lang: 'javascript', captures: [[0, 8, 'keyword'], [9, 12, 'function']],
+    node: null, colors: { keyword: '#c594c5' },
+  });
+  const snap = JSON.stringify(spine.paneSnapshot(0));
+  assert.ok(snap.includes('"viewKind":"doc"'), 'a doc data-source leaf is shown');
+  assert.ok(snap.includes('Face at point'), 'the doc page is named "Face at point"');
+  // the resolved colour came from the renderer-provided stash
+  assert.equal(spine.interpreter.evaluate('(face-color-for "keyword")'), '#c594c5');
+});
+
+test('B4 face-info: describe-face-at-point falls back to node info when no capture covers point', () => {
+  const { spine, log } = makeSpine('abc def', 'test.js', { initialPath: '/t/test.js' });
+  spine.buffer.moveTo(0);
+  spine.interpreter.evaluate('(run-command (quote describe-face-at-point))');
+  assert.ok(log.directives.some((d) => d.name === 'tree-sitter-query'));
+  spine.deliverTreeSitterInfo({
+    lang: 'javascript', captures: [[5, 9, 'keyword']], // doesn't cover 0
+    node: { type: 'identifier', start: 0, end: 3, ancestors: ['program'] }, colors: {},
+  });
+  assert.ok(JSON.stringify(spine.paneSnapshot(0)).includes('Face at point'),
+    'opens the no-capture fallback doc page from the node info');
+});
+
+test('B4 face-info: highlight-construct-at-point round-trips then prompts for a face', () => {
+  const { spine, log } = makeSpine('abc', 'test.js', { initialPath: '/t/test.js' });
+  spine.interpreter.evaluate('(run-command (quote highlight-construct-at-point))');
+  assert.ok(log.directives.some((d) => d.name === 'tree-sitter-query'), 'C-h C-f emits tree-sitter-query');
+  spine.deliverTreeSitterInfo({
+    lang: 'javascript', captures: [],
+    node: { type: 'identifier', start: 0, end: 3, ancestors: [] }, colors: {},
+  });
+  assert.ok(log.minibufferOpens.some((p) => p.includes('Face for `identifier`')),
+    `prompts for the face (${JSON.stringify(log.minibufferOpens)})`);
+});
+
+test('B4 face-info: describe-face-at-point reports when there is no tree-sitter language', () => {
+  const { spine, log } = makeSpine('plain text', 'notes.txt', { initialPath: '/t/notes.txt' });
+  spine.interpreter.evaluate('(run-command (quote describe-face-at-point))');
+  spine.deliverTreeSitterInfo({ lang: null, captures: [], node: null, colors: {} });
+  // no doc page opened; the focused leaf is still the text buffer
+  assert.ok(!JSON.stringify(spine.paneSnapshot(0)).includes('"viewKind":"doc"'),
+    'no doc page when the buffer has no tree-sitter language');
+});
+
+// --- B4: latex error-nav resolves relative diagnostic paths (live-found bug) --
+// TeX engines report file paths RELATIVE to the build dir (e.g. ./paper.tex);
+// the spine's file-exists? statSyncs against its own cwd, so latex-next-error's
+// guard failed and never jumped. -latex-resolve-diag-file resolves against the
+// master file's directory.
+
+test('B4 latex-next-error: resolves a relative diagnostic path + jumps to the line', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tex-'));
+  const file = join(dir, 'paper.tex');
+  const text = Array.from({ length: 14 }, (_, i) => `line ${i + 1}`).join('\n');
+  writeFileSync(file, text);
+  try {
+    const { spine } = makeSpine(text, 'paper.tex', {
+      initialPath: file,
+      openFile: (p) => (p === file ? { text, name: 'paper.tex', path: file } : null),
+    });
+    const ev = (s) => spine.interpreter.evaluate(s);
+    // relative paths resolve against the master dir; absolute pass through
+    assert.equal(ev('(-latex-resolve-diag-file "./paper.tex")'), file);
+    assert.equal(ev(`(-latex-resolve-diag-file "${file}")`), file);
+    assert.equal(ev('(nil? (-latex-resolve-diag-file nil))'), true); // a nil file stays nil
+    // a relative-path diagnostic at line 10 → latex-next-error jumps there
+    ev('(set! *latex-error-list* (list {:file "./paper.tex" :line 10 :message "oops"}))');
+    ev('(set! *latex-error-index* -1)');
+    spine.buffer.moveTo(0);
+    ev('(latex-next-error)');
+    assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 9, 'jumped to line 10 (0-based 9)');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- B4: find-file / find-project seed the prompt with a sensible directory ---
+// (live-found) The minibuffer opens pre-filled at the current file's directory,
+// or the home directory for a scratch — so TAB immediately lists somewhere
+// useful. open-completing-minibuffer!'s 2nd arg is forwarded to the client via
+// minibufferState.value.
+
+test('B4 find-file: seeds the current file\'s directory', () => {
+  const { spine, log } = makeSpine('x', 'paper.tex', { initialPath: '/Users/jalex/Articles/paper.tex' });
+  spine.interpreter.evaluate('(run-command (quote find-file))');
+  assert.equal(log.minibufferOpens[0], 'Find file: ');
+  assert.equal(log.minibufferSeeds[0], '/Users/jalex/Articles/');
+});
+
+test('B4 find-file: seeds the home directory from a scratch buffer', () => {
+  const { spine, log } = makeSpine('x', '*scratch*'); // no initialPath
+  spine.interpreter.evaluate('(run-command (quote find-file))');
+  const home = spine.interpreter.evaluate('(home-directory)');
+  assert.equal(log.minibufferSeeds[0], `${home}/`);
+});
+
+test('B4 find-project: opens the "Open project: " prompt seeded at a sensible dir', () => {
+  const { spine, log } = makeSpine('x', 'main.txt', { initialPath: '/Users/jalex/Source/proj/main.txt' });
+  spine.interpreter.evaluate('(run-command (quote find-project))');
+  assert.equal(log.minibufferOpens[0], 'Open project: ');
+  assert.equal(log.minibufferSeeds[0], '/Users/jalex/Source/proj/');
+});
+
+// --- B0 config snapshot: renderer-consumed defcustoms pushed on connect -------
+// chromeDirectives() rides the HELLO push (server.js loops it after the
+// snapshot); folding the config snapshot in means the renderer caches config as
+// plain JS and reads it without its interpreter. (plans/B5-B7-TEARDOWN-AUDIT.md)
+
+/** The config-snapshot directive's parsed payload from chromeDirectives(). */
+function configSnapshot(spine) {
+  const dirs = spine.chromeDirectives();
+  const entry = dirs.find((d) => d.name === 'config-snapshot');
+  assert.ok(entry, 'chromeDirectives includes a config-snapshot');
+  assert.equal(entry.args.length, 1, 'config-snapshot carries one JSON arg');
+  return JSON.parse(entry.args[0]);
+}
+
+test('B0 config-snapshot: carries every renderer-consumed defcustom', () => {
+  const cfg = configSnapshot(makeSpine('').spine);
+  for (const v of [
+    '*markdown-interpreter*', '*pdf-restore-default*', '*autosave-recovery*',
+    '*autosave-recovery-interval*', '*jukebox-track-format*',
+    '*directory-tree-open-target*', '*pane-focus-border*',
+    '*markdown-preview-follow-cursor*',
+  ]) {
+    assert.ok(Object.prototype.hasOwnProperty.call(cfg, v), `snapshot includes ${v}`);
+  }
+});
+
+test('B0 config-snapshot: values are plain, clone-safe JS of the right type', () => {
+  const cfg = configSnapshot(makeSpine('').spine);
+  // Defaults prove value extraction; a symbol :choice becomes its name string.
+  assert.equal(cfg['*markdown-interpreter*'], 'marked');
+  assert.equal(cfg['*autosave-recovery-interval*'], 1000);
+  assert.equal(typeof cfg['*autosave-recovery-interval*'], 'number');
+  assert.equal(cfg['*pdf-restore-default*'], true);
+  assert.equal(cfg['*autosave-recovery*'], true);
+  assert.equal(cfg['*directory-tree-open-target*'], 'editing-pane'); // symbol → name
+  assert.equal(cfg['*pane-focus-border*'], 'auto');                  // symbol → name
+  // No raw Lisp objects survive (every value is a JS primitive).
+  for (const val of Object.values(cfg)) {
+    assert.ok(val === null || ['boolean', 'number', 'string'].includes(typeof val),
+      `clone-safe primitive, got ${typeof val}`);
+  }
+});
+
+test('B0 config-snapshot: reflects a customized value (not just the default)', () => {
+  const { spine } = makeSpine('');
+  spine.interpreter.evaluate('(custom-apply! (quote *markdown-interpreter*) "pandoc")');
+  assert.equal(configSnapshot(spine)['*markdown-interpreter*'], 'pandoc');
+});
+
+// --- L6: config-apply carries the plain JS value, not Lisp source ------------
+// A renderer-config defcustom's :on-change calls push-renderer-config!, which
+// now pushes config-apply as [varName, JSON(value)] — clone-safe plain JS the
+// renderer merges straight into rendererConfig WITHOUT re-entering its (soon-
+// deleted) interpreter. (plans/B5-B7-TEARDOWN-AUDIT.md)
+
+/** The config-apply directives pushed for `varName` (most recent last). */
+function configApplies(log, varName) {
+  return log.directives.filter((d) => d.name === 'config-apply' && d.args[0] === varName);
+}
+
+test('L6 config-apply: a live string edit pushes the plain JS value (not Lisp source)', () => {
+  const { spine, log } = makeSpine('');
+  spine.interpreter.evaluate('(custom-apply! (quote *markdown-interpreter*) "pandoc")');
+  const d = configApplies(log, '*markdown-interpreter*').at(-1);
+  assert.ok(d, 'a config-apply was pushed to the connected window');
+  assert.deepEqual(d.ids, [0], 'pushed to window 0');
+  assert.strictEqual(JSON.parse(d.args[1]), 'pandoc', 'value arrives as plain JS via JSON');
+  // Regression: no Lisp custom-apply! source rides the wire anymore.
+  assert.ok(!d.args[1].includes('custom-apply!'), 'no Lisp source on the wire');
+});
+
+test('L6 config-apply: a boolean edit arrives as a JS boolean', () => {
+  const { spine, log } = makeSpine('');
+  spine.interpreter.evaluate('(custom-apply! (quote *pdf-restore-default*) #f)');
+  const d = configApplies(log, '*pdf-restore-default*').at(-1);
+  assert.ok(d, 'a config-apply was pushed');
+  assert.strictEqual(JSON.parse(d.args[1]), false);
+});
+
+test('L6 config-apply: a :choice symbol edit arrives as its name string', () => {
+  const { spine, log } = makeSpine('');
+  spine.interpreter.evaluate('(custom-apply! (quote *directory-tree-open-target*) (quote other-pane))');
+  const d = configApplies(log, '*directory-tree-open-target*').at(-1);
+  assert.ok(d, 'a config-apply was pushed');
+  assert.strictEqual(JSON.parse(d.args[1]), 'other-pane');
+});
+
+// --- mode menu: LaTeX's structured sections are server-side (Part 2 / Bug B) ---
+// latex-menu.lisp is now in SPINE_STDLIB, so the spine pushes the GROUPED LaTeX
+// menu (Compile/Insert/Fonts/Math/References/Navigation) instead of the flat
+// mode-menu-entries. Markdown/JMarkdown already register server-side.
+
+test('mode menu: LaTeX registers its 6 structured sections server-side', () => {
+  const { spine } = makeSpine('');
+  const count = spine.interpreter.evaluate(
+    '(if (nil? (mode-menu-sections-for "LaTeX")) 0 (length (mode-menu-sections-for "LaTeX")))'
+  );
+  assert.equal(count, 6, 'LaTeX has its 6 grouped sections (latex-menu.lisp loaded server-side)');
+});
+
+test('mode menu: the first LaTeX section is "Compile & View"', () => {
+  const { spine } = makeSpine('');
+  const label = spine.interpreter.evaluate('(car (car (mode-menu-sections-for "LaTeX")))');
+  assert.equal(label, 'Compile & View');
+});
+
+// --- L5: the REPL evaluates in the spine (round-trip) ------------------------
+// evaluateInRepl routes through spine.replEval, so the renderer's REPL drives
+// the REAL world instead of the inert renderer interpreter.
+
+test('replEval: returns the writeString value for a good form', () => {
+  const { spine } = makeSpine('');
+  assert.deepEqual(spine.replEval('(+ 1 2)'), { ok: true, text: '3' });
+});
+
+test('replEval: ok:false + message + location for a bad form', () => {
+  const { spine } = makeSpine('');
+  const r = spine.replEval('(this-is-not-defined)');
+  assert.equal(r.ok, false);
+  assert.match(r.text, /unbound symbol/);
+  assert.ok(r.location && typeof r.location.line === 'number', 'carries a source location');
+});
+
+test('replEval drives the REAL buffer: (insert! …) edits it', () => {
+  const { spine } = makeSpine('abc');
+  spine.replEval('(insert! "Z")');
+  assert.ok(spine.buffer.text.includes('Z'), 'the REPL eval edited the spine buffer');
+});
+
+// ── Hover-doc (B6 rehome) ──────────────────────────────────────────────────
+// The doc-view hover tooltip resolves the symbol + doc summary on the SPINE
+// (docs.lisp, against the LIVE active buffer) — the renderer interpreter's buffer
+// is idle in server mode, so the old in-renderer lookup saw an empty buffer and
+// the tooltip never resolved. docOpen runs the real `(open-doc name)`. See
+// app.js createHoverDoc + server-view-client requestDocHover/docOpen.
+
+test('docHover: resolves the documented symbol + summary under an offset', () => {
+  // The buffer text IS a documented stdlib symbol (defined with a docstring in
+  // the spine-loaded docs.lisp); an offset inside it resolves against buffer-text.
+  const { spine } = makeSpine('symbol-at-offset');
+  const r = spine.docHover(3);
+  assert.ok(r, 'a documented symbol under the offset returns a summary');
+  assert.equal(r.name, 'symbol-at-offset');
+  assert.ok(
+    r.kind === 'manifest' || r.kind === 'live',
+    `kind is manifest|live (got ${r.kind})`
+  );
+  if (r.kind === 'live') {
+    assert.ok(typeof r.source === 'string' && r.source.length > 0,
+      'a live summary carries the docstring source');
+  }
+});
+
+test('docHover: null when there is no symbol / no documentation under the offset', () => {
+  assert.equal(makeSpine('   ').spine.docHover(1), null, 'whitespace — no symbol');
+  assert.equal(
+    makeSpine('zzqq-not-a-real-symbol').spine.docHover(2), null,
+    'a symbol with no documentation'
+  );
+});
+
+test('docHover: null for an out-of-range / invalid offset', () => {
+  const { spine } = makeSpine('symbol-at-offset');
+  assert.equal(spine.docHover(-1), null, 'negative offset is rejected');
+  assert.equal(spine.docHover(9999), null, 'past-end offset finds no symbol');
+});
+
+test('docOpen: runs (open-doc name) without throwing; a bad/empty name is a no-op', () => {
+  const { spine } = makeSpine('');
+  assert.doesNotThrow(() => spine.docOpen('symbol-at-offset'));
+  assert.doesNotThrow(() => spine.docOpen('zzqq-not-a-real-symbol'));
+  assert.doesNotThrow(() => spine.docOpen(''));
+});
+
+// ── Inverse SyncTeX (B6 rehome) ─────────────────────────────────────────────
+// latex-synctex.lisp loads server-side; its pane-walking -latex-reveal-source is
+// overridden by the JS reveal-source-pane! (the spine's leaf view handles are
+// thin {kind:'text'} stubs). The synctex spawn itself needs the `synctex` binary
+// + a real PDF (live-only), so these cover the parts that run without it: the
+// file loaded, point-line-col, the forward directive, and the reveal targeting.
+
+test('latex-synctex.lisp is loaded in the spine', () => {
+  const { spine } = makeSpine('');
+  // The *synctex-command* defcustom proves the file evaluated; the inverse
+  // command + the JS reveal prim are both bound.
+  assert.deepEqual(spine.replEval('(car *synctex-command*)'), { ok: true, text: '"synctex"' });
+  assert.deepEqual(spine.replEval('(procedure? latex-synctex-inverse)'), { ok: true, text: '#t' });
+  assert.deepEqual(spine.replEval('(procedure? reveal-source-pane!)'), { ok: true, text: '#t' });
+});
+
+test('point-line-col: 1-based (line . column) at point', () => {
+  const { spine } = makeSpine('hello\nworld');
+  assert.deepEqual(spine.replEval('(point-line-col)'), { ok: true, text: '(1 . 1)' });
+  spine.replEval('(goto! 8)'); // line 2 ("world"), 0-based col 2 → 1-based col 3
+  assert.deepEqual(spine.replEval('(point-line-col)'), { ok: true, text: '(2 . 3)' });
+});
+
+test('pdf-synctex-show!: emits a pdf-synctex-show directive (forward search)', () => {
+  const { spine, log } = makeSpine('');
+  spine.replEval('(pdf-synctex-show! "/x.pdf" 2 10 20 5 6)');
+  const d = log.directives.find((e) => e.name === 'pdf-synctex-show');
+  assert.ok(d, 'a pdf-synctex-show directive was emitted');
+  assert.deepEqual(d.args, ['/x.pdf', 2, 10, 20, 5, 6]);
+});
+
+test('pdf-current-path: nil outside an inverse-search call', () => {
+  const { spine } = makeSpine('');
+  assert.deepEqual(spine.replEval('(pdf-current-path)'), { ok: true, text: 'nil' });
+});
+
+test('reveal-source-pane!: case 1 — FILE already shown → jump in place', () => {
+  const texPath = '/tmp/synctex-test/source.tex';
+  const openFile = (path) =>
+    path === texPath ? { text: 'a\nb\nc\nd\ne', name: 'source.tex', path: texPath } : null;
+  const { spine } = makeSpine('a\nb\nc\nd\ne', 'source.tex', { initialPath: texPath, openFile });
+  // Reveal line 3 of the already-shown source: point lands at the start of line 3.
+  spine.replEval(`(reveal-source-pane! "${texPath}" 3)`);
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 2, 'point on line 3 (0-based 2)');
+});
+
+test('reveal-source-pane!: case 2 — opens FILE in the SOURCE pane, never the PDF pane', () => {
+  const dir = '/tmp/synctex-test';
+  const texPath = `${dir}/source.tex`;
+  const otherPath = `${dir}/other.tex`;
+  const pdfPath = `${dir}/doc.pdf`;
+  const openFile = (path) => {
+    if (path === texPath) return { text: 'a\nb\nc', name: 'source.tex', path: texPath };
+    if (path === otherPath) return { text: '1\n2\n3\n4', name: 'other.tex', path: otherPath };
+    if (path === pdfPath) return { media: true, kind: 'pdf', name: 'doc.pdf', path: pdfPath };
+    return null;
+  };
+  const { spine } = makeSpine('a\nb\nc', 'source.tex', { initialPath: texPath, openFile });
+  // Lay out: source.tex | PDF (the split focuses the new PDF leaf).
+  spine.replEval(`(open-file-in-split! "${pdfPath}" (quote horizontal) (quote after))`);
+  // Inverse search resolves to other.tex:2 — must land in the TEXT (source) pane,
+  // NOT the focused PDF pane, opening other.tex there.
+  spine.replEval(`(reveal-source-pane! "${otherPath}" 2)`);
+  assert.equal(spine.buffer.name, 'other.tex', 'opened other.tex in the source pane');
+  assert.equal(spine.buffer.positionAt(spine.buffer.point).line, 1, 'point on line 2 (0-based 1)');
 });

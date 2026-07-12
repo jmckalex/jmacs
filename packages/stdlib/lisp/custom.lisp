@@ -233,6 +233,15 @@
   "Open the customisation buffer for the single setting NAME."
   (open-customize-variable! (symbol->string name)))
 
+(defcommand customize-faces ()
+  "Open the customisation buffer scoped to the Faces group.
+
+   Lives here (not in the render-side faces.lisp) so `M-x customize-faces`
+   resolves server-side too — the spine loads custom.lisp but not faces.lisp.
+   The leaf it opens is server-owned; the Faces model it shows is rendered
+   client-side, where the face registry lives."
+  (open-customize-faces!))
+
 ;; The model the customisation view renders is plain data — strings,
 ;; values and lists — so the view needs no knowledge of the registry.
 

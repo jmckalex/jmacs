@@ -104,6 +104,16 @@ function createDocView(container, options = {}) {
     typeof options.closeBuffer === 'function' ? options.closeBuffer : null;
   const openDoc =
     typeof options.openDoc === 'function' ? options.openDoc : null;
+  // B4: self-fetch hooks so the doc-view OWNS its content + navigation, instead
+  // of relying on the host to find this element and refill it (which differs by
+  // mount path — a leaf-direct doc-view vs a tabline child). `readPage(id)`
+  // returns the built page's HTML (or null); `renderMarkdown(src)` renders a live
+  // docstring's Markdown. When present, navigation + initial load go through them
+  // and `setBuffer` themselves; `openDoc` stays a fallback.
+  const readPage =
+    typeof options.readPage === 'function' ? options.readPage : null;
+  const renderMarkdown =
+    typeof options.renderMarkdown === 'function' ? options.renderMarkdown : null;
   const highlightCode =
     typeof options.highlightCode === 'function' ? options.highlightCode : null;
 
@@ -171,9 +181,23 @@ function createDocView(container, options = {}) {
     return ns && id != null ? ns[id] : null;
   }
 
+  /** B4: fetch a page by id (render-side) and render it IN THIS view via the
+   *  internal setBuffer — so navigation never leaves this element (no new tab,
+   *  no host element-finding). Falls back to openDoc when no readPage is wired. */
+  function loadAndShow(id) {
+    if (id == null) return;
+    if (!readPage) { if (openDoc) openDoc(id); return; }
+    Promise.resolve(readPage(id))
+      .then((html) => {
+        if (typeof html === 'string') setBuffer({ kind: 'doc', html, docName: id });
+        else suppressPush = false; // miss — don't strand a pending Back suppression
+      })
+      .catch(() => { suppressPush = false; });
+  }
+
   /** Navigate forward to a node id (link / menu / button / key). */
   function go(id) {
-    if (id != null && openDoc) openDoc(id);
+    if (id != null) loadAndShow(id);
   }
   /** Follow a relation (`prev` / `next` / `up`) from the current node. */
   function goRel(dir) {
@@ -189,8 +213,7 @@ function createDocView(container, options = {}) {
     history.pop();
     const target = history[history.length - 1];
     suppressPush = true;
-    if (openDoc) openDoc(target);
-    else suppressPush = false;
+    loadAndShow(target);
   }
 
   // Capture-phase click so we win even if the page installs listeners.
@@ -413,6 +436,25 @@ function createDocView(container, options = {}) {
    */
   function setBuffer(next) {
     buffer = next;
+    // B4 self-fetch: a buffer with no html but a docName / docSource (a server doc
+    // leaf just mounted, or a reconcile) → fetch + render here, then return. The
+    // re-entrant setBuffer below carries the html, so this runs once.
+    if (buffer && (typeof buffer.html !== 'string' || buffer.html === '')) {
+      if (typeof buffer.docSource === 'string' && buffer.docSource !== '' && renderMarkdown) {
+        const nm = buffer.docName || '';
+        Promise.resolve(renderMarkdown(buffer.docSource))
+          .then((body) => setBuffer({
+            kind: 'doc',
+            docName: nm,
+            html:
+              `<article class="doc-page docstring-page" data-node-id="${nm}">` +
+              `<div class="doc-docstring">${body}</div></article>`,
+          }))
+          .catch(() => {});
+        return;
+      }
+      if (buffer.docName && readPage) { loadAndShow(buffer.docName); return; }
+    }
     if (!buffer || typeof buffer.html !== 'string') {
       article.replaceChildren();
       currentNodeId = null;

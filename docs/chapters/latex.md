@@ -220,7 +220,23 @@ the way AUCTeX's `LaTeX-fill-paragraph` does, filling prose to
 environment depth. Structural lines (`\begin`/`\end`, `\item`,
 sectioning, display math) are re-indented in place, never merged into
 prose; point inside a `verbatim`, `tabular` or math-alignment environment
-leaves the buffer untouched.
+leaves the buffer untouched, and one of those environments sitting
+*inside* the paragraph passes through byte-for-byte. A paragraph
+command like `\caption{…}` or `\section{…}` is its own fill unit
+spanning the macro's extent: a long caption wraps at the fill column.
+In every wrapped unit — a caption's argument, plain prose with a
+spanning `\footnote{…}`, `\item` text — continuation lines indent an
+extra `*latex-brace-indent-level*` (AUCTeX's `TeX-brace-indent-level`,
+default 2) per unclosed `{`, dropping back once the closing `}` is
+passed. Comments fill too:
+a run of `%` lines wraps behind its `%`-prefix (a `%%` header never
+merges with a `%` body), and a comment trailing code stays glued to its
+line, unfilled. Inline `\(…\)`/`\[…\]` math never breaks across lines
+while `*latex-fill-break-at-separators*` is on (AUCTeX's
+`LaTeX-fill-break-at-separators`), a `\verb` group never breaks at all,
+and point stays on the word it was on. Turn on
+`*latex-sentence-end-double-space*` to get Emacs's two-spaces-after-a-
+sentence join rule when lines merge.
 
 A grouped **LaTeX** menu collects all of these into submenus — Compile &
 View, Insert, Fonts, Math, References, Navigation — so the commands are

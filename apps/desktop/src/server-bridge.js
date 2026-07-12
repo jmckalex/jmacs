@@ -1,20 +1,16 @@
 /**
- * @file G1 — the flag-gated Model-B server bridge for the REAL main process.
+ * @file The Model-B server bridge for the main process.
  *
- * Graduation plan §G1 (`plans/MWB-GRADUATION.md`): stand the proven Model-B
- * server (`apps/desktop/mwb/server.js`, an Electron `utilityProcess`) up
- * inside the real `main.js`, behind the `GODOT_SERVER=1` flag, and plumb a
- * `MessageChannelMain` port from the server to each window's renderer — WITHOUT
- * routing any editing through it yet (that is G2). With the flag unset (the
- * default), nothing in this file runs and `main.js` behaves byte-for-byte as
- * today.
+ * Stands the Model-B server (`apps/desktop/mwb/server.js`, an Electron
+ * `utilityProcess`) up inside `main.js` and plumbs a `MessageChannelMain` port
+ * from the server to each window's renderer. Model B is the only mode — the
+ * server is forked unconditionally at startup.
  *
  * This module is the testable seam: the wire-up is extracted into small pure
  * functions + a factory that takes its Electron collaborators by injection, so
- * `node --test` can assert the flag-gating, the fork config, and the
- * per-window port-transfer dance with no real Electron process (see
- * `server-bridge.test.js`). `main.js` is the only caller that passes the real
- * `electron` primitives.
+ * `node --test` can assert the fork config and the per-window port-transfer
+ * dance with no real Electron process (see `server-bridge.test.js`). `main.js`
+ * is the only caller that passes the real `electron` primitives.
  *
  * Channel topology (identical to the prototype's `mwb/launch.js`):
  *
@@ -32,18 +28,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** The IPC channel main uses to transfer the server port into a renderer.
- *  The (flag-gated) preload listens for this and re-dispatches the port to
- *  the page as a `window` message. */
+ *  The preload listens for this and re-dispatches the port to the page as a
+ *  `window` message. */
 export const SERVER_PORT_CHANNEL = 'godot:server-port';
-
-/** The single gate. Everything server-side is guarded by this one predicate
- *  so the flag-off path is provably the old path: if this returns false,
- *  `main.js` never constructs a bridge and never takes a new branch.
- *  @param {Record<string, string | undefined>} [env]
- *  @returns {boolean} */
-export function isServerMode(env = process.env) {
-  return env.GODOT_SERVER === '1';
-}
 
 /** Absolute path to the Model-B server module the `utilityProcess` forks.
  *  G1 reuses the proven prototype server verbatim (plan §4.1 — it graduates
@@ -69,8 +56,7 @@ export function buildServerForkConfig() {
  * expose a way to plumb a per-window port to a renderer. Electron primitives
  * are injected so this is unit-testable with fakes.
  *
- * Only constructed when `isServerMode()` is true — the caller (`main.js`)
- * guards the construction, so with the flag off this code is never reached.
+ * Constructed once at startup by `main.js`.
  *
  * @param {object} deps
  * @param {{ fork: (module: string, args: string[], options: object) => any }} deps.utilityProcess

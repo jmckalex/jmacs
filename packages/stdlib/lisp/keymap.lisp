@@ -29,8 +29,10 @@
    "C-s"   'save-buffer
    "C-r"   'reload-stdlib
    "C-c"   'quit-editor
+   ;; C-x f — set the fill column (Emacs's binding; auto-fill.lisp).
+   "f"     'set-fill-column
    "b"     'switch-view
-   "C-b"   'buffer-menu
+   "C-b"   'list-views
    "right" 'next-view
    "left"  'previous-view
    ;; n was new-view (still on M-x); a seeded scratch is the more
@@ -73,7 +75,17 @@
    "C-left"   'focus-pane-left
    "C-right"  'focus-pane-right
    "C-up"     'focus-pane-up
-   "C-down"   'focus-pane-down})
+   "C-down"   'focus-pane-down
+   ;; C-x C-w — write the buffer to a new path (save-as).
+   "C-w"      'write-file
+   ;; C-x u — the classic Emacs undo binding (alongside C-z / C-/).
+   "u"        'undo
+   ;; C-x 5 — the frame/window prefix (Model B multi-window). C-x 5 2 opens
+   ;; another window; C-x 5 0 closes this one; C-x 5 1 closes every other
+   ;; window (the directive channel drives the close across windows).
+   "5"        {"2" 'new-window
+               "0" 'close-window
+               "1" 'close-other-windows}})
 
 ;; The C-h prefix map — help.
 (define c-h-keymap
@@ -95,8 +107,13 @@
    "t" 'toggle-sticky-notes})
 
 ;; The M-s prefix map — search-related commands (see occur.lisp).
+;; M-s h highlights every occurrence of the word at point / region as
+;; overlays the renderer draws; M-s u clears them (a server-side overlay
+;; feature — proves overlay sync end to end).
 (define m-s-keymap
-  {"o" 'occur})
+  {"o" 'occur
+   "h" 'highlight-matches
+   "u" 'unhighlight-all})
 
 ;; The C-c prefix map — at the global root for editor-wide commands.
 ;; (Mode-local C-c bindings live in each mode's own keymap and shadow
@@ -112,12 +129,7 @@
    "D"         'select-all-matches
    ;; C-c g opens a gnuplot buffer (see gnuplot.lisp). Bound by symbol;
    ;; the command resolves at dispatch time, so load order doesn't matter.
-   "g"         'gnuplot
-   ;; C-c n opens a reactive Lisp notebook (see notebook-commands.lisp);
-   ;; C-c C-n / C-c C-p cycle among open notebooks.
-   "n"         'notebook
-   "C-n"       'next-notebook
-   "C-p"       'previous-notebook})
+   "g"         'gnuplot})
 
 ;; The root keymap.
 (define the-keymap
@@ -175,6 +187,11 @@
    ;; router only fires while the editing surface has focus.)
    "M-z"          'undo
    "M-S-z"        'redo
+   ;; Emacs undo/redo keys (US layout: C-/ is event.code "Slash"; the literal
+   ;; C-_ is Shift+Minus → C-S-minus). Kept alongside C-z / M-z.
+   "C-slash"      'undo
+   "C-S-minus"    'undo
+   "C-S-slash"    'redo
    ;; Universal-argument prefix. Pressing C-u sets `*prefix-arg*` so
    ;; the next command can alter its behaviour (e.g. flip a split's
    ;; direction). Numeric multi-press isn't supported yet — a single
@@ -390,6 +407,40 @@
    modifier."
   (or (not (nil? active-keymap)) (not (nil? *key-reader*))))
 
+;; --- the post-self-insert hook -----------------------------------------
+;; Procedures run *after* a self-inserting keystroke has been inserted,
+;; each called with the inserted key string. This is Emacs's
+;; `post-self-insert-hook` — the seam an "electric" behaviour hooks into.
+;; Its first client is auto-fill-mode (auto-fill.lisp), which wraps the
+;; line when it grows past the fill column.
+;;
+;; Empty by default, so a self-insert costs nothing extra until something
+;; registers. The hook is GLOBAL while modes are per-buffer, so a client
+;; registers ONCE (at load) and guards its body on the buffer's own mode
+;; membership — it must not add/remove itself on mode enable/disable, or
+;; toggling the mode in one buffer would clobber every other buffer.
+(define *post-self-insert-hook* (list))
+
+(define (add-post-self-insert-hook fn)
+  "Register FN (a one-argument procedure, called with the inserted key
+   string) to run after each self-insert. Idempotent by identity."
+  (unless (member fn *post-self-insert-hook*)
+    (set! *post-self-insert-hook*
+          (append *post-self-insert-hook* (list fn)))))
+
+(define (remove-post-self-insert-hook fn)
+  "Remove FN from the post-self-insert hook."
+  (set! *post-self-insert-hook*
+        (filter (lambda (f) (not (eq? f fn))) *post-self-insert-hook*)))
+
+(define (run-post-self-insert-hook key)
+  "Run every post-self-insert hook with KEY. Each call is wrapped so a
+   buggy hook can neither wedge typing nor crash the spine — self-insert
+   is the one path that must never throw."
+  (for-each
+    (lambda (fn) (try (fn key) (catch _e nil)))
+    *post-self-insert-hook*))
+
 (define (handle-key key)
   "Dispatch KEY. If a key-reader is pending it receives the key;
    otherwise KEY runs a command, begins a sequence, or self-inserts.
@@ -429,7 +480,14 @@
           ;; right after would defeat the purpose.
           ((symbol? binding)
            (reset-keymap!)
-           (run-command binding)
+           ;; The server is the only resolver under Model B, but some bindings
+           ;; name renderer-only commands not (yet) registered server-side.
+           ;; run-command would (eval name) and throw on an unbound symbol, so
+           ;; guard: run only a registered command, else a quiet status.
+           (if (command-registered? binding)
+               (run-command binding)
+               (show-status! (str (symbol->string binding)
+                                  " is not available here")))
            (when (not (eq? binding 'universal-argument))
              (reset-prefix-arg!))
            #t)
@@ -440,6 +498,11 @@
            #t)
           ;; At rest: self-insert a character, else leave unhandled.
           ((self-insert-key? key)
+           ;; Typing invalidates a pending yank-pop chain (the *last-command*
+           ;; subtlety): mark this as a self-insert before inserting.
+           (set! *last-command* 'self-insert)
            (insert! key)
+           ;; Electric behaviours run after the insert (auto-fill etc.).
+           (run-post-self-insert-hook key)
            #t)
           (else #f)))))

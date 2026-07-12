@@ -32,6 +32,7 @@ each Lisp procedure one by one.
 [[chapters/modes.md]]
 [[chapters/writing.md]]
 [[chapters/latex.md]]
+[[chapters/jmarkdown.md]]
 [[chapters/extending.md]]
 [[chapters/customization.md]]
 [[chapters/architecture.md]]

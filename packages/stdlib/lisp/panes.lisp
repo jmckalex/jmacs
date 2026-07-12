@@ -46,6 +46,19 @@
 ;; override the policy entirely.
 (define (pane-focus-border-setting) *pane-focus-border*)
 
+;; --- closing a tab ----------------------------------------------------
+;; Most editors KILL a view when you close its tab — it's gone, off the
+;; buffer list. Godot's tabline historically only UN-CURATED the tab (the
+;; view stayed in the buffer list, reachable via C-x C-b), which surprises
+;; people. Default to kill; set #f to keep the un-curate behaviour.
+(defcustom *close-tab-kills-view* #t :boolean
+  :group 'panes
+  :doc "When you close a tab (its × button), KILL the underlying view —
+   remove its buffer from the buffer list, as most editors do (the
+   default, #t). When #f, closing a tab only removes it from this tabline;
+   the buffer lives on and is reachable via the buffer list (C-x C-b). A
+   live-process view (shell / gnuplot) is reaped on close either way.")
+
 (defcommand add-pane ()
   "Enter the visual add-pane macro. An overlay over the editor area
    highlights every splitter and the four outer borders; click one to
@@ -59,7 +72,10 @@
    the existing layout in a new outer split and the fresh pane occupies
    that side. Escape — or re-pressing the entry chord — cancels
    without inserting. Bound to `C-x +`."
-  (enter-add-pane-mode!))
+  ;; The overlay lives in the renderer (add-pane-mode.js); ask THIS window to
+  ;; show it. A picked target comes back as an add-at-splitter / add-at-border
+  ;; PANE_INTENT, which the server applies to this window's pane model.
+  (emit-client-directive! (list (this-window-id)) 'enter-add-pane-mode))
 
 (defcommand split-horizontal ()
   "Split the current pane side-by-side. **Focus moves to the new pane**,
@@ -214,7 +230,10 @@
    with fewer than two panes."
   (if (< (length (panes-in-spiral-order)) 2)
       (show-status! "swap-views: need at least two panes")
-      (enter-move-views-mode! 'swap)))
+      ;; The badge overlay lives in the renderer (move-view-mode.js); ask THIS
+      ;; window to show it in swap mode. The committed move comes back as a
+      ;; move-views PANE_INTENT the server applies to this window's pane model.
+      (emit-client-directive! (list (this-window-id)) 'enter-move-views-mode 'swap)))
 
 (defcommand permute-views ()
   "Rearrange which view every pane shows. Numbers every pane, then reads
@@ -224,4 +243,4 @@
    No-op with fewer than two panes."
   (if (< (length (panes-in-spiral-order)) 2)
       (show-status! "permute-views: need at least two panes")
-      (enter-move-views-mode! 'permute)))
+      (emit-client-directive! (list (this-window-id)) 'enter-move-views-mode 'permute)))

@@ -10,7 +10,7 @@
 ;;;
 ;;;   *indent-tabs-mode* — When `#t`, the Tab key inserts a literal
 ;;;                        `\t`; when `#f`, it inserts `*tab-width*`
-;;;                        spaces. Default `#f` (spaces).
+;;;                        spaces. Default `#t` (literal tabs).
 ;;;
 ;;; A major mode can pin either to a mode-local value via the
 ;;; `:indent-tabs?` and `:tab-width` keys on the mode map; those win
@@ -27,12 +27,13 @@
         synchronises the var after stdlib load and on every
         customisation change of this setting.")
 
-(defcustom *indent-tabs-mode* #f :boolean
+(defcustom *indent-tabs-mode* #t :boolean
   :group 'editing
-  :doc "When `#t`, the Tab key inserts a literal tab character; when
-        `#f`, it inserts `*tab-width*` spaces. A major mode can pin a
-        mode-local value via the `:indent-tabs?` key on its mode map,
-        which wins over this global setting (Makefile-mode does this).")
+  :doc "When `#t` (the default), the Tab key inserts a literal tab
+        character; when `#f`, it inserts `*tab-width*` spaces. A major
+        mode can pin a mode-local value via the `:indent-tabs?` key on
+        its mode map, which wins over this global setting (Makefile-mode
+        pins it on; a mode that needs spaces can pin it off).")
 
 (define (-indent-tabs-effective)
   "Whether the Tab key should insert a literal tab right now: the
