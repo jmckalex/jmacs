@@ -117,13 +117,13 @@ export class SvgNodeEditTool {
     const tol = this._view.handleTolerance() * 1.4;
 
     // 1. The active anchor's control handles (path mode only). A handle
-    // sitting on its anchor (zero-length) is not grabbable — the anchor
-    // wins.
+    // hugging its anchor (zero-length, or the serializer's ≤2-unit
+    // tangent nudge) is not grabbable — the anchor wins.
     if (this._mode === 'path' && this._activeAnchor != null) {
       const a = this._model.anchors[this._activeAnchor];
       for (const side of ['in', 'out']) {
         const h = side === 'in' ? a.hIn : a.hOut;
-        if (!h || Math.hypot(h.x - a.x, h.y - a.y) < 1e-6) continue;
+        if (!h || Math.hypot(h.x - a.x, h.y - a.y) < tol * 0.5) continue;
         if (Math.hypot(p.x - h.x, p.y - h.y) <= tol) {
           this._view.pushUndo();
           this._drag = { type: 'handle', side, index: this._activeAnchor, free: event.altKey };

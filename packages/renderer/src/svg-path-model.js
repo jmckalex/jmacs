@@ -248,8 +248,29 @@ export function parsePathData(d) {
 // --- serialisation -------------------------------------------------------
 
 /**
+ * Move a degenerate control point a hair off its anchor, along the
+ * tangent toward the segment's other control point (≤ 2 user units — a
+ * sub-pixel shape change).
+ */
+function nudgeControl(anchor, toward) {
+  const dx = toward.x - anchor.x;
+  const dy = toward.y - anchor.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-9) return { x: anchor.x, y: anchor.y };
+  const k = Math.min(0.02, 2 / len);
+  return { x: anchor.x + dx * k, y: anchor.y + dy * k };
+}
+
+/**
  * Serialise a model back to a `d` string (absolute commands, straight
  * segments as `L`, curved as `C`, 2-decimal precision).
+ *
+ * A one-sided cubic (a smooth anchor into a corner, or vice versa) never
+ * emits its control point exactly ON the endpoint: that zero-length end
+ * tangent makes `orient="auto"` marker rotation renderer-dependent —
+ * Chromium uses the limit tangent, WebKit falls back to 0° and draws the
+ * arrowhead sideways. The control point is nudged a hair along the true
+ * tangent instead (found live: exported connectors opened in Gapplin).
  * @param {{closed:boolean, anchors:Array<object>}} model
  * @returns {string}
  */
@@ -265,8 +286,10 @@ export function pathDataFromModel(model) {
       if (s === segs - 1 && closed) break; // plain Z draws this line
       parts.push(`L ${round2(to.x)} ${round2(to.y)}`);
     } else {
-      const c1 = from.hOut ?? from;
-      const c2 = to.hIn ?? to;
+      let c1 = from.hOut ?? from;
+      let c2 = to.hIn ?? to;
+      if (!from.hOut && to.hIn) c1 = nudgeControl(from, c2);
+      if (!to.hIn && from.hOut) c2 = nudgeControl(to, c1);
       parts.push(
         `C ${round2(c1.x)} ${round2(c1.y)} ${round2(c2.x)} ${round2(c2.y)} ` +
           `${round2(to.x)} ${round2(to.y)}`

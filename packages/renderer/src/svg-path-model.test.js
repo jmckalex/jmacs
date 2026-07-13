@@ -161,6 +161,48 @@ test('closed path with a curved closing segment keeps the C before Z', () => {
   assert.equal(m2.anchors.length, 2);
 });
 
+test('one-sided cubics never serialise a control point ON the endpoint', () => {
+  // A smooth anchor into a corner endpoint: the end tangent must be
+  // non-degenerate or auto-oriented arrowheads render sideways in
+  // WebKit (found live via Gapplin).
+  const m = {
+    closed: false,
+    anchors: [
+      makeAnchor(0, 0, null, { x: 40, y: -40 }),
+      makeAnchor(100, 0), // corner endpoint, no hIn
+    ],
+  };
+  const d = pathDataFromModel(m);
+  const nums = d.match(/C ([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+) ([-\d.]+)/).slice(1).map(Number);
+  const [c1x, c1y, c2x, c2y, x, y] = nums;
+  const off = Math.hypot(c2x - x, c2y - y);
+  assert.ok(off > 0.5 && off <= 2.01, `c2 sits ${off} from the endpoint`);
+  // The nudge lies along the endpoint→c1 direction (parallel vectors).
+  const cross = (c1x - x) * (c2y - y) - (c1y - y) * (c2x - x);
+  assert.ok(Math.abs(cross) < 1e-6, `tangent skewed: ${cross}`);
+  // And the start-side mirror case.
+  const m2 = {
+    closed: false,
+    anchors: [makeAnchor(0, 0), makeAnchor(100, 0, { x: 60, y: 40 }, null)],
+  };
+  const d2 = pathDataFromModel(m2);
+  const n2 = d2.match(/C ([-\d.]+) ([-\d.]+)/).slice(1).map(Number);
+  assert.ok(Math.hypot(n2[0], n2[1]) > 0.5, 'start control nudged off the anchor');
+});
+
+test('the tangent nudge round-trips stably (parse -> serialize is a fixpoint)', () => {
+  const m = {
+    closed: false,
+    anchors: [
+      makeAnchor(0, 0, null, { x: 40, y: -40 }),
+      makeAnchor(100, 0),
+    ],
+  };
+  const d1 = pathDataFromModel(m);
+  const d2 = pathDataFromModel(parsePathData(d1));
+  assert.equal(d2, d1);
+});
+
 // --- structure ---------------------------------------------------------------
 
 test('segmentCount: open n-1, closed n', () => {

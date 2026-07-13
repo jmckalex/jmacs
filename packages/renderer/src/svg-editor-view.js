@@ -1114,12 +1114,15 @@ export class SvgEditorView extends ViewElement {
       border.setAttribute(k, String(v));
     }
     border.setAttribute('data-godot-role', 'border');
-    border.setAttribute('fill', paint.fill ?? 'none');
-    border.setAttribute('stroke', paint.stroke ?? '#222222');
-    border.setAttribute('stroke-width', paint['stroke-width'] ?? '1');
-    if (paint['stroke-dasharray']) {
-      border.setAttribute('stroke-dasharray', paint['stroke-dasharray']);
+    // Re-apply EVERY preserved paint attribute (incl. the fill-style
+    // data attrs — dropping them wiped a border's gradient parameters on
+    // any rebuild, which is exactly what a resize does; found live).
+    for (const a of BORDER_PAINT_ATTRS) {
+      if (paint[a] != null) border.setAttribute(a, paint[a]);
     }
+    if (!border.getAttribute('fill')) border.setAttribute('fill', 'none');
+    if (!border.getAttribute('stroke')) border.setAttribute('stroke', '#222222');
+    if (!border.getAttribute('stroke-width')) border.setAttribute('stroke-width', '1');
     g.prepend(border);
   }
 
@@ -1855,6 +1858,9 @@ export class SvgEditorView extends ViewElement {
         target.removeAttribute('data-godot-fill-style');
       }
       this._applyFillStyle(target);
+      // Styling changes what the fill swatch / none checkbox mean —
+      // rebuild the panel so they reflect the new state.
+      if (desc.key === 'fill-style' && this._panel) this._panel.refresh();
     }
     if (desc.key === 'stroke') {
       this.refreshAttachedMarkers(target);
@@ -1924,9 +1930,12 @@ export class SvgEditorView extends ViewElement {
     let a = target.getAttribute('data-godot-fill-a');
     if (cur && cur !== 'none' && !cur.startsWith('url(')) {
       a = cur;
-      target.setAttribute('data-godot-fill-a', a);
     }
     a = a || '#888888';
+    // Always record the primary, so the panel's Fill swatch shows the
+    // gradient's real colour (a none-filled border styles from the
+    // fallback and was otherwise stuck disabled behind a stale checkbox).
+    target.setAttribute('data-godot-fill-a', a);
     const b = target.getAttribute('data-godot-fill-b') || '#ffffff';
     const angle = Number(target.getAttribute('data-godot-fill-angle')) || 0;
     const def = fillStyleDef(style, a, b, angle);
