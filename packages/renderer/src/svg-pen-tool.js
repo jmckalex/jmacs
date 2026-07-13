@@ -105,7 +105,10 @@ export class SvgPenTool {
     if (!this._active) return;
 
     // Connectable shapes: start a connector, or terminate into one.
-    const conn = event && event.shiftKey ? null : this._view.connections.connectableAt(p);
+    // Near-border clicks count — the compass dots straddle the border.
+    const conn = event && event.shiftKey
+      ? null
+      : this._view.connections.connectableNear(p, this._view.handleTolerance() * 2);
     if (conn) {
       const started = this._from !== null || this._anchors.length > 0;
       if (!started) {
@@ -151,8 +154,9 @@ export class SvgPenTool {
       }
     } else {
       this._hover = p;
-      this._hoverConn =
-        event && event.shiftKey ? null : this._view.connections.connectableAt(p);
+      this._hoverConn = event && event.shiftKey
+        ? null
+        : this._view.connections.connectableNear(p, this._view.handleTolerance() * 2);
     }
     this._preview();
   }

@@ -21,6 +21,7 @@
 
 import {
   connectorEndpoint,
+  borderPointToward,
   translateSpec,
   specCenter,
 } from './svg-connect.js';
@@ -127,6 +128,34 @@ export class SvgConnections {
   connectableAt(p) {
     const el = this._view._hitTest(p);
     return el ? this.connectableOf(el) : null;
+  }
+
+  /**
+   * The connectable under OR NEAR a point: containment first, else the
+   * shape whose border passes within `tol` of the point. The pen's
+   * compass-anchor dots straddle the border, so a click on a dot's outer
+   * half lands OUTSIDE the shape — a pure containment test silently
+   * dropped the attachment (found live: a connector's start didn't
+   * follow its node because it had never attached).
+   * @param {{x:number,y:number}} p
+   * @param {number} tol - user-space slack around the border.
+   */
+  connectableNear(p, tol) {
+    const hit = this.connectableAt(p);
+    if (hit) return hit;
+    const layer = this._view._layer;
+    if (!layer) return null;
+    let best = null;
+    for (const el of Array.from(layer.children)) {
+      const conn = this.connectableOf(el);
+      if (!conn) continue;
+      const bp = borderPointToward(conn.spec, p);
+      const dist = Math.hypot(p.x - bp.x, p.y - bp.y);
+      if (dist <= tol && (!best || dist < best.dist)) {
+        best = { conn, dist };
+      }
+    }
+    return best ? best.conn : null;
   }
 
   /** Resolve an id to a live connectable, or null. */

@@ -138,19 +138,12 @@ export class SvgNodeEditTool {
       if (Math.hypot(p.x - anchors[i].x, p.y - anchors[i].y) <= tol) {
         this._activeAnchor = i;
         this._view.pushUndo();
-        // Dragging a connector's END anchor detaches that end — the
-        // user is explicitly taking the endpoint away from the shape.
-        if (this._mode === 'path') {
-          if (i === 0 && this._target.hasAttribute('data-godot-from')) {
-            this._target.removeAttribute('data-godot-from');
-            this._target.removeAttribute('data-godot-from-anchor');
-          }
-          if (i === anchors.length - 1 && this._target.hasAttribute('data-godot-to')) {
-            this._target.removeAttribute('data-godot-to');
-            this._target.removeAttribute('data-godot-to-anchor');
-          }
-        }
-        this._drag = { type: 'anchor', index: i, last: p };
+        // Dragging (NOT merely clicking) a connector's END anchor
+        // detaches that end — the detach happens on first movement, so
+        // inspecting an endpoint never silently severs the attachment.
+        const isEnd =
+          this._mode === 'path' && (i === 0 || i === anchors.length - 1);
+        this._drag = { type: 'anchor', index: i, last: p, detachEnd: isEnd ? i : null };
         this._draw();
         return true;
       }
@@ -181,6 +174,12 @@ export class SvgNodeEditTool {
       const dx = p.x - this._drag.last.x;
       const dy = p.y - this._drag.last.y;
       this._drag.last = p;
+      if (this._drag.detachEnd != null && (dx !== 0 || dy !== 0)) {
+        const end = this._drag.detachEnd === 0 ? 'from' : 'to';
+        this._target.removeAttribute(`data-godot-${end}`);
+        this._target.removeAttribute(`data-godot-${end}-anchor`);
+        this._drag.detachEnd = null;
+      }
       this._model = movePathAnchor(this._model, this._drag.index, dx, dy);
       this._writeModel();
     } else if (this._drag.type === 'handle') {
