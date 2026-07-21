@@ -256,10 +256,11 @@ cmd(swap-views), cmd(send-view-to-other-pane).
 
 *Move* the focused view to the next pane in display order, rather than
 swapping. Bound to `C-x x` — but the command predates the server
-architecture and is **currently out of order**: it reports an error
-rather than moving the view. Until it is re-ported, get the same effect
-by hand — focus the destination pane and switch to the buffer there
-with `C-x b`. See also cmd(swap-with-other-pane).
+architecture and is **currently out of order**: pressing it does
+nothing visible (the failure is logged to the console only). Until it
+is re-ported, get the same effect by hand — focus the destination pane
+and switch to the buffer there with `C-x b`. See also
+cmd(swap-with-other-pane).
 :::
 
 :::function{name="send-tab-to-other-pane" path="reference/panes/send-tab-to-other-pane.html"}

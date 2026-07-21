@@ -56,6 +56,7 @@ language guide that follows the reference.
 [[reference/productivity.md]]
 [[reference/search-and-edit.md]]
 [[reference/latex.md]]
+[[reference/jmarkdown.md]]
 [[reference/help-and-config.md]]
 
 # Programming in Godot Lisp
@@ -69,8 +70,8 @@ Read it in order the first time: the early chapters (*Lisp Data
 Types* through *Writing Macros*) teach the language; the later ones
 (*Editing Text from Lisp* onward) teach the editor's extension
 surface. If you already know a Lisp, start instead with the
-dialect-comparison chapter — *Godot Lisp for programmers arriving
-from another Lisp* — which maps this dialect's choices against the
+dialect-comparison chapter — *Godot Lisp for Lisp Programmers* —
+which maps this dialect's choices against the
 Lisp you came from, then dip into the ground-up chapters as needed.
 The per-function reference above is the companion volume —
 this part explains the model and the craft, the reference states each

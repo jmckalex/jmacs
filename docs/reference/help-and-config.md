@@ -245,9 +245,11 @@ Show or hide the REPL panel. Bound to `C-x p`.
 `(recover-session)`
 
 Open the `*Recover*` view: scan for crash-recovery snapshots left by a
-previous run and offer to recover or discard each. Runs automatically at
-startup when snapshots are present; this is the manual entry point. See
-the `*autosave-recovery*` setting below.
+previous run and offer to recover or discard each. *Currently not
+available as a command in the running editor* — its defining file
+(`system.lisp`) is not loaded by the server, so only the automatic
+startup path runs: on launch the server scans for snapshots and opens
+any it finds as dirty buffers for you to save or discard.
 :::
 
 ### Settings
@@ -266,17 +268,6 @@ its group (`godot` is the root group; `appearance`, `editing` and
 `custom-apply!` updates the live variable and runs the setting's
 `:on-change` hook, so the change takes effect immediately; the setting's
 *state* then shows as changed-but-unsaved until you save it.
-
-:::function{name="*find-file-case-sensitive*" path="reference/help-and-config/find-file-case-sensitive.html"}
-#### `*find-file-case-sensitive*`
-`(default #f)`
-
-When `#t`, `find-file`'s TAB completion matches filenames with case taken
-into account; when `#f` (the default), the prefix matches regardless of
-case. Completion always uses the filename's on-disk case — typing `rea`
-and TABbing into a directory with `README.md` produces `README.md`.
-Group: `godot`. Defined in `files.lisp`.
-:::
 
 :::function{name="*auto-pair*" path="reference/help-and-config/auto-pair.html"}
 #### `*auto-pair*`

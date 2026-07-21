@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Godot — a programmable editor, explained for people who use VS Code</title>
+<style>
+  :root{
+    --bg:#1b2027; --bg2:#222a33; --card:#232c36; --line:rgba(255,255,255,.09);
+    --fg:#dfe6ef; --mut:#93a0b1; --dim:#6f7d8f;
+    --teal:#63b6ad; --amber:#e0b06a; --rose:#e08f8f; --violet:#a99be0;
+    --codebg:#151a20; --codefg:#cdd7e4;
+    --maxw:760px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font:17px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 22px}
+  code,pre,.mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,"Liberation Mono",monospace}
+  a{color:var(--teal); text-decoration:none} a:hover{text-decoration:underline}
+
+  /* hero */
+  header{padding:84px 0 30px; border-bottom:1px solid var(--line);
+    background:radial-gradient(1200px 380px at 50% -120px, rgba(99,182,173,.13), transparent 70%)}
+  .eyebrow{font-size:13px; letter-spacing:.16em; text-transform:uppercase; color:var(--teal); font-weight:600}
+  h1{font-size:40px; line-height:1.12; margin:.5em 0 .35em; letter-spacing:-.02em}
+  h1 .g{color:var(--amber)}
+  .lead{font-size:20px; color:var(--mut); margin:0; max-width:640px}
+  .tldr{margin:34px 0 6px; padding:18px 20px; background:var(--card);
+    border:1px solid var(--line); border-left:3px solid var(--amber); border-radius:10px;
+    font-size:16px; color:var(--fg)}
+  .tldr b{color:var(--amber)}
+
+  section{padding:46px 0; border-bottom:1px solid var(--line)}
+  h2{font-size:27px; letter-spacing:-.01em; margin:0 0 .5em}
+  h2 .n{color:var(--dim); font-size:18px; font-weight:600; margin-right:.5em; font-family:"SF Mono",ui-monospace,monospace}
+  h3{font-size:18px; margin:1.6em 0 .4em; color:var(--amber)}
+  p{margin:.9em 0} .mut{color:var(--mut)}
+  strong{color:#fff}
+  em{color:var(--violet); font-style:normal}
+
+  ul{padding-left:1.2em} li{margin:.4em 0}
+  .lede{font-size:19px; color:var(--mut)}
+
+  /* term reframes */
+  .terms{display:grid; grid-template-columns:1fr; gap:0; margin:18px 0;
+    border:1px solid var(--line); border-radius:10px; overflow:hidden}
+  .terms div{display:grid; grid-template-columns:150px 1fr; gap:14px;
+    padding:11px 16px; border-top:1px solid var(--line)}
+  .terms div:first-child{border-top:0}
+  .terms .k{color:var(--teal); font-weight:600; font-family:"SF Mono",ui-monospace,monospace; font-size:14px}
+  .terms .v{color:var(--mut); font-size:15.5px}
+
+  /* compare table */
+  table{width:100%; border-collapse:collapse; margin:18px 0; font-size:15px}
+  th,td{text-align:left; padding:11px 12px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{color:var(--dim); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:.05em}
+  td:first-child{color:var(--mut); width:30%}
+  .vs td:nth-child(2){color:var(--mut)}
+  .vs td:last-child{color:var(--fg)}
+
+  /* code */
+  pre{background:var(--codebg); border:1px solid var(--line); border-radius:10px;
+    padding:15px 17px; overflow:auto; font-size:14px; line-height:1.55; color:var(--codefg); margin:16px 0}
+  p code,li code,.terms code{background:rgba(255,255,255,.06); padding:.08em .38em; border-radius:5px; font-size:.88em; color:var(--amber)}
+  .c-kw{color:var(--violet)} .c-fn{color:var(--teal)} .c-str{color:var(--amber)} .c-com{color:var(--dim)} .c-key{color:var(--rose)}
+
+  /* layer stack diagram */
+  .stack{margin:22px 0; border:1px solid var(--line); border-radius:12px; overflow:hidden}
+  .layer{display:grid; grid-template-columns:64px 1fr; align-items:center;
+    padding:14px 16px; border-top:1px solid var(--line); background:var(--bg2)}
+  .layer:first-child{border-top:0}
+  .layer .lab{font-family:"SF Mono",ui-monospace,monospace; font-weight:700; color:var(--teal)}
+  .layer .d b{color:#fff} .layer .d{font-size:15px; color:var(--mut)}
+  .layer.l4 .lab{color:var(--amber)} .layer.l3 .lab{color:var(--violet)} .layer.l0 .lab{color:var(--dim)}
+
+  /* model-b diagram */
+  .mb{display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; margin:22px 0}
+  .mb .node{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; text-align:center; font-size:14px}
+  .mb .server{grid-column:1 / -1; border-color:rgba(99,182,173,.4); background:linear-gradient(180deg, rgba(99,182,173,.10), transparent)}
+  .mb .node b{display:block; color:#fff; margin-bottom:3px}
+  .mb .node .s{color:var(--dim); font-size:12.5px}
+  .mb .arrow{grid-column:1 / -1; text-align:center; color:var(--dim); font-size:13px; margin:-4px 0}
+
+  .payoff{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:6px 22px; margin:18px 0}
+  .payoff li{margin:.7em 0}
+  .payoff li b{color:var(--teal)}
+
+  .callout{border-left:3px solid var(--teal); padding:4px 0 4px 18px; margin:20px 0; color:var(--mut)}
+  .honest{background:rgba(224,143,143,.06); border:1px solid rgba(224,143,143,.22); border-radius:10px; padding:4px 20px; margin:18px 0}
+  .honest h3{color:var(--rose)}
+
+  footer{padding:40px 0 90px; color:var(--dim); font-size:14.5px}
+  footer a{color:var(--mut)}
+  .tag{display:inline-block; font-size:12px; color:var(--dim); border:1px solid var(--line); border-radius:20px; padding:3px 11px; margin:3px 5px 3px 0}
+  @media(max-width:600px){ h1{font-size:31px} .mb{grid-template-columns:1fr} .terms div{grid-template-columns:1fr; gap:2px} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="eyebrow">Architecture, for the VS Code generation</div>
+    <h1>What <span class="g">Godot</span> is, and why it isn&rsquo;t shaped like your editor</h1>
+    <p class="lead">A programmable text editor in the lineage of Emacs &mdash; rebuilt clean on web technology &mdash; written for people who think of their editor as something to <em>shape</em>, not just configure. If you&rsquo;ve never touched Emacs, good: this explains it in terms of tools you already know.</p>
+
+    <div class="tldr">
+      <b>The one-paragraph version.</b> In VS&nbsp;Code or Sublime, the editor is a finished application and your extensions run <em>outside</em> it, talking through a fixed API. In Godot, the editor <em>is</em> the runtime of its own extension language. Every keystroke runs a command; every command is a piece of Lisp you can read; and you can redefine any of it &mdash; the keymap, a motion command, how a file is opened &mdash; <strong>while the editor is running, with no reload and no privileged core that&rsquo;s off-limits.</strong> Everything below is a consequence of taking that one idea seriously.
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">01</span>The mental-model shift</h2>
+    <p class="lede">The fastest way to understand Godot is to notice where it puts the boundary between &ldquo;the editor&rdquo; and &ldquo;your code.&rdquo;</p>
+
+    <p><strong>VS Code</strong> is a beautifully engineered app with a sandbox bolted to the side. Your extension is a separate Node process. It receives a curated <code>vscode.*</code> API, can&rsquo;t touch what the API doesn&rsquo;t expose, and to apply a change you reload the window. <code>settings.json</code> is a sealed negotiation: you pick from options the authors anticipated. <strong>Sublime</strong> is faster and lighter, with Python plugins, but the same shape &mdash; a native core you extend from the outside.</p>
+
+    <p><strong>Godot inverts this.</strong> There is no privileged core and no process boundary between you and the editor. The commands you invoke, the standard library, the keymap &mdash; all of it is ordinary Lisp loaded into the same runtime your own code runs in. Open the editor&rsquo;s built-in REPL, evaluate a new definition, and the next keystroke uses it. The thing you are editing in <em>is</em> the program, and it is open all the way down.</p>
+
+    <p class="mut">A few Emacs-rooted words appear throughout. Here they are in your vocabulary:</p>
+    <div class="terms">
+      <div><span class="k">buffer</span><span class="v">An in-memory document model. Like VS Code&rsquo;s <code>TextDocument</code>, but richer &mdash; it carries cursors, selections, semantic metadata, modes, and edit history as first-class state, not as editor-side decorations.</span></div>
+      <div><span class="k">view</span><span class="v">An on-screen surface showing a buffer (or other source). Usually a text editor &mdash; but also an image, a shell, an emulator, a notebook. The peer of an editor tab.</span></div>
+      <div><span class="k">minibuffer</span><span class="v">The one-line input strip at the bottom for prompts and commands &mdash; essentially the command-palette input, plus every &ldquo;type a path / a name / a search&rdquo; prompt.</span></div>
+      <div><span class="k">M-x</span><span class="v">&ldquo;Run a command by name.&rdquo; The command palette. (<code>M-</code> = the Meta key; on this Mac build, Command.)</span></div>
+      <div><span class="k">mode</span><span class="v">A bundle of behavior for a buffer. A <em>major</em> mode ≈ a language mode (Markdown, LaTeX); <em>minor</em> modes are toggleable layers (a linter, a preview) that stack on top.</span></div>
+      <div><span class="k">point / mark</span><span class="v">The cursor position, and the other end of a selection. &ldquo;Region&rdquo; = the selection between them.</span></div>
+      <div><span class="k">kill / yank</span><span class="v">Cut/copy and paste &mdash; but onto a <em>ring</em> of recent cuts you can cycle through, not a single clipboard slot.</span></div>
+    </div>
+
+    <table class="vs">
+      <tr><th>Question</th><th>VS Code / Sublime</th><th>Godot</th></tr>
+      <tr><td>Where does an extension run?</td><td>A separate process, behind a fixed API.</td><td>In the same runtime as the editor itself.</td></tr>
+      <tr><td>How do you apply a change?</td><td>Reload / restart the window.</td><td>Evaluate it. It&rsquo;s live on the next keystroke.</td></tr>
+      <tr><td>What&rsquo;s a keybinding?</td><td>A JSON entry mapping keys to a command id.</td><td>A Lisp data structure mapping keys to command <em>names</em>, editable as data.</td></tr>
+      <tr><td>Can you change &ldquo;core&rdquo; behavior?</td><td>Only what the API exposes.</td><td>Yes &mdash; the core is stdlib Lisp you can redefine.</td></tr>
+      <tr><td>Configuration model</td><td><code>settings.json</code>: choose from anticipated options.</td><td>Code: express the behavior you want directly.</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">02</span>The architecture in layers</h2>
+    <p class="lede">Godot has a deliberately small shape you can hold in your head &mdash; five layers, each with one job and a stable seam to the next.</p>
+
+    <div class="stack">
+      <div class="layer l0"><span class="lab">L0</span><span class="d"><b>Host</b> &mdash; Electron. File I/O, subprocesses, OS integration. Thin and stable.</span></div>
+      <div class="layer"><span class="lab">L1</span><span class="d"><b>Storage</b> &mdash; the raw text data structure (a piece tree). Fast edits, undo, no idea what the text <em>means</em>.</span></div>
+      <div class="layer"><span class="lab">L2</span><span class="d"><b>Buffer</b> &mdash; the semantic model: markers, overlays, text properties, point/mark, modes, hooks. The system&rsquo;s nervous system.</span></div>
+      <div class="layer l3"><span class="lab">L3</span><span class="d"><b>Lisp</b> &mdash; an interpreter written from scratch in JS. The customization and command language. Hot-reloadable.</span></div>
+      <div class="layer l4"><span class="lab">L4</span><span class="d"><b>Renderer</b> &mdash; projects buffer state into the DOM, turns input into commands. Tree-sitter syntax, virtualized lines.</span></div>
+    </div>
+
+    <p>Dataflow is one-directional and easy to trace: <strong>input becomes a command &rarr; the command edits the buffer (L2) &rarr; the buffer emits change events &rarr; the renderer updates.</strong> The renderer never mutates state directly; it only ever subscribes and paints. That single rule is why the display can be replaced wholesale without touching anything that defines <em>behavior</em>.</p>
+
+    <p class="mut">If you&rsquo;re wondering about performance: the editor surface is plain DOM (no React per character), only visible lines exist in the DOM at all, each line is split into runs of same-styled text rather than per-character spans, and renders are batched to one per animation frame. Syntax highlighting is a real <strong>tree-sitter</strong> parse, the same engine VS Code-adjacent tools use, with results stored back on the buffer as metadata.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">03</span>Buffers, not documents</h2>
+    <p class="lede">VS Code&rsquo;s <code>TextDocument</code> is text plus a language id; everything else &mdash; decorations, folding, diagnostics &mdash; is the editor&rsquo;s, layered on top and owned by the UI. Godot moves that intelligence <em>into</em> the buffer, where extensions can reach it.</p>
+    <ul>
+      <li><strong>Markers</strong> &mdash; positions that ride edits correctly. Drop a marker, type 500 lines above it, the marker still points at the same logical spot. Bookmarks, multi-cursor, and tracked references are all just markers.</li>
+      <li><strong>Overlays &amp; text properties</strong> &mdash; metadata attached to ranges. Text properties travel with the characters under copy/paste; overlays float independently. Syntax faces, fold markers, search highlights, semantic categories all live here.</li>
+      <li><strong>Modes &amp; hooks</strong> &mdash; a buffer carries its behavior. Hooks are named places (&ldquo;before change&rdquo;, &ldquo;mode activated&rdquo;) where extensions attach &mdash; the substrate for nearly every feature.</li>
+      <li><strong>Command-level undo</strong> &mdash; transactions grouped by the command that caused them, over the storage layer&rsquo;s finer-grained undo.</li>
+    </ul>
+    <p>Because this is the layer both Lisp and JavaScript talk to, a feature you&rsquo;d write as a heavyweight VS Code extension &mdash; tracking positions, decorating ranges, reacting to edits &mdash; is here a handful of calls against a model that was built to be programmed.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">04</span>Everything is a view (yes, even an emulator)</h2>
+    <p class="lede">In VS Code, anything that isn&rsquo;t a text editor is a <em>webview</em> &mdash; a sandboxed iframe with its own world, bolted onto the side and second-class. Godot has one general notion of a <strong>view</strong>, and a text editor is just the most common kind.</p>
+
+    <p>A view is the unit of &ldquo;a thing you&rsquo;re looking at&rdquo;: it owns a surface, a lifecycle, and a place in the window. Most wrap a text buffer. But the same machinery hosts <strong>any web component as a first-class view</strong> &mdash; with roughly six lines of Lisp via <code>define-element-view</code>. Things that already exist as real, navigable views in Godot:</p>
+    <p>
+      <span class="tag">a live shell (xterm + PTY)</span>
+      <span class="tag">an Atari emulator</span>
+      <span class="tag">a reactive notebook</span>
+      <span class="tag">an SVG drawing editor</span>
+      <span class="tag">a PDF viewer</span>
+      <span class="tag">a jukebox</span>
+      <span class="tag">a bibliography search panel</span>
+      <span class="tag">a code minimap</span>
+    </p>
+    <p>None of these is a special case in the core. Each is a view kind plugged into the same lifecycle as the text editor &mdash; it appears in the buffer list, splits into panes, restores across restarts, and is driven by the same command system. The window itself is a <strong>pane tree</strong> (a binary tree of splits, leaves holding views), so you compose layouts freely rather than fighting a fixed sidebar/panel grid.</p>
+    <div class="callout">The payoff isn&rsquo;t &ldquo;Godot ships an emulator.&rdquo; It&rsquo;s that the distance between &ldquo;I have a web component&rdquo; and &ldquo;it&rsquo;s a real, paneable, session-restoring view in my editor&rdquo; is an afternoon &mdash; because views were designed as an open set, not a closed list the authors curate.</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">05</span>One brain, many windows</h2>
+    <p class="lede">Open two windows in VS Code and you have two independent processes that happen to share files on disk. Godot is built like a language runtime with a daemon.</p>
+
+    <div class="mb">
+      <div class="node server"><b>The server (&ldquo;the spine&rdquo;)</b><span class="s">One process. Holds every buffer, the Lisp runtime, and all dispatch. The single source of truth.</span></div>
+      <div class="arrow">&darr;&nbsp; each window is a thin client over a message port &nbsp;&darr;</div>
+      <div class="node"><b>Window A</b><span class="s">paints + sends keys</span></div>
+      <div class="node"><b>Window B</b><span class="s">paints + sends keys</span></div>
+      <div class="node"><b>Window C</b><span class="s">paints + sends keys</span></div>
+    </div>
+
+    <p>A central <strong>server</strong> owns the buffers and the interpreter; each <strong>window</strong> is a thin client that paints what it&rsquo;s told and forwards keystrokes. Two consequences fall out, both hard or impossible in the conventional model:</p>
+    <ul>
+      <li><strong>Shared, live state.</strong> The same buffer open in two windows is the <em>same object</em>. Type in one, the other updates as you type &mdash; not on save, not on a file-watcher tick. There is no &ldquo;reconcile two copies&rdquo; problem because there is only one copy.</li>
+      <li><strong>The server resolves every key.</strong> A keystroke is sent to the server, which decides what it means and what should happen &mdash; then tells <em>whichever</em> windows it chooses. So a command in window A can act on B and C: close every other window, or retheme all of them, in one keystroke. The window is a display, not a brain.</li>
+    </ul>
+    <p class="mut">This is the Emacs-daemon idea (one long-lived process, many lightweight frames) &mdash; but here it&rsquo;s the foundation, with a clean message protocol between the server and its clients rather than a retrofit.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">06</span>Two languages, one runtime: Lisp for taste, JS for muscle</h2>
+    <p class="lede">Godot is scriptable in two languages that share the same editor state &mdash; and the split between them is a deliberate design stance, not an accident of having both.</p>
+
+    <p>The custom <strong>Lisp</strong> is the primary surface: it&rsquo;s what the standard library and every built-in command are written in, and it&rsquo;s what gives the editor its character. The dialect is its own thing &mdash; Scheme&rsquo;s lexical scoping and modules, Clojure&rsquo;s data-structure idioms, lexically-scoped macros, immutable values by default, docstrings on every definition. <strong>JavaScript</strong> is equally first-class (you&rsquo;re in a JS runtime; pretending otherwise would be silly) and is where heavy lifting and web-library integration naturally go.</p>
+
+    <p>The governing principle: <em>Lisp is the customization and macro surface; JavaScript does the engine work; and the JS defaults must always be overridable from Lisp, live.</em> A command registered in one language is callable from the other; both bind the same buffer API. You reach for JS when the task is web-shaped or performance-shaped, and Lisp when you&rsquo;re shaping how the editor behaves.</p>
+
+    <p>A binding is data:</p>
+<pre><span class="c-com">;; keymap.lisp — the keymap is a literal map of key → command name</span>
+{<span class="c-str">"M-f"</span> <span class="c-key">'forward-word</span>
+ <span class="c-str">"C-x C-f"</span> <span class="c-key">'find-file</span>
+ <span class="c-str">"C-h k"</span> <span class="c-key">'describe-key}</span></pre>
+
+    <p>A command is an ordinary definition with a docstring:</p>
+<pre>(<span class="c-kw">defcommand</span> <span class="c-fn">comment-line</span> ()
+  <span class="c-str">"Toggle line comments on the region or current line."</span>
+  ...)</pre>
+
+    <p>And hosting a whole new kind of view is about this small:</p>
+<pre>(<span class="c-kw">define-element-view</span> <span class="c-fn">atari</span>     <span class="c-com">; the symbol is the kind AND the command → M-x atari</span>
+  <span class="c-key">:title</span>  <span class="c-str">"Atari 2600"</span>
+  <span class="c-key">:module</span> <span class="c-str">".../stella-element.js"</span>   <span class="c-com">; the ES module that defines the element</span>
+  <span class="c-key">:tag</span>    <span class="c-str">"stella-emulator"</span>)       <span class="c-com">; the custom element it registers</span></pre>
+
+    <p>Redefine any of these in the running editor and the change takes effect immediately &mdash; the &ldquo;hot reload&rdquo; isn&rsquo;t a dev-mode convenience, it&rsquo;s how the editor is meant to be lived in.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">07</span>A keystroke&rsquo;s journey</h2>
+    <p class="lede">Concretely, here is what happens when you press a key &mdash; the whole loop, because it&rsquo;s short enough to follow.</p>
+    <ol>
+      <li>The window turns the raw event into a normalized name &mdash; <code>Cmd+&rarr;</code> becomes the string <code>"M-right"</code>. That&rsquo;s <em>all</em> the window decides; it does no interpretation.</li>
+      <li>It sends that string to the server as a &ldquo;key&rdquo; message.</li>
+      <li>The server&rsquo;s dispatcher (Lisp) resolves it through the active keymaps &mdash; minor modes, then the major mode, then the global map &mdash; and finds it bound to <code>forward-word</code>.</li>
+      <li>It runs that command, which moves point and edits buffer state.</li>
+      <li>The buffer change fans out to <em>every</em> window showing that buffer, each repainting the affected lines on its next frame.</li>
+    </ol>
+    <p>If a command&rsquo;s effect is purely visual &mdash; open a panel, close a window &mdash; the server doesn&rsquo;t edit a buffer; it sends an explicit <strong>directive</strong> to a chosen set of windows. Same pipeline, different terminus. Notice there&rsquo;s no place in that loop where the window &ldquo;knows&rdquo; what a key means. That knowledge lives in one editable Lisp keymap, which is exactly why you can change it from inside.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">08</span>What this actually buys you</h2>
+    <p class="lede">Differences in architecture only matter if they cash out in daily use. These do.</p>
+    <div class="payoff"><ul>
+      <li><b>The fix-it loop collapses.</b> Notice an annoyance, open the REPL, redefine the command, keep working. No rebuild, no extension-host restart, no &ldquo;reload window.&rdquo; Minutes, sometimes seconds &mdash; not a context switch.</li>
+      <li><b>The editor explains itself.</b> Press <code>C-h k</code> then any key and Godot tells you which command runs and shows its documentation &mdash; read from the live definition, not a manual that drifted. Ask it what a command does and it answers from itself. (We built exactly this self-describing help into the bottom panel.)</li>
+      <li><b>Non-text tools are real citizens.</b> A shell, a notebook, an emulator, an SVG editor live in panes beside your code, restore with your session, and obey the same commands &mdash; not iframes in a side dock.</li>
+      <li><b>Windows cooperate.</b> Two windows on one buffer edit in lockstep; one keystroke can drive all of them. The daemon model, by default.</li>
+      <li><b>Nothing is off-limits.</b> There is no &ldquo;you can&rsquo;t do that from an extension.&rdquo; If the editor can do it, your code can too, because your code and the editor are the same kind of thing.</li>
+    </ul></div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">09</span>The principle underneath it all</h2>
+    <p>One idea resolves nearly every design dispute in Godot: <strong>legibility</strong>. The editor should be comprehensible to the people who use it &mdash; not merely open-source, but shaped so the architecture fits in your head, the language has rules you can state, the layers have clear jobs, and the system <em>explains itself when you ask</em>. When power and clarity conflict, clarity wins until profiling says otherwise.</p>
+    <p>The second commitment is aesthetic: <strong>beautiful by default</strong>. Not configurable-into-beauty &mdash; good fonts, colors, and spacing chosen by someone with taste, present the first second you open it. Both commitments serve the same end: an editor is an environment in which thought happens, and a tool you can think clearly in has to be clear itself, and pleasant enough to spend hours inside.</p>
+    <p class="mut">Godot is, unapologetically, a <em>successor in spirit to Emacs</em> &mdash; it takes Emacs&rsquo;s deepest idea (the editor as a living thing you reshape from within) and rebuilds it on a clean foundation, shedding forty years of incidental complexity while there&rsquo;s still time to make the choices deliberately.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="n">10</span>Honest about what it is</h2>
+    <div class="honest">
+      <h3>Scope &amp; status</h3>
+      <p>Godot is a <strong>solo, v0.1 project</strong>, built by one person for themselves and the handful of others who&rsquo;ll recognize the idea. It is <em>not</em> trying to be VS Code, not chasing a mass audience, and not a commercial play. macOS is the supported platform today; Linux and Windows come later.</p>
+      <p>It is <strong>not Emacs-compatible</strong>: the Lisp is its own dialect, and Elisp packages don&rsquo;t run here &mdash; deliberately, to avoid carrying decades of baggage. And there&rsquo;s a real cost of entry: you&rsquo;re learning a custom Lisp and a model where shaping your tools is the normal way to use them. That cost <em>is</em> the point &mdash; this is an editor for people who&rsquo;d find that fun, the kind who&rsquo;d have built it themselves given time.</p>
+    </div>
+    <p class="mut">If that&rsquo;s you &mdash; you keep a directory of half-finished extensions, you find the line between &ldquo;user&rdquo; and &ldquo;developer&rdquo; of your editor artificial &mdash; Godot is built for exactly the way you already want to work.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>Godot &mdash; a Lisp-extensible editor. Vanilla JavaScript (ES modules, no TypeScript), Electron, tree-sitter; local-first; an interpreter written from scratch. Architecture docs live in the repository under <code>docs/</code> (start at <code>docs/MAP.md</code>).</p>
+    <p>&ldquo;An editor for the people who would have built it themselves if they&rsquo;d had time.&rdquo;</p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -645,7 +645,7 @@ text. Group: `latex`. Defined in `latex-insert.lisp`.
 
 :::function{name="*latex-macros*" path="reference/latex/latex-macros.html"}
 #### `*latex-macros*`
-`(default: a 35-name list — textbf, emph, ref, cite, label, footnote, frac, sqrt, …)`
+`(default: a 36-name list — textbf, emph, ref, cite, label, footnote, frac, sqrt, …)`
 
 Candidate macro names (no leading backslash) offered by
 cmd(latex-insert-macro) (`C-c C-m`), merged at prompt time with the

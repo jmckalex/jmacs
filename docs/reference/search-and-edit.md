@@ -101,8 +101,9 @@ key:
 
 Any other key re-prompts without moving on — the echo area shows
 `(use y, n, q, !, RET — got <key>)` ahead of the prompt while the match
-stays selected. On finishing it clears the selection and reports the
-replacement count (`query-replace <from>: N replacements`).
+stays selected. On finishing it clears the selection. (The replacement
+count is printed with `println`, whose output the running editor
+currently discards — so no count appears in the echo area.)
 :::
 
 ### Occur

@@ -30,11 +30,13 @@ skips the `:on-change` hook — the desync *Customization from Lisp*
 spells out.
 
 The `!` rule has a corollary worth stating on its own: **opening a
-panel is a side effect**. The stdlib's canonical case is the view list:
+panel is a side effect**. The instructive case is the view list:
 `(view-list)` is the host primitive that returns the data — the list of
-open view handles — while cmd(view-list!) is the command that opens the
-*View List* panel on screen. The `!` keeps the data name free; give an
-opener the `!` even though Emacs would not. The leading `-`, by
+open view handles — while the panel that shows the open buffers is a
+separate *command* (cmd(list-views), `C-x C-b`). Give an opener you
+write the `!` even though Emacs would not: the `!` keeps the data name
+free, and the next pitfall shows exactly what goes wrong when an
+opener claims the bare name. The leading `-`, by
 contrast, is convention rather than mechanism — nothing stops another
 file from calling `-split-path`. For enforced privacy, put helpers in a
 `(module …)` and export only the public names; see *Modules and
@@ -315,8 +317,7 @@ of you. For code in a file, evaluate in place: pressing `C-enter`
 runs cmd(eval-expression-at-point), evaluating the form enclosing point
 and showing the result as a green pill — red for an error — beside the
 closing bracket; `C-x C-e` (cmd(eval-expression-before-point)) takes
-the form just before point; the running record is the `*Eval log*`
-buffer (cmd(show-eval-log)).
+the form just before point.
 
 When a name is unfamiliar, ask before guessing: `(doc f)` returns the
 docstring, `(where-defined f)` the definition's `"line:col"`, and

@@ -863,8 +863,9 @@ it. Returns the new view. Behind cmd(scratch-buffer) (`C-x n`).
 
 Step the active window's open set forward or backward from its current
 buffer and switch. A no-op with fewer than two open views. Wrapped by
-cmd(next-view) (`C-x C-right`) and cmd(previous-view)
-(`C-x C-left`).
+cmd(next-view) (`C-x →`) and cmd(previous-view)
+(`C-x ←`) — the un-modified arrows; `C-x C-→` / `C-x C-←` belong to
+spatial pane focus (cmd(focus-pane-right) / cmd(focus-pane-left)).
 :::
 
 :::function{name="find-view" path="reference/buffer-primitives/find-view.html"}

@@ -289,7 +289,7 @@ match those strings and nothing else. The rules:
 |-----------|----------------|-------|
 | `x` | `"x"` | self-inserts when unbound |
 | `Cmd`+`x` | `"M-x"` | Command is Meta; `Ctrl`+`z` is `"C-z"` |
-| `Option`+`]` | `"A-]"` | Option chords are user territory |
+| `Option`+`]` | `"A-]"` | bound by default: cmd(insert-single-close-quote) |
 | `Shift`+`←` | `"S-left"` | named keys are lowercase |
 | `Ctrl`+`=` | `"C-equal"` | punctuation by code name |
 | `Cmd`+`Shift`+`5` (`M-%`) | `"M-S-5"` | shifted symbol = `S-` + unshifted key |
@@ -299,9 +299,12 @@ match those strings and nothing else. The rules:
 One deliberate asymmetry: an **unbound `A-` chord falls through to
 inserting the character Option composed**. The dispatcher tries the
 `A-…` string first — a binding always wins — and only then lets the
-composed character through, so `A-]` types a curly quote and accented
+composed character through, so `A-8` types a bullet (•) and accented
 letters still arrive natively. Binding an `A-` key costs you that one
-composition; the rest of Option typing is untouched.
+composition: the Option brackets, for instance, are bound to the
+editor's typographic-quote layout (see Basic editing), so they no
+longer compose macOS's defaults. The rest of Option typing is
+untouched.
 
 Self-insert has one hook. After the dispatcher inserts the character
 it runs `*post-self-insert-hook*`, calling each registered procedure

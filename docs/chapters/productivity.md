@@ -63,8 +63,8 @@ third untouched.
 
 Both commands are short Lisp procedures (`multi-cursor.lisp` in the
 standard library) built on four buffer-layer primitives you can call
-yourself: `(add-selection! anchor point)` adds a cursor whose selection
-spans the two offsets, `(collapse-to-primary!)` drops back to the single
+yourself: `(add-selection! point anchor)` adds a cursor — the caret at
+the first offset, the selection anchored at the (optional) second, `(collapse-to-primary!)` drops back to the single
 primary cursor, `(cursor-count)` reports how many cursors are live, and
 `(selections)` lists each cursor's range. A command that places a cursor
 at every match of a regexp, or on every line satisfying a predicate, is

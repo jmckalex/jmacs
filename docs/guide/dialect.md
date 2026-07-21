@@ -363,9 +363,10 @@ stack is a raw JS error no Lisp `try` can catch.
 recursion is a real tool here, not a `max-lisp-eval-depth` incident
 waiting to happen. Schemers should note the `try`/`module` carve-outs;
 Common Lispers can simply stop consulting their implementation's
-manual. (The same trampoline counts bounces and checks for `C-g`
-every few thousand steps — a long-running loop is interruptible,
-not a hang.) *Functions and Closures* maps the positions precisely.
+manual. (The trampoline also carries interrupt-check and step-budget
+hooks, but the running editor does not currently arm them — a truly
+runaway loop still hangs the server until relaunch, so test long loops
+in small steps.) *Functions and Closures* maps the positions precisely.
 
 ### Errors: `try`, a Condition Map, and No Restarts
 
@@ -401,10 +402,11 @@ escape hatch included.
 ### Modules Are Real, and Imports Are Snapshots
 
 Unlike Emacs Lisp's flat obarray with courtesy prefixes, Godot Lisp
-has an actual module system, as special forms: `(module name body…)`
-evaluates its body in a fresh environment, `(export sym…)` declares
-the public names (anywhere in the body), and `(import name)` copies
-the exported bindings into the current scope.
+has an actual module system: `module` and `import` are special forms —
+`(module name body…)` evaluates its body in a fresh environment, and
+`(import name)` copies the exported bindings into the current scope —
+while `(export sym…)` is a declaration the `module` form itself
+recognises anywhere in its body.
 
 ```lisp
 (module greetings
@@ -421,9 +423,11 @@ your top-level definitions or other modules; everything else arrives
 by `import`. (Common Lispers: this is stricter than a package that
 `:use`s `CL` and inherits half the world.) Second, `import` copies
 *current values* — a snapshot. Re-evaluating a module updates every
-closure inside it at once (the environment is reused — this is what
-makes redefining a command in the REPL take effect immediately), but
-importers keep their stale copies until they import again. Module names are flat symbols;
+closure inside it at once (the module environment is reused), but
+importers keep their stale copies until they import again. (Command
+redefinition in the REPL is immediate for a different reason: the
+keymap binds command *names* and resolves them late — see *Commands
+and Keys*.) Module names are flat symbols;
 there is no renaming, no phasing, and — Schemers — nothing like
 `define-library`'s import surgery. *Modules and Program Structure*
 develops all of it.

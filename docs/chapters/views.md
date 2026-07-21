@@ -354,7 +354,8 @@ exactly the same sense — they sit in panes, take a tab, and answer to
 
 - **The View List** (`C-x C-b`, cmd(list-views)) — the buffer menu; see
   the Files and Buffers chapter.
-- **The bookmark list** (`C-x r l`) — see the Productivity chapter.
+- **The bookmark list** (`C-x r l`) — see the Search, marks, and
+  navigation chapter.
 - **The customize interface** — see the Customization chapter.
 - **Manual and reference pages** (`C-h d`, cmd(open-manual)) — the
   in-app documentation renders as doc views.

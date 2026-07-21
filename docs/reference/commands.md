@@ -706,8 +706,10 @@ namespace, so the two must differ.
 
 Set the fill column auto-fill wraps at. Bound to `C-x f`; the argument
 comes from a minibuffer prompt. Applies the value through the customize
-machinery (`custom-apply!`), so it persists like any customisation. A
-mode's own `:fill-column` still wins in its buffers.
+machinery (`custom-apply!`) — which is *session-only*: the live
+variable updates and `:on-change` hooks run, but nothing is written to
+`custom.lisp`. Set it in `M-x customize` (or `init.lisp`) to persist.
+A mode's own `:fill-column` still wins in its buffers.
 :::
 
 :::function{name="*fill-column*" path="reference/commands/*fill-column*.html"}
@@ -1009,17 +1011,40 @@ the buffer to that path (save-as). Bound to `C-x C-w`. The modified
 indicator clears on every window showing the buffer.
 :::
 
+:::function{name="find-project" path="reference/commands/find-project.html"}
+#### `find-project`
+`(find-project)`
+
+Open a project workspace, choosing the directory in the minibuffer
+with find-file-style TAB completion (seeded at the current buffer's
+directory; `~` expands). Bound to `C-x C-p`. The keyboard counterpart
+of cmd(open-project). A project workspace is a directory-tree on the
+left, an editing tabline in the middle, and the bookmark outline on
+the right; the files left open in the project are restored on its
+next open, and the current workspace is saved first. Defined in
+`project.lisp`.
+:::
+
+:::function{name="open-project" path="reference/commands/open-project.html"}
+#### `open-project`
+`(open-project)`
+
+Choose a directory with the native picker and open it as a project
+workspace (see cmd(find-project) for what that arranges). `M-x`-only.
+Defined in `project.lisp`.
+:::
+
 ### Buffers and views
 
 The buffer-cycling commands that used to live here are *view* commands
 now, documented in `panes.md` alongside the pane tree: cmd(next-view)
 (`C-x →`), cmd(previous-view) (`C-x ←`), cmd(switch-view) (`C-x b`, a
 minibuffer prompt completed against the open buffers), cmd(list-views)
-(`C-x C-b`, an interactive picker), cmd(kill-view) (`C-x k`, with an
-unsaved-changes confirm) and cmd(scratch-buffer) (`C-x n`, a fresh
-seeded Lisp scratch; the empty cmd(new-view) is `M-x`-only). One list
-of buffers is shared by every window; a *view* is one window's sight
-of one.
+(`C-x C-b`, an interactive picker), cmd(kill-view) (`C-x k` — killing
+is immediate, with *no* unsaved-changes confirm: unsaved edits are
+discarded, so save first) and cmd(scratch-buffer) (`C-x n`, a fresh
+seeded Lisp scratch). One list of buffers is shared by every window; a
+*view* is one window's sight of one.
 
 ### Search and replace
 
@@ -1831,9 +1856,10 @@ or:
 (custom-apply! '*markdown-interpreter* "pandoc -f markdown -t html")
 ```
 
-(A plain `set!` works for the session but bypasses persistence.) The
-full entry lives in `help-and-config.md` with the rest of the
-customization system.
+(`custom-apply!` is session-only — use `custom-apply-and-save!`, or
+the customize UI's save, to persist across restarts.) The full entry
+lives in `help-and-config.md` with the rest of the customization
+system.
 :::
 
 :::function{name="add-sticky-note" path="reference/commands/add-sticky-note.html"}

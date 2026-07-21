@@ -3585,10 +3585,10 @@ export function createSpine(options, effects = {}) {
     ;; would shadow working server commands like kill-view/quit, so the broken
     ;; commands are defined HERE instead.)
     (defcommand next-view ()
-      "Switch to the next view in this window (C-x C-<right>)."
+      "Switch to the next view in this window (C-x <right>)."
       (next-view!))
     (defcommand previous-view ()
-      "Switch to the previous view in this window (C-x C-<left>)."
+      "Switch to the previous view in this window (C-x <left>)."
       (previous-view!))
     (defcommand scratch-buffer ()
       "Open a fresh Lisp scratch buffer (C-x n)."
