@@ -1,4 +1,4 @@
-## Introducing jmacs Lisp
+## Introducing Godot Lisp
 
 The chapters before this part describe what the editor does. This part
 is about the language it is done in. Nearly everything you have used so
@@ -14,16 +14,16 @@ end of it you will have a live prompt and a working command you wrote.
 > *The editor is a Lisp program that is still running; extending it is
 > evaluating more of the program.*
 
-### What jmacs Lisp Is
+### What Godot Lisp Is
 
-*jmacs Lisp* is a custom dialect, written for this editor. Its
+*Godot Lisp* is a custom dialect, written for this editor. Its
 semantics come from Scheme: lexical scope, a single namespace shared by
 functions and variables, and applicative order — arguments are
 evaluated, left to right, before a procedure is called. Its data
 literals come from Clojure: vectors `[1 2 3]`, maps `{:a 1 :b 2}`, and
 self-evaluating keywords like `:name`. It is implemented as a
-tree-walking interpreter — about two thousand lines of JavaScript in
-`packages/lisp` — running inside the editor's own JavaScript runtime.
+tree-walking interpreter — about twenty-five hundred lines of JavaScript
+in `packages/lisp` — running inside the editor's own JavaScript runtime.
 
 Each choice serves an extension language rather than a general-purpose
 one. Scheme's semantics were chosen because they are small enough to
@@ -45,27 +45,32 @@ are JavaScript `Map`s.
 
 ### Two Languages, One Editor
 
-jmacs deliberately has two extension languages, with a settled division
+Godot deliberately has two extension languages, with a settled division
 between them. Lisp is the customization and macro surface — it is what
 gives the editor its character, the language of commands, keymaps,
 modes, and your `init.lisp`. JavaScript is the engine: the buffer, the
 renderer, the filesystem, the host primitives that Lisp calls when real
 work has to happen. The contract binding the two is the important part:
 *anything JavaScript implements as a default must be overridable from
-Lisp, live, while the editor runs.* When you press `TAB` in a
-completing prompt, the host calls a Lisp function to decide the
-completions; redefine that function and the very next `TAB` obeys you.
-The `kill-view!` primitive destroys a view unconditionally;
-the cmd(kill-view) *command* that `C-x k` runs is Lisp, and it is the
-Lisp that decides to ask before discarding unsaved work. Mechanism below,
-policy above — and the policy layer is always open.
+Lisp, live, while the editor runs.* Key dispatch is the purest case:
+the engine reports each keystroke as a plain string, and everything
+after that — the keymaps, the prefix chords, the decision of what runs
+— is Lisp in `keymap.lisp`. Keymaps bind command *names*, resolved only
+when the key is pressed, so redefining a command changes what the very
+next keystroke does. The same layering runs through the commands
+themselves: the `save-buffer!` primitive writes the buffer to disk and
+reports a status; the cmd(save-buffer) *command* that `C-x C-s` runs is
+Lisp, and it is the Lisp that decides what the statuses mean — a
+path-less buffer falls back to the `write-file` prompt, exactly as in
+Emacs. Mechanism below, policy above — and the policy layer is always
+open.
 
 This contract is a course steered between two known wrecks. One is the
 Emacs trap: implement everything in the extension language, and the
 language's performance and the editor's features become the same
 problem. The other is the sealed core: a fast engine configured through
 inert settings files, where anything the authors did not anticipate is
-impossible. jmacs keeps the engine in JavaScript and the character in
+impossible. Godot keeps the engine in JavaScript and the character in
 Lisp, and the seam between them is a set of named, documented,
 replaceable functions. (Today the bridge runs in one direction — the
 host registers JavaScript functions as Lisp primitives; calling
@@ -88,24 +93,30 @@ seventeen special forms — `quote`, `quasiquote`, `if`, `define`,
 `and`, `or`, `try`, `module`, `import` — and everything else, from `+`
 to `defcommand`, is a function or macro you can inspect. Inspection is
 built in: every procedure defined with a docstring keeps it, and
-<a href="reference/lisp-core/doc.html" data-jmacs-doc="doc">doc</a>,
-<a href="reference/lisp-core/describe.html" data-jmacs-doc="describe">describe</a>
+<a href="reference/lisp-core/doc.html" data-godot-doc="doc">doc</a>,
+<a href="reference/lisp-core/describe.html" data-godot-doc="describe">describe</a>
 and `where-defined` hand it back from any prompt. Interactively,
 `C-h k` (cmd(describe-key)) names the command behind any keystroke,
 `C-h f` (cmd(describe-command)) documents any command by name, and
-`C-h d` (`open-manual`) opens the manual you are reading. This guide
-leans on that throughout: when a chapter names a function, the editor
-itself can tell you more.
+`C-h d` (cmd(open-manual)) opens the in-editor documentation — three
+sidebar books: the user manual, the function reference, and this
+guide. This guide leans on all of that throughout: when a chapter
+names a function, the editor itself can tell you more.
 
 ### Your First Evaluations
 
 You do not need to set anything up. Four surfaces evaluate Lisp in a
-stock jmacs, and you should try each one now.
+stock Godot, and you should try each one now. All four feed *the same
+interpreter* — one Lisp world, running in the editor's central server
+process and shared by every window. A function you define at the REPL
+is immediately callable from `M-x`, available to key bindings, and
+visible to code evaluated in any buffer of any window; there is no
+per-window Lisp to keep in sync.
 
 #### The REPL in the Utility Dock
 
 Press `C-x p` (cmd(toggle-repl)). The utility dock opens at the bottom
-of the frame with a `λ ` prompt. Type `(+ 1 2)` and press `Enter`; the
+of the frame with a `λ ` prompt. Type `(+ 1 2)` and press `RET`; the
 REPL prints `3`. It is not a sandbox — it shares the editor's buffers,
 so `(insert! "hello")` types into the document in front of you, at
 point. Press `C-x p` again to put the dock away.
@@ -113,23 +124,27 @@ point. Press `C-x p` again to put the dock away.
 #### Inline Evaluation in a Buffer
 
 With the cursor anywhere inside a Lisp form, press `C-RET`
-(that is cmd(eval-expression-at-point)): the form *enclosing* point is
-evaluated, and the result appears in a pill beside its closing bracket
-— green for a value, red for an error. The companion `C-x C-e`
+(that is cmd(eval-expression-at-point); the key's Lisp name is
+`"C-enter"`): the form *enclosing* point is evaluated, and the result
+appears in a pill beside its closing bracket — green for a value, red
+for an error. The companion `C-x C-e`
 (running cmd(eval-expression-before-point)) evaluates the form whose
-closing bracket sits just before point. The running record of these
-evaluations is the `*Eval log*` buffer, opened
-with cmd(show-eval-log). This is the loop you will live in when writing
-anything longer than a line: code stays in a buffer, and you evaluate
-definitions in place.
+closing bracket sits just before point. This is the loop you will live
+in when writing anything longer than a line: code stays in a buffer,
+and you evaluate definitions in place.
 
-#### Commands from the M-x Palette
+#### Commands by Name with M-x
 
-Press `M-x` (cmd(execute-command)). A palette opens, fuzzy-matching
-over every registered command; type a few letters of `view-list!`,
-press `Enter`, and the *View List* panel opens. Every entry in that
-palette is a Lisp function that announced itself with `defcommand` —
-including, in a few minutes, one of yours.
+Press `M-x` (cmd(execute-command)). The minibuffer opens with an
+`M-x ` prompt; type a command's name and press `RET`. You need not
+type all of it: an exact name runs as given, and otherwise the
+*shortest* command name containing what you typed runs — so a
+distinctive fragment is enough. Try `list-views`: the buffer list
+opens, the same picker `C-x C-b` reaches. Nearly every command `M-x`
+can name is a Lisp function that announced itself with `defcommand` —
+including, in a few minutes, one of yours. (The exceptions are a
+handful of view commands registered from JavaScript by the render
+layer; they are matched and run the same way.)
 
 #### The Seeded scratch.lisp Buffer
 
@@ -138,7 +153,10 @@ A fresh launch seeds a buffer named `scratch.lisp` — switch to it with
 and it arrives holding a small `factorial` definition: put the cursor
 inside it, press `C-RET` to define it, then evaluate `(factorial 10)`
 the same way. Any `.lisp` buffer works like this; the scratch buffer is
-just one with nothing to lose.
+just one with nothing to lose. The seed appears on a fresh launch only
+— a restored session brings back your own buffers instead — but
+`C-x n` (cmd(scratch-buffer)) mints a fresh scratch buffer at any
+moment, uniquely named if one already exists.
 
 When a piece of code earns permanence, it goes in `init.lisp`, your
 configuration file, evaluated at every startup — the file and the
@@ -180,7 +198,7 @@ is enough to watch it work.
 ; ⇒ "Prompt for text and insert it, upcased and emphatic."
 ```
 
-Now press `M-x`, type `insert-shout`, and press `Enter`. The minibuffer
+Now press `M-x`, type `insert-shout`, and press `RET`. The minibuffer
 asks `Shout what? `; whatever you answer lands in your buffer, upcased,
 at point. The command did not stop being a function — `(insert-shout
 "quietly")` from the REPL does the same thing — and `C-h f
@@ -194,23 +212,23 @@ the editor. *Lisp Data Types* catalogues every kind of value — numbers,
 strings, symbols, keywords, lists, vectors, maps — with their literals
 and their equality rules. *The Evaluation Model* states the precise
 rules of evaluation: what evaluates to what, special forms against
-ordinary application, quoting, and tail calls. *Functions and Closures*
-covers `define` and `lambda`, parameters, docstrings, and what a
-closure captures. *Control Flow and Iteration* explains branching and
-the iteration toolkit — higher-order functions, the loop macros, named
-`let`, and the recursion they stand on. *Errors and
-Error Handling* covers signalling with `error` and recovering with
-`try`. *Writing Macros* introduces `defmacro`, quasiquote, and the
-judgement of when a macro is warranted. *Modules and Program Structure*
-covers `module` and `import`, hot reload, and where your code should
-live, `init.lisp` included. *Editing Text from Lisp* turns to the
-editor proper: buffers, point, mark, region, and undo. *Commands,
-Keymaps, and the Minibuffer* gives `defcommand`, key binding, and
-prompting their full treatment. *Writing Modes and Hooks* shows how a
-language mode is assembled and extended. *Customization from Lisp*
-covers settings, faces, and themes as a programming surface. *Lisp
-Style and Pitfalls* closes with the conventions the standard library
-follows and the traps the unwary fall into.
+ordinary application, quoting, and the environments names resolve in.
+*Functions and Closures* covers `define` and `lambda`, parameters,
+docstrings, what a closure captures, and tail calls. *Control Flow and
+Iteration* explains branching and the iteration toolkit — higher-order
+functions, the loop macros, named `let`, and the recursion they stand
+on. *Errors and Error Handling* covers signalling with `error` and
+recovering with `try`. *Writing Macros* introduces `defmacro`,
+quasiquote, and the judgement of when a macro is warranted. *Modules
+and Program Structure* covers `module` and `import`, hot reload, and
+where your code should live, `init.lisp` included. *Editing Text from
+Lisp* turns to the editor proper: buffers, point, mark, region, and
+undo. *Commands, Keymaps, and the Minibuffer* gives `defcommand`, key
+binding, and prompting their full treatment. *Writing Modes and Hooks*
+shows how a language mode is assembled and extended. *Customization
+from Lisp* covers settings, faces, and themes as a programming surface.
+*Lisp Style and Pitfalls* closes with the conventions the standard
+library follows and the traps the unwary fall into.
 
 ### Conventions Used in This Guide
 
@@ -227,9 +245,12 @@ and *The Evaluation Model* makes the distinction precise:
 Keys are written in the editor's chord notation: `C-` is Control, `M-`
 is Command (the Meta of Emacs custom), `A-` is Option, and `S-` is
 Shift, so `M-x` is Command+X and `C-x C-e` means Control+X then
-Control+E. Named keys such as `RET` and `TAB` are set in capitals in
-prose; the lowercase strings Lisp itself uses to name keys (`"enter"`,
-`"C-x"`) appear when we write keymaps, in *Commands, Keymaps, and the
+Control+E. An *unbound* `A-` chord falls through to inserting the
+character Option composes, so curly quotes and accented letters type
+natively while the modifier stays free for your own bindings. Named
+keys such as `RET` and `TAB` are set in capitals in prose; the
+lowercase strings Lisp itself uses to name keys (`"enter"`, `"C-x"`)
+appear when we write keymaps, in *Commands, Keymaps, and the
 Minibuffer*. Function, command and variable names appear in `code
 face`; commands are linked to their reference pages, and everything
 else can be asked about in the running editor with `(doc …)` or

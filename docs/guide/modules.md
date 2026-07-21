@@ -125,8 +125,10 @@ any other scope where the form is evaluated. The copies shadow any
 same-named bindings already in that frame. The form returns the
 module-name symbol.
 
-The word *copies* is load-bearing; the next section is about what it
-costs.
+And it is all-or-nothing: there is no selective import, no renaming on
+import, and no un-import — one form, the whole export list, into the
+current frame. The word *copies* is load-bearing; the next section is
+about what it costs.
 
 #### Module Names and Return Values
 
@@ -138,7 +140,11 @@ a name, so name modules specifically. Hierarchical names in the
 `(lang core)` style are planned but not implemented. Both `module`
 and `import` return the name symbol — the same convention as
 `define` — which is why the REPL answers a module definition with
-`geometry` rather than a value.
+`geometry` rather than a value. (One note for embedders: the registry
+lives on the interpreter's *root* environment, where the full
+interpreter always installs it. A hand-rolled evaluator without one
+raises `the module system is not available` on the first `module`
+form; in the editor you will never see that error.)
 
 ### Imports Are Snapshots
 
@@ -214,52 +220,81 @@ everything the procedure *names* is resolved live. The practical
 habit: change a helper, just reload the module; change an export's
 own definition, reload and re-import.
 
-The editor is built on exactly this property, one level up. Press
-`C-x C-r` (cmd(reload-stdlib)) and the editor re-evaluates its
-entire standard library *into the running interpreter*, then replays
-your `custom.lisp` and `init.lisp`. The stdlib's files are plain
-top-level Lisp rather than modules, so re-evaluation rebinds names
-in the global environment — and the same late name resolution does
-the rest: keymaps hold command *symbols* looked up at dispatch time,
-so the very next keystroke runs the new definitions. No restart, no
-rebuild, no lost session.
+The editor is built on exactly this property, one level up. Its whole
+Lisp world — standard library, your configuration, every command —
+lives in one long-running interpreter (in the *server*; the next
+section says where), and the stdlib's files are plain top-level
+Lisp rather than modules, so re-evaluating a definition rebinds a name
+in the global environment. Late name resolution does the rest: keymaps
+hold command *symbols* looked up at dispatch time (the same late
+resolution *Writing Macros* closes on), so redefine a
+command at the REPL (`C-x p`, cmd(toggle-repl)) and the very next
+press of its key runs the new definition. The same goes for a module
+re-evaluated at the REPL: the reload lands in the running editor, no
+restart, no lost session.
 
 ### How the Editor's Own Lisp Is Organised
 
-Knowing the load order makes the editor's source legible — and tells
-you what your own code can rely on having loaded before it. At
-startup the desktop app (`apps/desktop/src/app.js`) drives the loader
-in `packages/stdlib/src/index.js` through this sequence:
+One fact orients everything else: the editor's single Lisp world runs
+in the *server* — the long-lived process behind every window; the
+manual's architecture chapter, *How Godot is built*, draws the whole
+picture — and each window is a thin client of it. The standard
+library, your configuration, the REPL, every command a keystroke
+dispatches: all of it evaluates in that one interpreter. Knowing its
+load order makes the editor's source legible — and tells you what
+your own code can rely on having loaded before it. At startup the
+server (`apps/desktop/mwb/spine.js`) assembles its world in this
+sequence:
 
-1. **The ordered standard library** — the 59 files listed explicitly
-   in the loader's `STDLIB_FILES` array, each entry commented with
-   why it sits where it sits. `commands.lisp` is first, because
-   every later file declares its commands with `defcommand`;
-   `keymap.lisp` comes after the core command files, because it
-   binds them.
-2. **The language modes** — every file in `languages/` (36 of them),
-   loaded after the ordered list; they are mutually independent, so
-   their order is unspecified.
-3. **Your saved faces** — `faces.json`, installed into the face
-   system.
-4. **`custom.lisp`** — your saved customisations, machine-written.
+1. **The curated standard library** — the files named, in order, in
+   the server's `SPINE_STDLIB` list, the order-sensitive entries
+   commented with why they sit where they sit. `commands.lisp` is
+   first, because every later file declares its commands with
+   `defcommand`; `keymap.lisp` loads
+   early — right after the face and theme registries — because the
+   server is the sole key resolver and everything about dispatch is
+   Lisp. This load is strict: an error in one of these files aborts
+   the server's startup rather than being skipped.
+2. **Your saved faces** — colour overrides from `faces.json`,
+   installed into the face registry.
+3. **The language modes** — the files in `languages/`, one
+   self-contained major mode each, loaded tolerantly: a broken mode
+   file is logged to the server's console and skipped, and the rest
+   still load. Two are deliberately passed over — `latex.lisp` and
+   `markdown.lisp` — because their richer top-level modes already
+   loaded in step 1. The files load in roughly alphabetical order,
+   and a later definition silently wins any name collision, which is
+   why each mode's wiring lives in that mode's own file.
+4. **`custom.lisp`** — your saved customisations, machine-written,
+   evaluated only now, after every `defcustom` in the system exists —
+   the language modes' included.
 5. **`init.lisp`** — your configuration, last, so it has the final
-   word.
+   word. Both configuration files run before the first buffer's major
+   mode is chosen, so even a mode registration in `init.lisp`
+   reshapes the first thing you see.
 
-Each stdlib file loads in isolation: a broken one is reported in the
-REPL by name and skipped, and the rest still load — the editor
-degrades rather than bricks. The files worth knowing first:
+The list the live server loads is a *curation*, not the whole of
+`packages/stdlib/lisp/`. A handful of renderer-era files —
+`files.lisp`, `views.lisp`, `system.lisp` among them — are not in it;
+the server instead embeds its own definitions of their essential
+commands (`find-file`, `switch-view`, the `M-x` entry point, the REPL
+toggle) directly in its source. The full file list lives in the test
+suite's loader (`STDLIB_FILES` in `packages/stdlib/src/index.js`,
+which loads with per-file failure tolerance) — and its membership
+*and order* both differ from the server's, a distinction worth
+remembering when a file behaves under test and misbehaves live. The
+files worth knowing first:
 
 | File | Role |
 |------|------|
 | `commands.lisp` | `defcommand`, interactive specs, the command registry — loads first |
 | `editing.lisp` | the core movement and editing commands, `atomic-change-group` |
-| `files.lisp` | `find-file` and friends, the TAB-completion policy |
-| `views.lisp` | view switching and lifecycle commands |
-| `line-ops.lisp` | whole-line edits — move, duplicate, join, indent |
+| `custom.lisp` | the customisation registry — `defcustom`, applying and saving values |
 | `modes.lisp` | `define-mode`, `register-mode`, hooks, minor modes |
-| `themes.lisp` | the four colour themes and the built-in faces |
+| `faces.lisp` | the face registry and `defface` |
+| `themes.lisp` | the built-in colour themes — seven of them — and the built-in faces |
 | `keymap.lisp` | the global keymap tree and the key-dispatch loop itself |
+| `line-ops.lisp` | whole-line edits — move, duplicate, join, indent |
 | `languages/*.lisp` | one self-contained major mode per language |
 
 The full file-by-file map lives in *Lisp Style and Pitfalls*. Notice
@@ -271,21 +306,32 @@ global namespace where the dispatch machinery finds them.
 
 ### Your Own Code: init.lisp and custom.lisp
 
-Your code lives in two files in the editor's per-user data directory
-(Electron's `userData` path — on macOS,
-`~/Library/Application Support/<App>/`, beside `faces.json`,
-`session.json`, and the `snippets/` directory).
+Your code lives in two files in the editor's configuration home:
+`~/.godot` (after Emacs's `~/.emacs.d`), overridable with the
+`GODOT_HOME` environment variable — handy for a throwaway profile.
+The directory is deliberately separate from Electron's opaque
+application-support area, and on its very first run the editor
+migrates any config it finds at the old location. Beside your two
+Lisp files it holds the editor's other per-user state: `faces.json`,
+`panes.json`, `session.json`, `workspaces.json`,
+`projects-index.json`, and the `recovery/` and `snippets/`
+directories.
 
 **`init.lisp` is yours.** On first run the editor writes a commented
 template:
 
 ```lisp
-;;; init.lisp — your jmacs configuration.
+;;; init.lisp — your Godot configuration.
 ;;;
 ;;; This file is evaluated at startup, after the standard library and
-;;; your saved customisations. It is the jmacs equivalent of .emacs:
-;;; ordinary Lisp, so anything goes — set variables, define commands,
-;;; bind keys.
+;;; your saved customisations (custom.lisp). It is the Godot equivalent
+;;; of .emacs: ordinary Lisp, so anything goes — set variables, define
+;;; commands, bind keys, or choose which major mode opens a file type.
+;;;
+;;; Examples:
+;;;   (custom-apply! '*markdown-interpreter* "pandoc -f markdown -t html")
+;;;   (register-mode ".md" jmarkdown-mode)   ; open .md files in JMarkdown mode
+;;;   (define (insert-divider) (insert! "---"))
 ```
 
 What belongs there: keybindings, settings, small commands — anything
@@ -302,21 +348,26 @@ you would type in the REPL and want to keep.
 ```
 
 It loads after the whole standard library, so everything is available
-to it; and `C-x C-r` replays it after every stdlib reload, so write
-it to be harmlessly re-evaluable — plain `define`s, `defcommand`s,
-and keymap `assoc`s all are.
+to it. It is evaluated once, at server startup — an edit to it (or to
+a stdlib file) takes effect on the next launch, so quit (`C-x C-c`)
+and reopen. To try a form *now*, evaluate it at the REPL first — the
+REPL is the same interpreter `init.lisp` loads into — and copy it in
+once it behaves. A broken `init.lisp` never blocks startup: the error
+is logged to the server's console and the file is skipped from the
+failing form on, so keep independent settings as separate top-level
+forms rather than one big `begin`.
 
 **`custom.lisp` is the editor's.** It is machine-written by the
 customize system — a sequence of `custom-set-saved!` forms with a
 header warning that hand edits will be overwritten — and it loads
 *before* `init.lisp`, precisely so that a hand-written setting in
-`init.lisp` wins over a saved one. Don't edit it casually: route
-free-form configuration to `init.lisp`, and saved settings through
-the cmd(customize) buffer. The machinery behind it — `defcustom`,
-applying and saving values — is the subject of *Customization from
-Lisp*. (Disambiguation: the *stdlib* also contains a `custom.lisp`,
-which defines that machinery; the one in your data directory holds
-your saved values.)
+`init.lisp` wins over a saved one. Don't edit `~/.godot/custom.lisp`
+casually: route free-form configuration to `init.lisp`, and saved
+settings through the cmd(customize) buffer. The machinery behind it —
+`defcustom`, applying and saving values — is the subject of
+*Customization from Lisp*. (Disambiguation: the *stdlib* also
+contains a `custom.lisp`, which defines that machinery; the one in
+your config home holds your saved values.)
 
 ### Modules or Plain Top-Level Definitions
 
@@ -337,8 +388,9 @@ parts:
   wrap its entry points in thin `defcommand`s. The module owns the
   logic; the top level owns the editor-facing surface.
 - **Keep the interface small.** Export the two or three names callers
-  need, not the helpers — every exported name is a promise, and
-  imports being snapshots makes wide interfaces expensive to evolve.
+  need, not the helpers — `import` is all-or-nothing, every exported
+  name is a promise, and imports being snapshots makes wide
+  interfaces expensive to evolve.
   Inside the module, the leading-dash convention still applies:
   `-helper` signals "private even among friends", and it costs
   nothing since the module hides it anyway.

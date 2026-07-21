@@ -55,7 +55,7 @@ any procedure.
 
 The `(interactive …)` clause is a list of *source descriptors*. Each
 yields one or more values; concatenated in order, they become the
-command's arguments. jmacs ships five sources:
+command's arguments. Godot ships five sources:
 
 | Source | Binds | Notes |
 |--------|-------|-------|
@@ -71,7 +71,10 @@ first, so the command need not care which end the cursor is at. Run a
 raises an error — `this command needs an active region` — before the
 body ever runs; it surfaces in the REPL like any other Lisp error.
 `region-or-buffer` is the forgiving variant for commands that
-sensibly default to the whole buffer.
+sensibly default to the whole buffer. `number`, note, does not
+validate: the typed string goes through `string->number`, which
+returns `#f` for anything non-numeric, and the command runs with that
+value — check it in the body when it matters.
 
 The prompt sources are asynchronous: the minibuffer opens, the editor
 keeps running, and the gathering *resumes in a callback* when you
@@ -86,16 +89,19 @@ opens for the label, and only then does the body run.
 Commands and primitives share one namespace, and `defcommand` binds
 its name in an environment the host primitives sit *beneath* — a
 command silently shadows a same-named primitive for every Lisp caller.
-The standard library's cautionary tale is
-`packages/stdlib/lisp/view-menu.lisp`: the bare name `view-list`
-belongs to the primitive that returns the open view handles, so the
-command that opens the clickable *View List* is `view-list!` — were
-it `view-list`, every piece of Lisp that enumerates views would open
-a GUI panel instead of getting its data:
+The standard library's cautionary tale is the primitive `view-list`,
+which returns the open view handles as data — the LaTeX compile loop
+walks it to decide whether a built PDF is already on screen. A command
+that *opens* a clickable View List panel must therefore not take that
+name, or every piece of Lisp that enumerates views would open a GUI
+panel instead of getting its data. The panel command
+(`packages/stdlib/lisp/view-menu.lisp` — a file currently parked
+outside the server's load list; the live buffer list is `C-x C-b`,
+cmd(list-views)) is accordingly `view-list!`:
 
 ```lisp
 (view-list)     ; ⇒ the list of open view handles — a primitive
-(view-list!)    ; opens the *View List* panel — a command
+(view-list!)    ; the panel-opening command — named for its side effect
 ```
 
 The convention follows the namespace, not just taste: a command that
@@ -106,22 +112,28 @@ mistake can pass a green suite and only bite in the running editor.
 
 ### M-x and the Help Keys
 
-`M-x` — physically Command-x — runs cmd(execute-command): a
-minibuffer prompt that fuzzy-filters every name in the `*commands*`
-registry. The first match is shown bracketed; Enter runs it through
-the dispatcher, so interactive specs work exactly as they do from a
-key. Registration is all it takes — the moment a `defcommand` form is
-evaluated, in the REPL or from `init.lisp`, the name is offered.
+`M-x` — physically Command-x — runs cmd(execute-command): a minibuffer
+prompt over every name in the `*commands*` registry. Matching happens
+when you press Enter: an exact name runs directly; otherwise the
+*shortest* registered name containing what you typed runs, so `sort-l`
+reaches `sort-lines` without ceremony. The candidate pool is the
+server's registry plus the renderer-owned element-view commands each
+window announces, so `M-x` reaches every command in the editor.
+(The prompt does not filter as you type — resolution is entirely at
+submit.) Registration is all it takes: the moment a `defcommand` form
+is evaluated, in the REPL or from `init.lisp`, the name is reachable.
 
 Docstrings pay off in the help keys, all on the `C-h` prefix:
 
 | Key | Command | What it does |
 |-----|---------|--------------|
-| `C-h k` | cmd(describe-key) | press a key; reports the command it runs in the global map, opening its doc page or printing its docstring |
-| `C-h f` | cmd(describe-command) | prompt for a command by name; show its documentation |
+| `C-h k` | cmd(describe-key) | read a complete key sequence, following prefix maps through the buffer's keymap chain — `C-h k C-x C-f` describes find-file — and open the command's docstring in the utility dock's Help tab |
+| `C-h f` | cmd(describe-command) | prompt for a command by name (matched like `M-x`: exact, else shortest containing); its full docstring opens in the Help tab |
+| `C-h F` | cmd(describe-face-at-point) | describe the syntax-highlighting face under the cursor — face name, CSS class, the active theme's resolved colour |
+| `C-h C-f` | cmd(highlight-construct-at-point) | name (or create) a face and assign the construct under the cursor to it, applied live |
 | `C-h .` | cmd(describe-symbol-at-point) | describe the symbol under the cursor |
-| `C-h a` | cmd(apropos-doc) | search the documentation |
-| `C-h d` | `open-manual` | this manual |
+| `C-h a` | cmd(apropos-doc) | list every command whose name or docstring contains the typed text, in the dock's Apropos tab |
+| `C-h d` | cmd(open-manual) | this manual |
 
 ### Keymaps Are Plain Maps
 
@@ -129,13 +141,15 @@ There is no `define-key`, no `global-set-key`, no keymap object: a
 *keymap* is an ordinary hash-map from key strings to bindings. A
 binding is either a **command symbol** — quoted, because it is the
 *name* that is stored — or a nested keymap. The `C-h` help map above
-is, trimmed (`packages/stdlib/lisp/keymap.lisp`):
+is (`packages/stdlib/lisp/keymap.lisp`):
 
 ```lisp
 (define c-h-keymap
   {"d" 'open-manual
    "k" 'describe-key
    "f" 'describe-command
+   "F" 'describe-face-at-point
+   "C-f" 'highlight-construct-at-point
    "a" 'apropos-doc
    "." 'describe-symbol-at-point})
 ```
@@ -143,7 +157,11 @@ is, trimmed (`packages/stdlib/lisp/keymap.lisp`):
 Storing the symbol matters. The dispatcher resolves it afresh on
 every keystroke — look the name up, call what it currently names — so
 redefining a command takes effect on the next key press, and a key
-can be bound before its command is defined. This is the same
+can be bound before its command is defined. The dispatcher is
+graceful about the gap: a key whose binding names no *registered*
+command reports `NAME is not available here` in the echo area rather
+than erroring — the same message you see when a binding names a
+command that only exists in some other context. This is the
 late-binding bargain that makes hot-reloading a module painless, as
 *Modules and Program Structure* explains.
 
@@ -201,6 +219,45 @@ map binds `d`), while in a Markdown buffer — whose `C-c` map has no
 runs cmd(add-cursor-next). A mode prefix shadows only the keys it
 actually binds.
 
+### The Universal Argument
+
+One piece of dispatcher state travels *between* a key and the command
+it runs: the prefix argument. `C-u` runs cmd(universal-argument),
+which sets the global `*prefix-arg*` to `#t` and echoes `C-u-`; the
+next command may consult the variable to alter its behaviour. The pane
+splitters are the standing example — `C-x 2` splits below and `C-x 3`
+to the right, while `C-u C-x 2` splits above and `C-u C-x 3` to the
+left. In `panes.lisp` the consultation is one `let`:
+
+```lisp
+(let ((side (if (nil? *prefix-arg*) 'after 'before)))
+  …)
+```
+
+Note the `nil?` test: the variable's resting value is `nil`, which is
+*truthy* in this Lisp, so a bare `(if *prefix-arg* …)` would read
+"argument present" always — absence here is spelled `nil`, not `#f`,
+and must be tested by name. The dispatcher clears `*prefix-arg*` as
+soon as the next command has run (any command except
+`universal-argument` itself, which exists to set it), and `C-g`
+discards a pending one. Only the single boolean press is implemented —
+there is no numeric `C-u 4` multiplier yet.
+
+### The Dispatcher Remembers: *last-command* and *this-command*
+
+Every dispatch records the command's name: `run-command` shifts the
+previous name into `*last-command*` and stores the current one in
+`*this-command*` before the body runs. A command consults
+`*last-command*` to behave differently when it *directly follows* a
+particular command, and two everyday behaviours ride on it:
+cmd(yank-pop) (`M-y`) does nothing but report unless the previous
+command was a `yank` or another `yank-pop`, and the kill commands grow
+one kill-ring entry when they run consecutively — `C-k C-k C-y`
+reinserts both lines (see the kill-ring section of *Editing Text from
+Lisp*). Typing counts too: a self-inserting keystroke stamps
+`*last-command*` with `self-insert`, which is precisely what breaks a
+kill run or a yank-pop chain when you type between them.
+
 ### The Grammar of Key Strings
 
 The renderer normalises every keystroke to a string
@@ -246,6 +303,13 @@ composed character through, so `A-]` types a curly quote and accented
 letters still arrive natively. Binding an `A-` key costs you that one
 composition; the rest of Option typing is untouched.
 
+Self-insert has one hook. After the dispatcher inserts the character
+it runs `*post-self-insert-hook*`, calling each registered procedure
+with the key string — the seam auto-fill-mode wraps lines from. Each
+hook call is wrapped in a `try`/`catch`, because self-insert is the
+one path that must never throw: a buggy hook cannot wedge typing.
+*Writing Modes and Hooks* covers registering one.
+
 ### Reading Input Mid-Command
 
 There are no blocking reads in this Lisp. Every way a command takes
@@ -253,45 +317,84 @@ input mid-flight parks a callback and returns; the callback fires
 when the input arrives.
 
 The smallest is `(read-next-key callback)` — route the *next*
-keystroke to `callback` instead of the keymap. It is how the
-command cmd(describe-key) reads its key, and how cmd(kill-view)
-asks its are-you-sure question (`packages/stdlib/lisp/views.lisp`):
+keystroke to `callback` instead of the keymap. One keystroke only:
+the reader is cleared before the callback runs, so a command that
+needs a conversation re-arms it inside each continuation. That is how
+cmd(describe-key) walks a whole key sequence, and how
+cmd(query-replace) (`M-%`) runs its per-match question
+(`packages/stdlib/lisp/regex-search.lisp`, trimmed):
 
 ```lisp
-(if (view-modified?)
-    (begin
-      (show-status! "Buffer has unsaved changes — kill anyway? (y/n)")
-      (read-next-key
-        (lambda (key)
-          (clear-status!)
-          (if (equal? key "y")
-              (kill-view!)
-              (show-status! "Kill cancelled")))))
-    (kill-view!))
+(define (query-replace-step from to pos count)
+  "Find the next match of FROM at or after POS. When found, highlight
+   it and ask the user what to do; when not, finish."
+  (let ((match (find-string-forward from pos)))
+    (if (not match)
+        (query-replace-finish from count)
+        (begin
+          …                              ; select the match on screen
+          (show-status! (query-replace-prompt-text from to))
+          (read-next-key
+            (lambda (key)
+              (query-replace-handle-key key from to match count)))))))
+
+;; and in query-replace-handle-key, the y branch:
+((or (eq? key "y") (eq? key "enter") (eq? key "space"))
+ (replace-range! (car match) (cdr match) to)
+ (query-replace-step from to
+                     (+ (car match) (string-length to))
+                     (+ count 1)))
 ```
 
-The bare `kill-view!` primitive stays unconditional — the *command*
-owns the confirmation policy, the shadowing rule's division of labour
-in action.
+The whole state machine is those two functions calling each other,
+its state threaded as arguments — no globals beyond the reader
+`read-next-key` itself parks.
 
 For a line of text, `(minibuffer-read prompt callback)` opens the
 minibuffer; the callback receives the entered string, or `nil` when
 the prompt is cancelled. It is precisely what an
 `(interactive (string …))` source compiles to — reach for the spec
 first, and for `minibuffer-read` when a command must prompt mid-body.
+Under the hood the callback parks in the global `*minibuffer-reader*`,
+and the host resumes it on submit.
 
 The completing variant is the host primitive
 `(open-completing-minibuffer! prompt seed)`: the minibuffer opens
-pre-filled with `seed`, and while it is open, TAB calls the global
-Lisp function `(minibuffer-tab-complete current)` — current text in,
-replacement text out — which may also list candidates in the utility
-dock's Completions panel. Redefine that one function and you have
-changed the completion policy. The result is delivered through the
-same continuation hook `minibuffer-read` uses, so a command installs
-its handler by assigning `*minibuffer-reader*`. cmd(find-file) in
-`packages/stdlib/lisp/files.lisp` is the model — three lines: compute
-a seed, call `open-completing-minibuffer!`, and
-`(set! *minibuffer-reader* -find-file-deliver)`.
+pre-filled with `seed`. What TAB then does is currently a host affair:
+the server answers with case-insensitive *path* completion — but only
+for the path prompts (`Find file: `, `Open project: `, the directory
+and jukebox prompts), which also list their candidates in the utility
+dock's Completions panel. Other prompts do not complete yet; the
+Lisp-side hook for the general case, `minibuffer-tab-complete`,
+survives as a pass-through the TAB path does not yet call (the ledger
+of such splits is `apps/desktop/mwb/PRIMITIVE-SPLIT.md`). Delivery,
+by contrast, is uniform: whatever prompt is open, Enter resolves it
+through the same `*minibuffer-reader*` continuation `minibuffer-read`
+uses — unless the server special-cases the prompt string, which is
+how cmd(find-file) works: its body just opens the completing prompt,
+and the server recognises `Find file: ` on submit and performs the
+visit itself.
+
+The third channel reads a *choice* rather than a key or a line.
+`(picker-read title rows callback)` opens an interactive list — the
+surface you know from `C-x C-b` — over `rows`, an opaque row array
+built by a host *row-provider*; the callback receives the chosen
+row's value, or `nil` on cancel. cmd(list-views) is the whole pattern:
+
+```lisp
+(defcommand list-views ()
+  "Pick a view to switch to (C-x C-b)."
+  (picker-read "Buffer list"
+               (buffer-list-rows)
+               (lambda (id)
+                 (cond
+                   ((nil? id) nil)            ;; cancelled — stay put
+                   (else (switch-to-buffer-id! id))))))
+```
+
+The RefTeX label and citation pickers and the crash-recovery
+*Recover* dialog are the same call with different row-providers —
+rows in, one choice out.
 
 ### Registering a Structured Menu
 
@@ -306,7 +409,8 @@ key sequence and docstring. A mode may additionally register a
 key off that string); `sections` is a list of sections, each
 `(section-label (friendly-label . command-symbol) …)`; a later call
 for the same name replaces the registration. From
-`languages/jmarkdown.lisp` (two of its five sections):
+`languages/jmarkdown.lisp` — two of the nine sections of its *final*
+registration, trimmed:
 
 ```lisp
 (register-mode-menu! "JMarkdown"
@@ -314,10 +418,15 @@ for the same name replaces the registration. From
     (cons "Format"
           (list (cons "Bold" 'markdown-bold)
                 (cons "Italic" 'markdown-italic)))
-    (cons "Blocks"
-          (list (cons "Directive (:::)" 'jmarkdown-insert-directive)
-                (cons "Environment (@begin)" 'jmarkdown-insert-environment)))))
+    (cons "Navigate"
+          (list (cons "Next Heading" 'jmarkdown-next-section)
+                (cons "Outline / TOC" 'jmarkdown-toc)))))
 ```
+
+Final, because that file demonstrates the replacement rule on itself:
+it registers a basic menu early on and, once the authoring-layer
+commands exist further down, registers the full nine-section version —
+the later call for `"JMarkdown"` simply wins.
 
 The sections name only command symbols; keys and docstrings are
 resolved from the flat entries, so the menu never goes stale.

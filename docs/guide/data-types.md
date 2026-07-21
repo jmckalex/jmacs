@@ -1,6 +1,6 @@
 ## Lisp Data Types
 
-Every value in jmacs Lisp is one of a small number of types: numbers,
+Every value in Godot Lisp is one of a small number of types: numbers,
 strings, booleans, symbols, keywords, pairs, vectors, maps, and
 procedures — plus `nil`, a type with exactly one member. This chapter
 is the inventory: for each type, the syntax you write, the object you
@@ -19,8 +19,14 @@ quoted, with `\n`, `\t`, `\r`, `\"` and `\\` escaped. The *display*
 form is for humans: strings appear raw, everything else prints the
 same. The `write` primitive uses the first; `display`, `print`, and
 `str` use the second. Every type in this chapter except procedures
-round-trips — reading its written form gives an equal value back.
-Examples show written results in a trailing comment marked `; ⇒`.
+round-trips — reading its written form gives an equal value back —
+with three corners to know: `nil` prints as `nil`, which reads back as
+the *symbol* `nil` (only `()` reads as the empty list); `NaN` and
+`Infinity` print as tokens the reader takes for symbols, unbound ones;
+and a map with a composite list or vector key re-reads as a map that
+is no longer `equal?` to the original, because map keys match by
+identity (below). Examples show written results in a trailing comment
+marked `; ⇒`.
 
 One more thing the reader does quietly: it records the line and column
 of every *list form* it reads (atoms, vectors, and maps carry no
@@ -56,7 +62,7 @@ is `NaN`, the host arithmetic showing through, and `(sqrt -1)` is
 arguments and test the whole chain — `(< 1 2 3)` is `#t` — and apply
 only to numbers. The rest of the catalog (`abs`, `min`, `max`, `inc`,
 `dec`, `floor`, `ceiling`, `round`, `random`) is in the
-<a href="nodes/jmacs-core-lisp-reference.html" data-jmacs-doc="jmacs-core-lisp-reference">Core Lisp Reference</a>.
+<a href="nodes/godot-core-lisp-reference.html" data-godot-doc="godot-core-lisp-reference">Core Lisp Reference</a>.
 
 ### Strings and Their Escapes
 
@@ -70,26 +76,27 @@ the substring, and `substring` has slice semantics — negative indices
 count from the end, out-of-range indices clamp silently.
 
 ```lisp
-(string-length "jmacs")    ; ⇒ 5
-(substring "jmacs" 1 3)    ; ⇒ "ma"
-(substring "jmacs" -3)     ; ⇒ "acs" — negative counts from the end
+(string-length "Godot")    ; ⇒ 5
+(substring "Godot" 1 3)    ; ⇒ "od"
+(substring "Godot" -3)     ; ⇒ "dot" — negative counts from the end
 (str "line 1" "\n" 42)     ; ⇒ "line 1\n42"
 ```
 
 The string procedures in summary — each has a full entry in the
-reference's <a href="nodes/strings.html" data-jmacs-doc="strings">string section</a>:
+reference's <a href="nodes/strings.html" data-godot-doc="strings">string section</a>:
 
 | Procedures | Purpose |
 |---|---|
 | `str`, `string-append`, `string-join`, `string-repeat` | Building — `str` display-coerces anything; `string-append` insists on strings |
 | `string-length`, `substring` | Measuring and slicing |
-| `string-upcase`, `string-downcase` | Case |
+| `string-upcase`, `string-downcase`, `string-capitalize` | Case — `string-capitalize` upcases each word's first letter and downcases the rest, Unicode-aware |
 | `string-split` | String to list of substrings |
 | `string-contains?`, `string-prefix?`, `string-suffix?`, `string-index-of`, `string=?` | Searching and testing |
+| `char-word?` | Whether a one-character string is a word constituent — a letter, digit, or underscore, in any script; the test the editor's word motion shares |
 | `read-string` | String to Lisp forms, unevaluated |
 
 Two conventions to memorise: `string-prefix?` and `string-suffix?`
-take the *affix first* — `(string-prefix? "jm" "jmacs")` — and
+take the *affix first* — `(string-prefix? "Go" "Godot")` — and
 `string-index-of` answers `-1` when the needle is absent, not `#f`.
 
 ### Booleans, True and False
@@ -105,7 +112,7 @@ true in a test is settled in the section on `nil` below.
 A *symbol* is a name as a value. The token rule is liberal: a symbol
 is any run of characters that is not whitespace and not one of the
 delimiters — the brackets, `"`, `;`, and the quote and unquote
-characters — so `+`, `set!`, `view-list!`, `string->symbol`, and even
+characters — so `+`, `set!`, `insert!`, `string->symbol`, and even
 `a:b` are single symbols. Symbols are *interned*: the reader hands out one object per
 name, ever, so two symbols that look alike *are* the same object and
 identity comparison is name comparison.
@@ -168,10 +175,18 @@ parentheses, not in vectors or maps.
 adds the compositions `caar`, `cadr`, `caddr`, `cddr` and the readable
 `second` and `third` — `(second '(a b c))` is `b`. Pairs are frozen at
 construction — there is no `set-car!` or `set-cdr!`; every list
-operation that seems to change a list builds a new one. The rest of
-the toolkit (`length`, `reverse`, `nth`, `last`, `member`) lives in
-the reference's
-<a href="nodes/pairs-and-lists.html" data-jmacs-doc="pairs-and-lists">pairs and lists section</a>.
+operation that seems to change a list builds a new one.
+
+Three list workhorses deserve a line each. `length` is happy to
+measure more than lists: strings and vectors answer their length, maps
+their entry count. `range` builds the standard number list —
+`(range 5)` is `(0 1 2 3 4)`, with `(range start end)` and
+`(range start end step)` variants. And `sort` returns a *stable*
+sorted copy — list in, list out; vector in, vector out — taking an
+optional `less?` comparator; without one it orders all-numbers or
+all-strings and refuses anything mixed. The rest of the toolkit
+(`reverse`, `nth`, `last`, `member`) lives in the reference's
+<a href="nodes/pairs-and-lists.html" data-godot-doc="pairs-and-lists">pairs and lists section</a>.
 
 ### Vectors in Square Brackets
 
@@ -187,11 +202,14 @@ flat block — constant-time indexing, no sharing of tails.
 ```
 
 Vectors are frozen when built; no vector mutation exists. The sequence
-functions are even-handed: `map`, `filter`, `nth`, `get`, and `length`
-accept a vector as readily as a list (though `map` and `filter` always
-return lists), and `vector->list` / `list->vector` convert. One
-caution: an unquoted vector literal *evaluates its elements* — see
-*Quoting Literal Data* below.
+functions are even-handed: `map`, `filter`, `nth`, and `length` accept
+a vector as readily as a list (though `map` and `filter` always
+return lists), `sort` returns a sorted copy of the same type it was
+given, and `vector->list` / `list->vector` convert. `get` also indexes
+a vector, with the same fallback convention it uses for maps —
+`(get [10 20] 1)` is `20`, and `(get [10 20] 5)` is `#f` where
+`vector-ref` would error. One caution: an unquoted vector literal
+*evaluates its elements* — see *Quoting Literal Data* below.
 
 ### Maps in Curly Braces
 
@@ -203,14 +221,17 @@ vectors, an unquoted map literal evaluates its contents — both keys
 return a new map. `hash-map` is the procedural constructor. A `get` with
 no fallback answers a missing key with `#f` — absence is `#f` here, the
 library's miss convention (set out under `nil`, below) — so supply the
-third argument when a stored `#f` must be told apart from a miss.
+third argument when a stored `#f` must be told apart from a miss, or
+ask the membership question directly with `contains?`, which needs no
+sentinel: `(contains? {:a #f} :a)` is `#t`.
 
 ```lisp
-(get {:a 1} :a)        ; ⇒ 1
-(get {:a 1} :c)        ; ⇒ #f — a miss with no fallback is #f, not nil
-(get {:a 1} :c 0)      ; ⇒ 0 — the third argument is the fallback
-(assoc {:a 1} :b 2)    ; ⇒ {:a 1 :b 2} — a copy; the original survives
-(keys {:a 1 :b 2})     ; ⇒ (:a :b)
+(get {:a 1} :a)            ; ⇒ 1
+(get {:a 1} :c)            ; ⇒ #f — a miss with no fallback is #f, not nil
+(get {:a 1} :c 0)          ; ⇒ 0 — the third argument is the fallback
+(contains? {:a 1} :c)      ; ⇒ #f — membership, asked directly
+(assoc {:a 1} :b 2)        ; ⇒ {:a 1 :b 2} — a copy; the original survives
+(keys {:a 1 :b 2})         ; ⇒ (:a :b)
 ```
 
 #### Map Keys Compare by Identity
@@ -233,7 +254,11 @@ The same rule shows up in structural equality: `equal?` compares map
 *values* deeply but looks keys up by identity, so two maps built with
 structurally-equal list keys are not `equal?`. The advice is simple:
 key your maps with keywords, symbols, strings, or numbers; if you need
-a composite key, hold on to the key object itself.
+a composite key, hold on to the key object itself. (The precise host
+rule is JavaScript's `Map` key equality — *SameValueZero* — which
+agrees with `eq?` on everything except one corner: a `NaN` *does*
+match itself as a map key, even though a `NaN` is not `eq?` to
+itself.)
 
 ### Procedures as Values
 
@@ -263,7 +288,7 @@ Now the rule this section exists to make prominent:
 If you arrive from Emacs Lisp or Common Lisp, where `nil` and false
 are the same thing, this is the single fact most worth internalising:
 an empty list does not fail a test. The idiom that follows is to test
-lists with <a href="reference/lisp-core/nil%3F.html" data-jmacs-doc="nil?">nil?</a>,
+lists with <a href="reference/lisp-core/nil%3F.html" data-godot-doc="nil?">nil?</a>,
 never by truthiness.
 
 ```lisp
@@ -273,27 +298,31 @@ never by truthiness.
 (if (nil? '()) "empty" "items")  ; ⇒ "empty" — the right test
 ```
 
-The library leans on this rule through one convention worth learning
-once: **absence is `#f`, emptiness is `nil`**. A lookup that finds
-*nothing there* — `get` with no fallback, `member`, `string->number`,
-`doc`, `where-defined`, `find-view`, `mark` when unset, the search
-primitives — returns `#f`, so it is safe as a bare `if`. A function that
-returns *the empty thing* keeps `nil`: `(first '())` is `nil`, because
-the first of nothing is nothing. So test a possible miss bare and a
-possible emptiness with `nil?`; the two are different questions. (One
-corner the rule creates: `(nil? #f)` is `#f`, so `nil?` does *not*
-detect a `#f` miss — *Lisp Style and Pitfalls* recaps that trap.)
+The library leans on the truthiness rule through one convention worth
+setting beside it:
+
+> *Absence is `#f`; emptiness is `nil`.*
+
+A lookup that finds *nothing there* — `get` with no fallback,
+`member`, `string->number`, `doc`, `where-defined`, `find-view`,
+`mark` when unset, the search primitives — returns `#f`, so it is safe
+as a bare `if`. A function that returns *the empty thing* keeps `nil`:
+`(first '())` is `nil`, because the first of nothing is nothing. So
+test a possible miss bare and a possible emptiness with `nil?`; the
+two are different questions. (One corner the rule creates: `(nil? #f)`
+is `#f`, so `nil?` does *not* detect a `#f` miss — *Lisp Style and
+Pitfalls* recaps that trap.)
 
 ### Three Kinds of Equality
 
-jmacs Lisp has two general equality predicates and one numeric one.
-<a href="reference/lisp-core/eq%3F.html" data-jmacs-doc="eq?">eq?</a>
+Godot Lisp has two general equality predicates and one numeric one.
+<a href="reference/lisp-core/eq%3F.html" data-godot-doc="eq?">eq?</a>
 is *identity*: are these the same object? Because numbers, strings,
 and booleans are host primitives, identity on them is value equality;
 because symbols and keywords are interned, identity on them is name
 equality; pairs, vectors, maps, and procedures are equal only to
 themselves.
-<a href="reference/lisp-core/equal%3F.html" data-jmacs-doc="equal?">equal?</a>
+<a href="reference/lisp-core/equal%3F.html" data-godot-doc="equal?">equal?</a>
 is *structural*: it recurses into pairs (head and tail), vectors
 (elementwise), and maps (same size, values compared deeply — but keys
 looked up by identity, as above); everything else falls back to
@@ -328,12 +357,17 @@ except the numeric tests at the end, which insist on numbers.
 | `list?` | proper lists — `nil` qualifies, `(1 . 2)` does not |
 | `procedure?` | lambdas and primitives — `#f` for macros |
 | `zero?`, `positive?`, `negative?` | numbers in the named region (error on non-numbers) |
-| `even?`, `odd?` | integer parity (error on non-numbers) |
+| `even?`, `odd?` | the remainder on division by two — so `(even? 2.5)` is `#f` and `(odd? 2.5)` is `#t` (error on non-numbers) |
 | `empty?` | `nil`, `""`, `[]`, `{}` — `#f` for everything else |
 
 The companion to the predicates is `type-of`, which names a value's
-type as a keyword: `(type-of [1])` is `:vector`, `(type-of nil)` is
-`:nil`.
+type as a keyword, one of: `:nil`, `:boolean`, `:number`, `:string`,
+`:symbol`, `:keyword`, `:list`, `:vector`, `:map`, `:procedure`,
+`:macro` — or `:value`, for an opaque host object. So `(type-of [1])`
+is `:vector` and `(type-of nil)` is `:nil`. One asymmetry with the
+predicate table: `type-of` answers `:list` for *any* pair, so
+`(type-of '(1 . 2))` is `:list` even though `(list? '(1 . 2))` is
+`#f`.
 
 ### Converting Between Types
 
@@ -356,7 +390,8 @@ accepts hex (`(string->number "0x10")` ⇒ `16`), and — a quirk worth
 knowing — maps the empty string to `0`. For everything-to-string there
 is `str` — `(str 1 " and " :two)` ⇒ `"1 and :two"` — and
 `read-string` converts the other way entirely, from a string to the
-list of Lisp forms it contains, unevaluated.
+list of Lisp forms it contains, unevaluated; `eval` completes that
+loop, form to value (*The Evaluation Model*).
 
 ### Quoting Literal Data
 
@@ -400,5 +435,5 @@ existing variable at a new value, rebinding the name without altering
 the old value (*The Evaluation Model*). And the editor itself: the
 buffer behind your text is a mutable host object, and primitives like
 `insert!` change it in place (*Editing Text from Lisp*). Between those
-poles, jmacs Lisp is a language of immutable values flowing through
+poles, Godot Lisp is a language of immutable values flowing through
 mutable places.
