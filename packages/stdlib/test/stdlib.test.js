@@ -1150,16 +1150,20 @@ test('M-r is bound to replace-string', async () => {
   assert.equal(press(interpreter, 'M-r'), true);
 });
 
-test('C-t transposes the two characters before the cursor', async () => {
+// Emacs semantics (2026-07 parity fix): mid-line C-t drags the char
+// before point past the char after it, point advancing; only at end of
+// line does it swap the two before. Full coverage: emacs-parity.test.js.
+test('C-t transposes the characters around the cursor', async () => {
   const { buffer, interpreter } = await editor('abcd');
-  buffer.moveTo(3); // after "abc"
+  buffer.moveTo(3); // between "c" and "d"
   press(interpreter, 'C-t');
-  assert.equal(buffer.text, 'acbd');
+  assert.equal(buffer.text, 'abdc');
+  assert.equal(buffer.point, 4);
 });
 
 test('C-t at the buffer start does nothing', async () => {
   const { buffer, interpreter } = await editor('ab');
-  buffer.moveTo(1);
+  buffer.moveTo(0);
   press(interpreter, 'C-t');
   assert.equal(buffer.text, 'ab');
 });

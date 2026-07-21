@@ -89,6 +89,25 @@
     (insert! (str "\n" text))
     (goto! (+ (line-start) col))))
 
+;; --- transposing lines ---------------------------------------------------
+
+(defcommand transpose-lines ()
+  "Exchange the current line with the one above, leaving the cursor
+   after both (C-x C-t) — repeated presses drag a line downward."
+  (when (not (first-line?))
+    (let ((cur-start (line-start))
+          (cur-end (line-end))
+          (cur-text (current-line-text)))
+      (goto! (- cur-start 1))
+      (let ((prev-start (line-start))
+            (prev-text (current-line-text)))
+        (atomic-change-group
+          (delete-region! prev-start cur-end)
+          (insert! (str cur-text "\n" prev-text))
+          ;; After both: the start of the following line when there is
+          ;; one, else the end of the buffer.
+          (goto! (min (+ cur-end 1) (buffer-length))))))))
+
 ;; --- joining lines -----------------------------------------------------
 
 (defcommand join-line ()

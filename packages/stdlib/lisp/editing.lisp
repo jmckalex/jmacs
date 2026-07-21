@@ -121,15 +121,6 @@
   "Delete the character after the cursor (or the selection)."
   (delete-forward!))
 
-(defcommand transpose-chars ()
-  "Swap the two characters before the cursor."
-  (when (>= (point) 2)
-    (let ((p (point)))
-      (let ((a (buffer-substring (- p 2) (- p 1)))
-            (b (buffer-substring (- p 1) p)))
-        (delete-region! (- p 2) p)
-        (insert! (str b a))))))
-
 (defcommand newline ()
   "Insert a line break, copying the current line's indentation."
   (insert! (str "\n" (line-indent))))
@@ -200,6 +191,255 @@
     `(with-marker (,m)
        (try (begin ,first ,@rest)
             (finally (goto! (marker-position ,m)))))))
+
+;; --- transposing -------------------------------------------------------
+;; The transpose family follows Emacs's drag model: the thing before
+;; point is dragged forward past the thing after it, and point ends up
+;; after both — so repeated presses keep dragging it rightward.
+;;
+;; Character boundaries are measured with the cursor-motion primitives
+;; (cursor-left! / cursor-right!) rather than offset arithmetic, so a
+;; character that is a surrogate pair (an emoji) transposes as a unit.
+
+(define (-char-start-before p)
+  "The offset where the character ending at P starts, stepping back a
+   whole character — or #f when P is the buffer start. Moves point."
+  (goto! p)
+  (cursor-left! #f)
+  (let ((q (point)))
+    (if (= q p) #f q)))
+
+(define (-char-end-after p)
+  "The offset just past the character starting at P, stepping forward a
+   whole character — or #f when P is the buffer end. Moves point."
+  (goto! p)
+  (cursor-right! #f)
+  (let ((q (point)))
+    (if (= q p) #f q)))
+
+(defcommand transpose-chars ()
+  "Interchange the characters around the cursor, moving forward — the
+   character before point is dragged past the one after it, so repeated
+   presses drag it rightward (C-t). At the end of a line or of the
+   buffer, the two characters before the cursor are exchanged instead
+   and the cursor stays put (Emacs's rule)."
+  (clear-mark!)
+  (let ((p (point)))
+    (when (> p 0)
+      (if (or (= p (buffer-length)) (= p (line-end)))
+          ;; End of line: swap the two characters before point.
+          (let ((b-start (-char-start-before p)))
+            (when b-start
+              (let ((a-start (-char-start-before b-start)))
+                (when a-start
+                  (let ((a (buffer-substring a-start b-start))
+                        (b (buffer-substring b-start p)))
+                    (atomic-change-group
+                      (delete-region! a-start p)
+                      (insert! (str b a))))))))
+          ;; Mid-line: drag the character before point past the one after.
+          (let ((b-start (-char-start-before p))
+                (c-end (-char-end-after p)))
+            (when (and b-start c-end)
+              (let ((b (buffer-substring b-start p))
+                    (c (buffer-substring p c-end)))
+                (atomic-change-group
+                  (delete-region! b-start c-end)
+                  (insert! (str c b))))))))))
+
+(defcommand transpose-words ()
+  "Interchange the word at or after the cursor with the word before it,
+   leaving the cursor after both (M-t) — repeated presses drag a word
+   rightward. Does nothing without two words to transpose."
+  (clear-mark!)
+  (let ((orig (point)))
+    (goto! (word-forward-offset))
+    (let ((start2 (word-backward-offset)))
+      (goto! start2)
+      (let ((end2 (word-forward-offset)))
+        (let ((start1 (word-backward-offset)))
+          (goto! start1)
+          (let ((end1 (word-forward-offset)))
+            (if (or (= start1 start2)     ; no previous word
+                    (= start2 end2)       ; no word at or after point
+                    (> end1 start2))      ; the "two" words overlap
+                (goto! orig)
+                (let ((w1 (buffer-substring start1 end1))
+                      (mid (buffer-substring end1 start2))
+                      (w2 (buffer-substring start2 end2)))
+                  (atomic-change-group
+                    (delete-region! start1 end2)
+                    (insert! (str w2 mid w1)))))))))))
+
+;; --- case conversion ---------------------------------------------------
+;; The word commands are Emacs's dwim versions: with an active region
+;; they convert the region, otherwise they convert from the cursor to
+;; the end of the word and leave the cursor there.
+
+(define (-convert-region! start end convert)
+  "Replace [START, END) with CONVERT applied to its text, as one undo
+   step. Leaves the cursor at END's replacement."
+  (let ((text (buffer-substring start end)))
+    (atomic-change-group
+      (delete-region! start end)
+      (insert! (convert text)))))
+
+(define (-case-word-or-region! convert)
+  "Apply CONVERT to the active region, or from the cursor to the end
+   of the word."
+  (if (region-active?)
+      (let ((m (mark)) (p (point)))
+        (-convert-region! (min m p) (max m p) convert))
+      (let ((from (point))
+            (to (word-forward-offset)))
+        (when (> to from)
+          (-convert-region! from to convert)))))
+
+(defcommand upcase-word ()
+  "Uppercase from the cursor to the end of the word — or the active
+   region (M-u)."
+  (-case-word-or-region! string-upcase))
+
+(defcommand downcase-word ()
+  "Lowercase from the cursor to the end of the word — or the active
+   region (M-l)."
+  (-case-word-or-region! string-downcase))
+
+(defcommand capitalize-word ()
+  "Capitalize from the cursor to the end of the word — or every word in
+   the active region (M-c)."
+  (-case-word-or-region! string-capitalize))
+
+(defcommand upcase-region (start end)
+  "Uppercase the active region (C-x C-u)."
+  (interactive region)
+  (-convert-region! start end string-upcase))
+
+(defcommand downcase-region (start end)
+  "Lowercase the active region (C-x C-l)."
+  (interactive region)
+  (-convert-region! start end string-downcase))
+
+;; --- whitespace --------------------------------------------------------
+
+(define (-hspace-start p floor)
+  "The start of the run of spaces and tabs ending at P, not before FLOOR."
+  (if (and (> p floor)
+           (let ((ch (buffer-substring (- p 1) p)))
+             (or (equal? ch " ") (equal? ch "\t"))))
+      (-hspace-start (- p 1) floor)
+      p))
+
+(define (-hspace-end p ceiling)
+  "The end of the run of spaces and tabs starting at P, not past CEILING."
+  (if (and (< p ceiling)
+           (let ((ch (buffer-substring p (+ p 1))))
+             (or (equal? ch " ") (equal? ch "\t"))))
+      (-hspace-end (+ p 1) ceiling)
+      p))
+
+(defcommand delete-horizontal-space ()
+  "Delete all spaces and tabs around the cursor (M-\\)."
+  (let ((s (-hspace-start (point) (line-start)))
+        (e (-hspace-end (point) (line-end))))
+    (when (< s e) (delete-region! s e))))
+
+(defcommand just-one-space ()
+  "Replace the spaces and tabs around the cursor with a single space
+   (M-SPC), inserting one when there is none."
+  (let ((s (-hspace-start (point) (line-start)))
+        (e (-hspace-end (point) (line-end))))
+    (atomic-change-group
+      (when (< s e) (delete-region! s e))
+      (insert! " "))))
+
+(defcommand delete-indentation ()
+  "Join this line to the previous one, collapsing the newline and the
+   surrounding whitespace to a single space (M-^) — the upward twin of
+   `join-line` (C-x C-j)."
+  (when (> (line-start) 0)
+    (goto! (- (line-start) 1))
+    (join-line)))
+
+;; --- blank lines and paragraphs ----------------------------------------
+;; A paragraph is a run of non-blank lines; blank (empty or
+;; whitespace-only) lines separate paragraphs.
+
+(define (-cursor-line-blank?)
+  "True when the cursor's line is empty or only spaces and tabs."
+  (>= (+ (line-start) (string-length (line-indent))) (line-end)))
+
+(define (-blank-at? off)
+  "True when the line containing OFF is blank. Restores point."
+  (save-excursion (goto! off) (-cursor-line-blank?)))
+
+(defcommand delete-blank-lines ()
+  "On a blank line, delete all surrounding blank lines, leaving one; on
+   an isolated blank line, delete it; on a non-blank line, delete the
+   blank lines that follow (C-x C-o)."
+  (if (-cursor-line-blank?)
+      (begin
+        ;; Walk to the first line of the blank run…
+        (while (and (> (line-start) 0) (-blank-at? (- (line-start) 1)))
+          (goto! (- (line-start) 1)))
+        (let ((run-start (line-start)))
+          ;; …and to the last.
+          (while (and (< (line-end) (buffer-length))
+                      (-blank-at? (+ (line-end) 1)))
+            (goto! (+ (line-end) 1)))
+          (if (= run-start (line-start))
+              ;; A single blank line: delete it, newline included.
+              (delete-region! run-start
+                              (min (+ (line-end) 1) (buffer-length)))
+              ;; A run: keep one blank line, and empty it of whitespace.
+              (atomic-change-group
+                (delete-region! run-start (line-start))
+                (delete-region! (line-start) (line-end))))))
+      ;; Non-blank line: delete any blank run that follows it.
+      (let ((eol (line-end)))
+        (when (and (< eol (buffer-length)) (-blank-at? (+ eol 1)))
+          (save-excursion
+            (goto! (+ eol 1))
+            (while (and (< (line-end) (buffer-length))
+                        (-blank-at? (+ (line-end) 1)))
+              (goto! (+ (line-end) 1)))
+            (delete-region! (+ eol 1)
+                            (min (+ (line-end) 1) (buffer-length))))))))
+
+(defcommand forward-paragraph ()
+  "Move forward to the end of the paragraph (M-}): past any blank
+   lines, then to the start of the blank line that ends the paragraph
+   (or the end of the buffer). Extends an active region."
+  (while (and (-cursor-line-blank?) (< (line-end) (buffer-length)))
+    (goto! (+ (line-end) 1)))
+  (while (and (not (-cursor-line-blank?)) (< (line-end) (buffer-length)))
+    (goto! (+ (line-end) 1)))
+  (when (not (-cursor-line-blank?)) (goto! (buffer-length))))
+
+(defcommand backward-paragraph ()
+  "Move backward to the start of the paragraph (M-{): before any blank
+   lines, then to the start of the blank line above the paragraph (or
+   the start of the buffer). Extends an active region."
+  (while (and (-cursor-line-blank?) (> (line-start) 0))
+    (goto! (- (line-start) 1)))
+  (while (and (not (-cursor-line-blank?)) (> (line-start) 0))
+    (goto! (- (line-start) 1)))
+  (if (-cursor-line-blank?) (goto! (line-start)) (goto! 0)))
+
+(defcommand mark-paragraph ()
+  "Select the paragraph around the cursor: point at its start, mark at
+   its end (M-h)."
+  (forward-paragraph)
+  (let ((end (point)))
+    (backward-paragraph)
+    (set-mark! end)))
+
+(defcommand mark-word ()
+  "Set the mark at the end of the next word (M-@); with a forward
+   region already active, extend it by another word."
+  (if (and (region-active?) (> (mark) (point)))
+      (set-mark! (save-excursion (goto! (mark)) (word-forward-offset)))
+      (set-mark! (word-forward-offset))))
 
 (defcommand mark-whole-buffer ()
   "Select the entire buffer."
