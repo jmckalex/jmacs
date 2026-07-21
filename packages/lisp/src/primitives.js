@@ -350,6 +350,23 @@ export function installPrimitives(env, { write }) {
   });
   def('string-upcase', (a) => str('string-upcase', a[0]).toUpperCase());
   def('string-downcase', (a) => str('string-downcase', a[0]).toLowerCase());
+  // (string-capitalize s) — upcase the first character of every word
+  // run (letters/digits/underscore, Unicode-aware) and downcase the
+  // rest: "hello WORLD" -> "Hello World". Emacs's capitalize.
+  def('string-capitalize', (a) =>
+    str('string-capitalize', a[0]).replace(/[\p{L}\p{N}_]+/gu, (w) => {
+      const chars = Array.from(w);
+      return chars[0].toUpperCase() + chars.slice(1).join('').toLowerCase();
+    })
+  );
+  // (char-word? ch) — whether CH (a one-character string) is a word
+  // constituent: a letter or digit in any script, or underscore. The
+  // single word-character definition the editor's word motion and
+  // word-selection features share.
+  def('char-word?', (a) => {
+    arity('char-word?', a, 1);
+    return /^[\p{L}\p{N}_]$/u.test(str('char-word?', a[0]));
+  });
   def('string-repeat', (a) => {
     // (string-repeat s n) — concatenate S to itself N times. N is
     // clamped to >= 0; non-finite / non-integer N is rejected.

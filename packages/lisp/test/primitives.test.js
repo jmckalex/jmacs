@@ -263,6 +263,24 @@ test('case folding', () => {
   assert.equal(run('(string-downcase "aBc")'), 'abc');
 });
 
+test('string-capitalize capitalizes each word run', () => {
+  assert.equal(run('(string-capitalize "hello WORLD")'), 'Hello World');
+  assert.equal(run('(string-capitalize "foo-BAR baz9x")'), 'Foo-Bar Baz9x');
+  assert.equal(run('(string-capitalize "éclair élan")'), 'Éclair Élan');
+  assert.equal(run('(string-capitalize "")'), '');
+});
+
+test('char-word? recognises Unicode word constituents', () => {
+  assert.equal(run('(char-word? "a")'), true);
+  assert.equal(run('(char-word? "9")'), true);
+  assert.equal(run('(char-word? "_")'), true);
+  assert.equal(run('(char-word? "é")'), true);
+  assert.equal(run('(char-word? "字")'), true);
+  assert.equal(run('(char-word? "-")'), false);
+  assert.equal(run('(char-word? " ")'), false);
+  assert.equal(run('(char-word? "ab")'), false);
+});
+
 test('string-repeat repeats and clamps a negative count to empty', () => {
   assert.equal(run('(string-repeat "ab" 3)'), 'ababab');
   assert.equal(run('(string-repeat "ab" 0)'), '');
