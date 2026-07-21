@@ -1,6 +1,6 @@
 ## The Evaluation Model
 
-Everything you do in jmacs Lisp — typing an expression in the REPL,
+Everything you do in Godot Lisp — typing an expression in the REPL,
 pressing a key bound to a command, loading `init.lisp` — funnels
 through one procedure: the evaluator. It takes a *form* (a piece of
 data the reader produced) and an *environment* (a record of what names
@@ -24,9 +24,10 @@ objects also self-evaluate, which matters when a procedure ends up
 embedded in a programmatically built form.
 
 **A symbol is a variable reference.** Evaluating `x` looks the name up
-in the current environment (how, exactly, is the subject of a later
-section) and yields the value bound there. If no binding exists
-anywhere, the evaluator raises an error: `unbound symbol: x`.
+in the current environment (how, exactly, is the subject of
+*Environments and Lexical Scope*, below) and yields the value bound
+there. If no binding exists anywhere, the evaluator raises an error:
+`unbound symbol: x`.
 
 **A non-empty list is dispatched by its head**, in a fixed priority
 order:
@@ -44,18 +45,25 @@ order:
    and the form it returns is evaluated in its place, in the caller's
    environment. That is the whole mechanism — macros rewrite code
    before it runs — and *Writing Macros* is devoted to it; for now,
-   only its place in the dispatch matters.
+   only its place in the dispatch matters. (You can watch this step
+   happen as data: `macroexpand-1` performs one expansion of a macro
+   call, and `macroexpand` expands until the head is no longer a
+   macro — both return the resulting form unevaluated.)
 3. **Application.** Otherwise the form is a procedure call, described
    next.
 
 Special forms exist because the application rule — evaluate
 everything, then act — is wrong for some constructs: `(if test then
 else)` must not evaluate both branches, and `(define x 1)` must not
-evaluate `x` before it exists. This chapter covers the special forms
-that shape evaluation itself; `if` and `cond` are about choosing and
-belong to *Control Flow and Iteration*. (Which values count as true
-there is a fact about the data — only `#f` is false; `nil`, `0`, and
-`""` are all true — see *Lisp Data Types*.)
+evaluate `x` before it exists. This chapter covers the forms that
+shape evaluation itself — `quote` and `quasiquote`, `define` and
+`set!`, the `let` family, `begin`, and the short-circuiting `and` and
+`or`. The rest live with their subjects: `if` and `cond` in *Control
+Flow and Iteration* (which values count as true there is a fact about
+the data — only `#f` is false; `nil`, `0`, and `""` are all true — see
+*Lisp Data Types*), `lambda` in *Functions and Closures*, `defmacro`
+in *Writing Macros*, `try` in *Errors and Error Handling*, and
+`module` and `import` in *Modules and Program Structure*.
 
 ### Applying a Procedure
 
@@ -113,11 +121,13 @@ walking off the end of the chain is what produces `unbound symbol`.
 
 Your top-level definitions live in the *global environment*, whose
 parent is a base frame holding the built-in primitives and the
-prelude. Three things create a new frame: **applying a procedure**
+prelude. Four things create a new frame: **applying a procedure**
 (the parameters are bound in a fresh frame for that one call), **the
 `let` family** (each evaluates its body in a new frame holding the
-local bindings), and **`module`** (each module gets its own
-environment — the subject of *Modules and Program Structure*).
+local bindings), **`module`** (each module gets its own
+environment — the subject of *Modules and Program Structure*), and
+**a `try` form's `catch` clause** (the condition variable is bound in
+a fresh frame just for the handler — *Errors and Error Handling*).
 
 The crucial rule is *where* a procedure's call frame hangs: its parent
 is the environment in which the `lambda` was **written**, not the one
@@ -288,13 +298,41 @@ are there for their effects. `(begin)` is `nil`.
 
 You rarely write `begin`, because most bodies are *implicit* `begin`s
 already: a `lambda` or `define` body, the bodies of the `let` family,
-a `cond` clause's body, a `try` body and its `catch` handler, and a
-`module` body all accept a sequence of forms and return the last. `begin` earns its keep where the grammar allows
-exactly one form — a branch of `if`, say — and you need several. The
-last form of a `begin` — and of most implicit bodies, though `try`
-and `module` are exceptions — sits in *tail position*, which matters
-for deep recursion; *Functions and Closures* explains why, and maps
-the exceptions.
+a `cond` clause's body, and a `try` body and its `catch` handler all
+accept a sequence of forms and return the last. (A `module` body also
+evaluates its forms in order, but the `module` form itself returns the
+module's *name*, not the body's last value.) `begin` earns its keep
+where the grammar allows exactly one form — a branch of `if`, say —
+and you need several. The last form of a `begin` — and of most
+implicit bodies, though `try` and `module` are exceptions — sits in
+*tail position*, which matters for deep recursion; *Functions and
+Closures* explains why, and maps the exceptions.
+
+### Short-Circuits: and and or
+
+`and` and `or` are special forms, not procedures, because their whole
+point is *not* evaluating some of their arguments. Both evaluate
+their forms left to right and stop at the first *deciding* value —
+for `and` the first falsy one, for `or` the first truthy one — and
+return that value itself, not a canonical boolean; the forms after it
+are never evaluated. If nothing decides, the value of the last form
+is returned (and that last form sits in tail position). With no forms
+at all, each yields its neutral element: `(and)` is `#t`, `(or)` is
+`#f`.
+
+```lisp
+(and 1 2 3)         ; ⇒ 3 — nothing falsy; the last value
+(and 1 #f (boom))   ; ⇒ #f — stops at #f; (boom) never runs
+(or #f nil 3)       ; ⇒ nil — nil is truthy, so it decides
+(or #f #f)          ; ⇒ #f
+```
+
+Note the third line: under this Lisp's truthiness rule (*Lisp Data
+Types*) `nil` counts as true, so it is a perfectly good deciding
+value for `or`. The everyday use of `and` and `or` in tests belongs
+with `if` and `cond` in *Control Flow and Iteration*; the rule is
+stated here because — like `if`'s — it is a rule about what does not
+get evaluated.
 
 ### Suppressing Evaluation: the Quote Family
 
@@ -319,11 +357,40 @@ a list and splices the elements in flat:
 `(1 ,@(list 2 3) 4)  ; ⇒ (1 2 3 4)
 ```
 
-Quasiquote is how you build a list *around* computed values without a
-chain of `cons` and `list` calls. Templates nest, and nesting is
-depth-tracked — an inner backtick shields its unquotes until a
-matching extra comma unwraps them — but template craft of that order
-belongs to *Writing Macros*.
+Templates are not confined to lists: quasiquote descends into vector
+and map literals — `` `[1 ,n] `` is `[1 3]`, `` `{:size ,n} `` is
+`{:size 3}` — and `,@` splices into list and vector templates alike
+(a map template takes unquotes in key and value position, but no
+splicing). A dotted tail may also be unquoted: `` `(a . ,rest) ``
+builds a chain ending in `rest`'s value. Quasiquote is how you build
+a structure *around* computed values without a chain of `cons` and
+`list` calls. Templates nest, and nesting is depth-tracked — an inner
+backtick shields its unquotes until a matching extra comma unwraps
+them — but template craft of that order belongs to *Writing Macros*.
+
+Quote's inverse exists too, as an ordinary function: `eval` takes a
+*form* — data, exactly what quote hands you — and evaluates it, so
+`(eval '(+ 1 2))` is `3`, and
+`(eval (first (read-string "(* 6 7)")))` is `42`, completing the
+string-to-forms loop that *Lisp Data Types* left at `read-string`.
+One thing to know before leaning on it: `eval` always evaluates in
+the *global* environment, never the environment of the call site — a
+quoted form carries no birthplace the way a lambda does.
+
+### When an Evaluation Runs Away
+
+One piece of the evaluator's machinery is worth knowing about before
+you write your first infinite loop. The evaluation loop counts the
+steps it takes, and every 4096 of them consults two guards the host
+can install: an *interrupt check*, and a *step budget* — a ceiling on
+the steps a single top-level evaluation may take, counted afresh for
+each. When either fires, the evaluation aborts with an *interrupt*: a
+condition that unwinds exactly like an error, so `try` handlers can
+observe it and `finally` cleanup still runs, but one the host can
+tell apart from a genuine failure. Both guards are off by default —
+with nothing installed the bookkeeping is statistically free, and a
+runaway loop simply keeps running — so treat an expression you are
+not sure terminates with the respect it deserves.
 
 ### Walking Through an Evaluation
 
@@ -363,7 +430,19 @@ Each returns its name symbol. Now the call, step by step:
    of the procedure body, so `110` is the value of the call. The two
    inner frames are now unreachable and disappear.
 
-Every evaluation in jmacs is this picture, larger. A form is
+And because evaluation leaves an inspectable trail, the editor can
+describe the procedure we just traced:
+
+```lisp
+(describe scale-and-shift)
+; ⇒ {:kind :procedure :name scale-and-shift :params (x)
+;    :doc nil :defined-at "3:1"}
+```
+
+— where `:defined-at` is the line and column the reader recorded when
+it read the `define` (so it depends on where you evaluated it from).
+
+Every evaluation in Godot is this picture, larger. A form is
 dispatched by its shape; names are resolved by walking outward through
 frames that mirror the program's written structure; new frames appear
 at calls and `let`s and vanish when no closure keeps them. The next

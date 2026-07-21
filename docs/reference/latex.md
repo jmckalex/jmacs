@@ -1,6 +1,6 @@
-Title: jmacs LaTeX & RefTeX Commands
+Title: Godot LaTeX & RefTeX Commands
 Author: J. McKenzie Alexander
-Date: 2026-06-11
+Date: 2026-07-21
 ---
 
 ## LaTeX and RefTeX commands
@@ -8,10 +8,16 @@ Date: 2026-06-11
 This document describes the commands `latex-mode` adds for authoring
 LaTeX — the AUCTeX-style compile/view loop, smart insertion, math,
 navigation and filling — together with the RefTeX layer for labels,
-cross-references and citations. They are ordinary Lisp, defined across
-`packages/stdlib/lisp/latex*.lisp` and `reftex*.lisp`, built on the
-buffer primitives, the LaTeX/SyncTeX/citation host primitives, and the
-completing minibuffer.
+cross-references and citations, and closes with the *settings*
+(`defcustom` variables) that govern them. They are ordinary Lisp,
+defined across `packages/stdlib/lisp/latex*.lisp` and `reftex*.lisp`,
+built on the buffer primitives, the LaTeX/SyncTeX/citation host
+primitives, and the completing minibuffer. The LaTeX chapter of the
+manual covers the same ground as a workflow; this file is the
+per-command reference. The JMarkdown authoring stack
+(`jmarkdown-compile.lisp`, `jmarkdown-insert.lisp`,
+`jmarkdown-nav.lisp`, `jmarkdown-ref.lisp`) deliberately mirrors these
+commands for `.jmd` buffers — see the JMarkdown chapter.
 
 Almost every binding lives under the `C-c` prefix of `latex-mode-map`,
 so these commands are active only in a LaTeX buffer; that mode keymap
@@ -21,21 +27,34 @@ reachable by name with `M-x` and from the structured LaTeX menu
 (`latex-menu.lisp`). See `commands.md` for how to read an entry and
 what the conventions mean.
 
-Key bindings are given in the manual's notation: `C-` is Control or
-Command, `M-` is Option, `S-` is Shift. The literal backtick key is
-written `` ` ``.
+Key bindings are given in the manual's notation: `C-` is Control,
+`M-` is Command (the Cmd key), `A-` is Option, `S-` is Shift. `M-RET`
+is Command+Return — the renderer's name for the key is `M-enter`. The
+literal backtick key is written `` ` ``.
 
 ---
 
 ### Compiling and viewing
 
 Defined in `latex-compile.lisp` — AUCTeX's `TeX-command-master` loop.
-The build runs `*latex-command*` (a token list, default `latexmk`) in
-the source file's directory via `run-process!`; the log lands in a
-*TeX output* tab and the parsed diagnostics in a *TeX errors* tab in
-the utility dock. The file built is `(latex-master-file)` — under
-RefTeX (`reftex.lisp`) this is the detected master, not necessarily the
-current buffer.
+The build runs `*latex-command*` (a token list; default `latexmk -pdf
+-synctex=1 -interaction=nonstopmode`) in the source file's directory
+via `run-process!`; the log lands in a *TeX output* tab and the parsed
+diagnostics in a *TeX errors* tab in the utility dock. Each *TeX
+errors* row is occur-style `FILE:LINE: message` (warnings carry a
+`warning:` prefix), for example:
+
+    paper.tex:42: Undefined control sequence.
+
+The file built is `(latex-master-file)` — the document's master, not
+necessarily the current buffer. With RefTeX loaded (`reftex.lisp`, the
+normal case) the master is found by a detection ladder: the
+`*reftex-master*` override when set (a relative path resolves against
+the current file's directory); else a `% !TEX root = …` magic comment
+in the current file; else the current file itself when it contains a
+`\documentclass`; else who-includes-me — a sibling or parent `.tex`
+that `\input`s this file (a single unambiguous hit, preferring one
+with `\documentclass`); else the current file is its own master.
 
 :::function{name="latex-compile" path="reference/latex/latex-compile.html"}
 #### `latex-compile`
@@ -45,8 +64,10 @@ Save the buffer and build the LaTeX document with `*latex-command*`,
 routing the log into a *TeX output* view and the parsed diagnostics
 into *TeX errors*. On a clean build the open PDF preview is reloaded in
 place. If the configured program is not on `PATH`, retries once with a
-single `pdflatex` pass. Bound to `C-c C-c`. See also cmd(latex-view)
-and cmd(latex-next-error).
+single `pdflatex` pass — one pass only, with no auto-rerun for
+references and no bibtex; set `*latex-command*` explicitly for full
+control of a pdflatex workflow. Bound to `C-c C-c`. See also
+cmd(latex-view) and cmd(latex-next-error).
 :::
 
 :::function{name="latex-view" path="reference/latex/latex-view.html"}
@@ -58,8 +79,10 @@ reload it if already open, then forward-search to the current source
 line and flash a highlight there (the SyncTeX integration folds forward
 search into this command). The PDF path is the `.tex` with its
 extension swapped to `.pdf` in the same directory; run cmd(latex-compile)
-first if it does not exist. Bound to `C-c C-v`. See also
-cmd(latex-forward-search).
+first if it does not exist. The PDF view it opens persists across a
+relaunch by default (`*latex-pdf-restore*`, default `#t`), so
+reopening the editor restores the source-beside-PDF split. Bound to
+`C-c C-v`. See also cmd(latex-forward-search).
 :::
 
 :::function{name="latex-next-error" path="reference/latex/latex-next-error.html"}
@@ -94,8 +117,14 @@ output. Unbound by default — run it with `M-x` or from the LaTeX menu.
 
 Defined in `latex-synctex.lisp` — two-way sync between the `.tex`
 source and the in-app PDF viewer via the `synctex` CLI
-(`*synctex-command*`). The compile emits `-synctex=1`, so the
-`.synctex.gz` sits beside the PDF.
+(`*synctex-command*`, default `synctex`). The compile emits
+`-synctex=1`, so the `.synctex.gz` sits beside the PDF.
+
+One macOS gotcha up front: a GUI-launched app inherits a `PATH` that
+may lack `/Library/TeX/texbin`, so the bare `synctex` can be "not
+found" even though it works in a terminal. Set `*synctex-command*` to
+a full path — `'("/Library/TeX/texbin/synctex")` — if the status line
+reports `synctex not found`.
 
 :::function{name="latex-forward-search" path="reference/latex/latex-forward-search.html"}
 #### `latex-forward-search`
@@ -109,8 +138,9 @@ also a command in its own right (registered with `register-command!`),
 so `M-x latex-forward-search` works. Unbound by default.
 
 Inverse search (PDF → source) is not a named command: an Option-click
-in the pdf-view fires the host-side `latex-synctex-inverse`, which runs
-`synctex edit` and reveals the source line in a text pane.
+in the pdf-view invokes the Lisp procedure `latex-synctex-inverse`
+through the viewer's click hook, which runs `synctex edit` and reveals
+the source line in a text pane — never in the PDF's own pane.
 :::
 
 ### Writing LaTeX
@@ -207,11 +237,14 @@ Insert a stub `enumerate` environment with point after the first
 #### `latex-insert-item`
 `(latex-insert-item)`
 
-Inside a list environment (the innermost enclosing itemize / enumerate
-/ description at point), open a new line indented to the current line
+When the innermost open environment at point is a list (itemize /
+enumerate / description), open a new line indented to the current line
 and insert `\item ` (for `description`, `\item[] ` with point inside
-the brackets). Outside a list, fall back to a plain newline-and-indent.
-Bound to `M-RET` (the renderer's `M-enter`).
+the brackets). The test is the *innermost* environment: `M-RET` in an
+itemize nested inside a figure inserts an `\item`, but with some other
+environment open inside the list — a `minipage`, say — it does not.
+Outside a list, fall back to a plain newline-and-indent. Bound to
+`M-RET`.
 :::
 
 ### Fonts
@@ -318,12 +351,25 @@ between). Bound to `C-c M`.
 
 Toggle the LaTeX math symbol-insertion minor mode in the current
 buffer. With it on, the prefix key (default `` ` ``,
-`*latex-math-abbrev-prefix*`) arms a one-key read that inserts a LaTeX
-math macro from `*latex-math-symbols*` (`` `a `` → `\alpha`, `` `> `` →
-`\geq`, …); the prefix typed twice inserts a literal prefix, and an
-unmapped key opens a completion prompt over the macro names. Bound to
-`C-c ~`. Off by default; `*latex-math-mode-default*` records the
-intended default.
+`*latex-math-abbrev-prefix*`) arms cmd(latex-math-insert-symbol) — a
+one-key read that inserts a LaTeX math macro from
+`*latex-math-symbols*` (`` `a `` → `\alpha`, `` `> `` → `\geq`, …).
+Bound to `C-c ~`. Off by default; `*latex-math-mode-default*` records
+the intended default.
+:::
+
+:::function{name="latex-math-insert-symbol" path="reference/latex/latex-math-insert-symbol.html"}
+#### `latex-math-insert-symbol`
+`(latex-math-insert-symbol)`
+
+Read one key and insert the LaTeX math macro it names from
+`*latex-math-symbols*`. The prefix key typed again (`` ` `` then
+`` ` ``) inserts a literal prefix character; an unmapped key opens a
+completing prompt over the macro names, so a symbol can also be picked
+by name. This is the command the math mode's prefix key arms, but it
+is a command in its own right — `M-x latex-math-insert-symbol` works
+even with the mode off. No key of its own (the prefix in
+`latex-math-mode-map` is its binding).
 :::
 
 :::function{name="toggle-latex-math-preview" path="reference/latex/toggle-latex-math-preview.html"}
@@ -333,8 +379,10 @@ intended default.
 Toggle live inline MathJax typesetting for the current LaTeX buffer:
 math segments render typeset in place of their source and flip back to
 source for editing when point enters them. An alias of the general
-`math-preview-mode`. Bound to `C-c C-p`. Off by default;
-`*latex-math-preview-default*` records the intended default.
+`math-preview-mode` — see cmd(toggle-math-preview) in `commands.md`
+and the Writing chapter for the mode-agnostic engine. Bound to
+`C-c C-p`. Off by default; `*latex-math-preview-default*` records the
+intended default.
 :::
 
 ### Navigation
@@ -379,51 +427,62 @@ or the document is unbalanced. Bound to `C-c %`.
 `(latex-smart-quote)`
 
 Insert a context-sensitive LaTeX quote on the `"` key: ` `` ` (open)
-after whitespace / line start / an opening delimiter, `''` (close)
-otherwise. A double-press — typing `"` right after a `"`, `` ` `` or
-`'` — inserts a single straight `"`, so a literal quote stays
-reachable (AUCTeX's `TeX-insert-quote`). Bound to `"` in latex-mode.
-The decision looks only at the character before point — it does not
-detect math or verbatim context.
+after whitespace / line start / an opening delimiter (`(`, `[`, `{`,
+`<`) / a dash `-` / a tie `~`, and `''` (close) otherwise. A
+double-press — typing `"` right after a `"`, `` ` `` or `'` — inserts
+a single straight `"`, so a literal quote stays reachable (AUCTeX's
+`TeX-insert-quote`). Bound to `"` in latex-mode. The decision looks
+only at the character before point — it does not detect math or
+verbatim context.
 :::
 
 :::function{name="latex-fill-paragraph" path="reference/latex/latex-fill-paragraph.html"}
 #### `latex-fill-paragraph`
 `(latex-fill-paragraph)`
 
-Re-wrap the paragraph around point AUCTeX-style: fill prose to
-`*latex-fill-column*` and re-indent every line of the enclosing block
-by its environment depth (using `*latex-indent-level*` spaces per
-level, `\item` lines pulled back by `*latex-item-indent*`). Structural
-lines (`\begin`/`\end`/`\item`/display math) are re-indented in place,
-never merged into prose. A paragraph command (`\caption{…}`,
-`\section{…}`, …) is its own fill unit spanning the macro's extent —
-gathered to its closing `}` and re-wrapped; `\noindent`/`\newblock`
-lead in an ordinary prose paragraph. In every wrapped unit (prose,
-`\item` text, paragraph commands) continuation lines indent
-`*latex-brace-indent-level*` per brace still open at the break
-(AUCTeX's `TeX-brace-indent-level`) — a mid-paragraph `\footnote{…}`
-spanning lines brace-indents like a caption — dedenting after the
-closing `}`. Comment paragraphs fill
-behind their `%`-run prefix; a code line's trailing comment ends its
-fill unit and stays glued, unfilled. Inline `\(…\)`/`\[…\]` math never
-breaks across lines when `*latex-fill-break-at-separators*` is on
-(default), and a `\verb` group never breaks at all;
-`*latex-sentence-end-double-space*` (default off) enables Emacs's
-two-space sentence joins. A verbatim / tabular / math-alignment
-environment inside the block passes through byte-identical, and point
-stays at its position in the prose. A blank line, or point inside such
-an environment, leaves the buffer unchanged. Bound to `M-q` in
-latex-mode, overriding the global cmd(fill-paragraph).
+Re-wrap the paragraph around point AUCTeX-style. Prose fills to the
+LaTeX fill column — 72, fixed to match the editor's generic fill (it
+is not a defcustom) — and every line of the enclosing block re-indents
+by its environment depth: `*latex-indent-level*` (default 2) spaces
+per level, `\item` lines pulled back by `*latex-item-indent*` (default
+-2). Environments named in `*latex-non-indenting-environments*`
+(default: `document`) add no level. Bound to `M-q` in latex-mode,
+overriding the global cmd(fill-paragraph).
+
+Structural lines (`\begin`/`\end`/`\item`/display math) are
+re-indented in place, never merged into prose. A paragraph command
+(`\caption{…}`, `\section{…}`, …) is its own fill unit spanning the
+macro's extent — gathered to its closing `}` and re-wrapped;
+`\noindent`/`\newblock` lead in an ordinary prose paragraph.
+
+In every wrapped unit (prose, `\item` text, paragraph commands),
+continuation lines indent `*latex-brace-indent-level*` (default 2)
+spaces per brace still open at the break — AUCTeX's
+`TeX-brace-indent-level` — so a mid-paragraph `\footnote{…}` spanning
+lines brace-indents like a caption, dedenting after the closing `}`.
+
+Comment paragraphs fill behind their `%`-run prefix; a code line's
+trailing comment ends its fill unit and stays glued, unfilled.
+
+Inline `\(…\)`/`\[…\]` math never breaks across lines while
+`*latex-fill-break-at-separators*` is on (the default), and a `\verb`
+group never breaks at all. `*latex-sentence-end-double-space*`
+(default off) enables Emacs's two-space sentence joins.
+
+A verbatim / tabular / math-alignment environment inside the block
+passes through byte-identical, and point stays at its position in the
+prose. A blank line, or point inside such an environment, leaves the
+buffer unchanged.
 :::
 
 ### Labels and references
 
 Defined in `reftex.lisp` (the multi-file document model) and
 `reftex-refs.lisp` (the daily label/reference commands and the
-`*RefTeX Select*` picker). The document model detects the master file,
-resolves `\input`/`\include` transitively, and builds a cross-file
-database of labels, sections, refs and cites that these commands query.
+`*RefTeX Select*` picker). The document model detects the master file
+(see the ladder under *Compiling and viewing*), resolves
+`\input`/`\include` transitively, and builds a cross-file database of
+labels, sections, refs and cites that these commands query.
 
 :::function{name="reftex-label" path="reference/latex/reftex-label.html"}
 #### `reftex-label`
@@ -445,10 +504,11 @@ the suggested key is offered in the minibuffer for editing. Bound to
 Insert a reference to a label chosen in the `*RefTeX Select*` view —
 RefTeX's selection-first picker. Rows are grouped by type and show a
 context line; `n`/`p` move, `RET` inserts `<macro>{name}` at the
-originating point, `SPC` peeks at the source, typing filters, `q`
-cancels. The macro is chosen by the label's type (`\eqref` for
-equations, else `\ref`). Bound to `C-c )`. For the know-the-key
-minibuffer flow, see cmd(reftex-reference-minibuffer).
+originating point, `SPC` peeks at the source, `t` cycles the type
+filter, typing filters, `q` cancels. The macro is chosen by the
+label's type (`\eqref` for equations, else `\ref`). Bound to `C-c )`.
+For the know-the-key minibuffer flow, see
+cmd(reftex-reference-minibuffer).
 :::
 
 :::function{name="reftex-reference-minibuffer" path="reference/latex/reftex-reference-minibuffer.html"}
@@ -480,8 +540,9 @@ Defined in `reftex-cite.lisp` — RefTeX's format-first citation flow.
 The bibliography comes from the document's `\bibliography` /
 `\addbibresource` (plus `*citation-bib-path*`); entries are shown as
 professionally formatted references (citation.js + the
-`*reftex-cite-style*` CSL style) purely as a picking aid, while the
-inserted text is always the `\cite`-family macro over the bib keys.
+`*reftex-cite-style*` CSL style, default `harvard1`) purely as a
+picking aid, while the inserted text is always the `\cite`-family
+macro over the bib keys.
 
 :::function{name="reftex-citation" path="reference/latex/reftex-citation.html"}
 #### `reftex-citation`
@@ -492,6 +553,320 @@ Insert a citation. Choose a cite format (`\cite` / `\citep` / `\citet`
 or more entries in the cite picker (`m` marks several, `RET` inserts
 `<macro>{k1,k2}` at the origin). A no-op with a status message when no
 readable bibliography is found. Bound to `C-c [`.
+:::
+
+### Settings
+
+These are `defcustom` variables, not procedures — user-facing settings
+you can change live (`(custom-apply! 'name value)`), persist
+(`(custom-apply-and-save! 'name value)`), or edit through `M-x
+customize`. Each entry's signature line shows the default value. They
+live in the `latex` and `reftex` customize groups except where noted;
+`help-and-config.md` documents the customization machinery itself.
+
+:::function{name="*latex-command*" path="reference/latex/latex-command.html"}
+#### `*latex-command*`
+`(default '("latexmk" "-pdf" "-synctex=1" "-interaction=nonstopmode"))`
+
+The LaTeX build command as a list of strings — program followed by
+flags; the source `.tex` filename is appended at build time.
+`run-process!` spawns with no shell, so this is a token list, never a
+single shell string. The default `latexmk` handles the multi-pass
+rerun/bibtex dance itself; when it is not on `PATH`,
+cmd(latex-compile) falls back to a single `pdflatex` pass. Group:
+`latex`. Defined in `latex-compile.lisp`.
+:::
+
+:::function{name="*latex-bibtex-command*" path="reference/latex/latex-bibtex-command.html"}
+#### `*latex-bibtex-command*`
+`(default '("bibtex"))`
+
+The bibliography command as a list of strings (program + flags).
+Unused by the default build — `latexmk` runs bibtex/biber itself; this
+is the configuration seam for an explicit bibliography pass (see *Not
+yet implemented*). Group: `latex`. Defined in `latex-compile.lisp`.
+:::
+
+:::function{name="*latex-view*" path="reference/latex/latex-view-setting.html"}
+#### `*latex-view*`
+`(default 'pdf-view)`
+
+The PDF viewer cmd(latex-view) uses. Only the built-in `'pdf-view`
+(open / reload in a split beside the source) is supported; the setting
+is the seam for external viewers (Skim, evince, …) later. Group:
+`latex`. Defined in `latex-compile.lisp`.
+:::
+
+:::function{name="*latex-pdf-restore*" path="reference/latex/latex-pdf-restore.html"}
+#### `*latex-pdf-restore*`
+`(default #t)`
+
+Whether the PDF cmd(latex-view) opens persists across a relaunch. `#t`
+(the default) restores the latexed-output PDF beside its source on
+relaunch; `#f` makes it transient like a generic PDF. Independent of
+the global `*pdf-restore-default*`, which governs all *other* PDFs.
+Group: `latex`. Defined in `latex-compile.lisp`.
+:::
+
+:::function{name="*latex-clean*" path="reference/latex/latex-clean.html"}
+#### `*latex-clean*`
+`(default '(".aux" ".log" ".out" ".synctex.gz" ".fdb_latexmk" ".fls" ".toc" ".bbl" ".blg"))`
+
+Auxiliary file extensions a `latex-clean` command would delete — the
+build by-products latexmk / pdflatex leave beside the source `.tex`.
+The command itself is not yet implemented (see *Not yet implemented*);
+the setting records the intended list. Group: `latex`. Defined in
+`latex-compile.lisp`.
+:::
+
+:::function{name="*synctex-command*" path="reference/latex/synctex-command.html"}
+#### `*synctex-command*`
+`(default '("synctex"))`
+
+The SyncTeX program as a list of strings (program + flags), used for
+both forward (`synctex view`) and inverse (`synctex edit`) search.
+Like `*latex-command*`, a token list — `run-process!` takes no shell.
+On a macOS GUI launch the inherited `PATH` may miss
+`/Library/TeX/texbin`; set this to a full path (e.g.
+`'("/Library/TeX/texbin/synctex")`) if the bare name is not found.
+Group: `latex`. Defined in `latex-synctex.lisp`.
+:::
+
+:::function{name="*latex-environments*" path="reference/latex/latex-environments.html"}
+#### `*latex-environments*`
+`(default: a 26-name list — itemize, enumerate, description, figure, table, equation, align, theorem, …)`
+
+Candidate environment names offered by cmd(latex-insert-environment)
+(`C-c C-e`), merged at prompt time with the `\begin{NAME}`
+environments already used in the buffer. Add your document's recurring
+environments here so they complete without first appearing in the
+text. Group: `latex`. Defined in `latex-insert.lisp`.
+:::
+
+:::function{name="*latex-macros*" path="reference/latex/latex-macros.html"}
+#### `*latex-macros*`
+`(default: a 36-name list — textbf, emph, ref, cite, label, footnote, frac, sqrt, …)`
+
+Candidate macro names (no leading backslash) offered by
+cmd(latex-insert-macro) (`C-c C-m`), merged at prompt time with the
+`\macro`s already used in the buffer. Group: `latex`. Defined in
+`latex-insert.lisp`.
+:::
+
+:::function{name="*latex-section-insert-label*" path="reference/latex/latex-section-insert-label.html"}
+#### `*latex-section-insert-label*`
+`(default #f)`
+
+When `#t`, cmd(latex-insert-section) (`C-c C-s`) inserts a `\label{}`
+right after the sectioning macro (with a `sec:` key prefix, reusing
+RefTeX's section prefix when RefTeX is loaded). Off by default — the
+heading is inserted alone, and cmd(reftex-label) (`C-c (`) is the
+richer way to add a label. Group: `latex`. Defined in
+`latex-insert.lisp`.
+:::
+
+:::function{name="*latex-math-abbrev-prefix*" path="reference/latex/latex-math-abbrev-prefix.html"}
+#### `*latex-math-abbrev-prefix*`
+``(default "`")``
+
+The prefix key for LaTeX-math-mode: pressing it then a symbol key
+inserts the corresponding math macro (see
+cmd(latex-math-insert-symbol)). Pressing the prefix twice inserts a
+literal prefix character. Changing this rebuilds the mode keymap live
+— no restart. Group: `latex`. Defined in `latex-math.lisp`.
+:::
+
+:::function{name="*latex-math-mode-default*" path="reference/latex/latex-math-mode-default.html"}
+#### `*latex-math-mode-default*`
+`(default #f)`
+
+When `#t`, LaTeX-math-mode is *intended* to be on by default for LaTeX
+buffers. Off by default — opt in per-buffer with
+cmd(toggle-latex-math-mode). The flag records intent: auto-enable is
+not wired from Lisp (there is no major-mode entry-hook seam), so the
+setting exists to make the default discoverable and persistent.
+Group: `latex`. Defined in `latex-math.lisp`.
+:::
+
+:::function{name="*latex-math-preview-default*" path="reference/latex/latex-math-preview-default.html"}
+#### `*latex-math-preview-default*`
+`(default #f)`
+
+When `#t`, typeset math inline automatically for LaTeX buffers. Off by
+default — opt in per-buffer with cmd(toggle-latex-math-preview), or
+set this in your init / customisation to default it on. Group:
+`godot` (not `latex`). Defined in `latex.lisp`.
+:::
+
+:::function{name="*latex-indent-level*" path="reference/latex/latex-indent-level.html"}
+#### `*latex-indent-level*`
+`(default 2)`
+
+Number of spaces of indentation added for each enclosing LaTeX
+environment (each unmatched `\begin`), mirroring AUCTeX's
+`LaTeX-indent-level`. cmd(latex-fill-paragraph) (`M-q`) re-indents the
+paragraph's lines by their environment depth times this value, using
+spaces (never tabs). Group: `latex`. Defined in `latex-fill.lisp`.
+:::
+
+:::function{name="*latex-item-indent*" path="reference/latex/latex-item-indent.html"}
+#### `*latex-item-indent*`
+`(default -2)`
+
+Extra indentation for an `\item` line relative to the environment
+body, mirroring AUCTeX's `LaTeX-item-indent` (the negative of
+`LaTeX-indent-level`). With the default, an `\item` line sits at the
+list's body level and its wrapped continuation lines indent one
+`*latex-indent-level*` deeper. Group: `latex`. Defined in
+`latex-fill.lisp`.
+:::
+
+:::function{name="*latex-brace-indent-level*" path="reference/latex/latex-brace-indent-level.html"}
+#### `*latex-brace-indent-level*`
+`(default 2)`
+
+Extra spaces of indentation per unclosed `{` for wrapped continuation
+lines in cmd(latex-fill-paragraph) — AUCTeX's
+`TeX-brace-indent-level`. Applies to every wrapped fill unit: a
+paragraph command's argument, plain prose with a group spanning lines,
+and `\item` text. Comment paragraphs are exempt (a `{` in comment text
+is not a TeX group). Set 0 for flat continuations. Group: `latex`.
+Defined in `latex-fill.lisp`.
+:::
+
+:::function{name="*latex-fill-break-at-separators*" path="reference/latex/latex-fill-break-at-separators.html"}
+#### `*latex-fill-break-at-separators*`
+`(default #t)`
+
+When on, cmd(latex-fill-paragraph) never breaks a line inside an
+inline `\(…\)` or `\[…\]` math group: the break lands before the
+opening or after the closing delimiter, the whole group moving to the
+next line when it straddles the fill column. Mirrors AUCTeX's
+`LaTeX-fill-break-at-separators`. A `\verb` group is never broken
+regardless of this option. Group: `latex`. Defined in
+`latex-fill.lisp`.
+:::
+
+:::function{name="*latex-sentence-end-double-space*" path="reference/latex/latex-sentence-end-double-space.html"}
+#### `*latex-sentence-end-double-space*`
+`(default #f)`
+
+When on, cmd(latex-fill-paragraph) puts *two* spaces after a
+sentence-ending word when joining lines, and preserves an existing run
+of two-or-more spaces between words — Emacs's
+`sentence-end-double-space` fill rule, which AUCTeX inherits. Off by
+default (Emacs defaults it on): with it off, all inter-word whitespace
+collapses to a single space when filling. Group: `latex`. Defined in
+`latex-fill.lisp`.
+:::
+
+:::function{name="*latex-non-indenting-environments*" path="reference/latex/latex-non-indenting-environments.html"}
+#### `*latex-non-indenting-environments*`
+`(default '("document"))`
+
+Environment names whose body does *not* gain a level of indentation
+from cmd(latex-fill-paragraph), mirroring AUCTeX's
+`LaTeX-document-regexp`. With the default, content directly inside
+`\begin{document}` stays at column 0. Add names here to treat other
+wrapper environments the same way. Group: `latex`. Defined in
+`latex-fill.lisp`.
+:::
+
+:::function{name="*reftex-master*" path="reference/latex/reftex-master.html"}
+#### `*reftex-master*`
+`(default "")`
+
+Explicit master `.tex` path for RefTeX, overriding auto-detection.
+Empty (the default) means auto-detect via the ladder described under
+*Compiling and viewing*: `% !TEX root` magic comment, then
+`\documentclass`, then who-includes-me, then the current file itself.
+A relative value is resolved against the current file's directory;
+`.tex` is appended when missing. Group: `reftex`. Defined in
+`reftex.lisp`.
+:::
+
+:::function{name="*reftex-label-prefixes*" path="reference/latex/reftex-label-prefixes.html"}
+#### `*reftex-label-prefixes*`
+`(default: :equation→"eq:", :figure→"fig:", :table→"tab:", :section→"sec:", :listing→"lst:", :theorem→"thm:", :definition→"def:")`
+
+Alist mapping a label's inferred `:type` to the prefix used when
+cmd(reftex-label) suggests a key. A type not listed here uses
+`*reftex-label-default-prefix*`. Group: `reftex`. Defined in
+`reftex-refs.lisp`.
+:::
+
+:::function{name="*reftex-label-default-prefix*" path="reference/latex/reftex-label-default-prefix.html"}
+#### `*reftex-label-default-prefix*`
+`(default "")`
+
+The label-key prefix cmd(reftex-label) uses when the type at point is
+not in `*reftex-label-prefixes*` (an unrecognised environment, a bare
+paragraph). Empty (the default) means the suggested key is just the
+slugified stem. Group: `reftex`. Defined in `reftex-refs.lisp`.
+:::
+
+:::function{name="*reftex-ref-macro-by-type*" path="reference/latex/reftex-ref-macro-by-type.html"}
+#### `*reftex-ref-macro-by-type*`
+`(default: :equation→"\eqref")`
+
+Alist mapping a label's `:type` to the reference macro
+cmd(reftex-reference) inserts. A type not listed uses
+`*reftex-ref-macro-default*`. Group: `reftex`. Defined in
+`reftex-refs.lisp`.
+:::
+
+:::function{name="*reftex-ref-macro-default*" path="reference/latex/reftex-ref-macro-default.html"}
+#### `*reftex-ref-macro-default*`
+`(default "\ref")`
+
+The reference macro cmd(reftex-reference) inserts for a label whose
+`:type` is not in `*reftex-ref-macro-by-type*` (the common case).
+Group: `reftex`. Defined in `reftex-refs.lisp`.
+:::
+
+:::function{name="*reftex-cite-macro*" path="reference/latex/reftex-cite-macro.html"}
+#### `*reftex-cite-macro*`
+`(default "\cite")`
+
+The default citation macro RefTeX inserts. Group: `reftex`. Defined in
+`reftex-refs.lisp`.
+:::
+
+:::function{name="*reftex-label-confirm*" path="reference/latex/reftex-label-confirm.html"}
+#### `*reftex-label-confirm*`
+`(default #t)`
+
+When `#t` (the default), cmd(reftex-label) shows the suggested label
+key in the minibuffer for confirmation/editing before inserting; when
+`#f` it inserts the suggestion directly. Either way the key is made
+unique against the document's existing labels. Group: `reftex`.
+Defined in `reftex-refs.lisp`.
+:::
+
+:::function{name="*reftex-cite-style*" path="reference/latex/reftex-cite-style.html"}
+#### `*reftex-cite-style*`
+`(default "harvard1")`
+
+The CSL style the citation picker formats each reference with: a
+built-in id (`"apa"`, `"vancouver"`, `"harvard1"`) or the path to a
+`.csl` file for any other style (registered with citation.js on first
+use). Display only — the inserted text is still the `\cite`-family
+macro over the bib keys. Distinct from `*citation-style*`, used by the
+inline-citation commands. Group: `reftex`. Defined in
+`reftex-cite.lisp`.
+:::
+
+:::function{name="*reftex-cite-format*" path="reference/latex/reftex-cite-format.html"}
+#### `*reftex-cite-format*`
+`(default: 7 rows — RET→\cite, p→\citep, t→\citet, P→\parencite, x→\textcite, a→\citeauthor, y→\citeyear)`
+
+The citation formats the cmd(reftex-citation) format menu offers, as a
+list of `(KEY MACRO DESCRIPTION)` rows. KEY is the keystroke that
+picks the format (`"enter"` for the RET default; single characters for
+the rest); MACRO is the LaTeX command inserted around the chosen keys.
+The default set covers the common natbib + biblatex commands; narrow
+it to one package family by customising this. Group: `reftex`.
+Defined in `reftex-cite.lisp`.
 :::
 
 ### Not yet implemented

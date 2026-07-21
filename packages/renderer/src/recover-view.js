@@ -199,7 +199,7 @@ function createRecoverView(container, options = {}) {
     const empty = n === 0;
     intro.textContent = empty
       ? 'Nothing left to recover — close this tab (Cmd+W).'
-      : `jmacs found unsaved changes in ${n} buffer(s) from a previous ` +
+      : `Godot found unsaved changes in ${n} buffer(s) from a previous ` +
         'session. Recover each into a live (unsaved) buffer, or discard it.';
     footer.style.display = empty ? 'none' : '';
   }

@@ -1733,7 +1733,7 @@ app.whenReady().then(() => {
       console.log('  swatches:', JSON.stringify(swatches));
 
       // Documentation: open the forward-char doc page; the doc-view
-      // shows the HTML the build produced; clicking a [data-jmacs-doc]
+      // shows the HTML the build produced; clicking a [data-godot-doc]
       // link inside opens a second doc buffer.
       const docs = docsBuilt
         ? await runArm('docs', `(async () => {
@@ -1754,8 +1754,8 @@ app.whenReady().then(() => {
         const pageText = page ? page.textContent : '';
         // Click the first cross-link inside the page (the cmd() helper
         // emits the backward-char reference); the pane re-renders to it.
-        const xref = page ? page.querySelector('[data-jmacs-doc]') : null;
-        const xrefName = xref ? xref.getAttribute('data-jmacs-doc') : '';
+        const xref = page ? page.querySelector('[data-godot-doc]') : null;
+        const xrefName = xref ? xref.getAttribute('data-godot-doc') : '';
         if (xref) {
           xref.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
           await __waitFor(() => {

@@ -1,6 +1,6 @@
 ## Control Flow and Iteration
 
-In jmacs Lisp, control flow is not a set of statements that *do*
+In Godot Lisp, control flow is not a set of statements that *do*
 things — it is a set of expressions that *are* things. An `if` has a
 value, a `cond` has a value, and even a sequence of side effects has a
 value: the last one. This chapter walks through every branching
@@ -101,8 +101,8 @@ when the test is *false*.
 (unless #f "fallback")   ; ⇒ "fallback"
 ```
 
-Here is the teaching moment: <a href="reference/lisp-core/when.html" data-jmacs-doc="when">when</a>
-and <a href="reference/lisp-core/unless.html" data-jmacs-doc="unless">unless</a>
+Here is the teaching moment: <a href="reference/lisp-core/when.html" data-godot-doc="when">when</a>
+and <a href="reference/lisp-core/unless.html" data-godot-doc="unless">unless</a>
 are **not special forms**. They are ordinary macros, defined in the
 interpreter's prelude in a few lines each:
 
@@ -141,6 +141,13 @@ that value, untouched; if all are false it returns `#f`, as is
 (or #f 7 9)    ; ⇒ 7   — 9 never evaluated
 ```
 
+The third boolean tool,
+<a href="reference/lisp-core/not.html" data-godot-doc="not">not</a>,
+is an ordinary function — negation needs no short-circuiting.
+`(not x)` is `#t` exactly when `x` is `#f`, and `#f` for everything
+else, which under the truthiness rule makes it the strictest test in
+the language: `(not nil)` is `#f`, because `nil` is true.
+
 Returning the value powers two idioms you will meet constantly. The
 first is *or as default*: `(or requested-title "untitled")` yields the
 fallback when `requested-title` is `#f`, and otherwise passes its value
@@ -151,9 +158,11 @@ truthiness rule still bites at one edge — only `#f` triggers the
 fallback, so `or` cannot default a value that may legitimately be
 `nil`. An empty list answers `nil` from `first`, which is *true*, so
 `(or (first items) "none")` yields `nil`, not `"none"`, when `items` is
-empty. Guard that case with `nil?` — or, for a map, reach for `get`'s
-own fallback argument, `(get options :indent 4)`, which never leans on
-truthiness at all.
+empty. Guard that case with `nil?` — or ask the real question with
+<a href="reference/lisp-core/empty%3F.html" data-godot-doc="empty?">empty?</a>,
+which is `#t` for `nil` and for an empty vector, string, or map — or,
+for a map lookup, reach for `get`'s own fallback argument,
+`(get options :indent 4)`, which never leans on truthiness at all.
 
 The second idiom is *and as guard* — establish that a value is safe
 to use, then use it, in one expression: `(and (pair? x) (car x))` is
@@ -186,10 +195,10 @@ The rest of the chapter takes them in that order.
 #### Mapping, Filtering, and Reducing
 
 The four workhorses are
-<a href="reference/lisp-core/map.html" data-jmacs-doc="map">map</a>,
-<a href="reference/lisp-core/filter.html" data-jmacs-doc="filter">filter</a>,
-<a href="reference/lisp-core/reduce.html" data-jmacs-doc="reduce">reduce</a>, and
-<a href="reference/lisp-core/for-each.html" data-jmacs-doc="for-each">for-each</a>
+<a href="reference/lisp-core/map.html" data-godot-doc="map">map</a>,
+<a href="reference/lisp-core/filter.html" data-godot-doc="filter">filter</a>,
+<a href="reference/lisp-core/reduce.html" data-godot-doc="reduce">reduce</a>, and
+<a href="reference/lisp-core/for-each.html" data-godot-doc="for-each">for-each</a>
 — full signatures in *Functions and Closures* and the reference.
 
 ```lisp
@@ -211,7 +220,7 @@ example below leans on that.
 
 For index-driven loops that build a result — "the square of every i
 up to n" — make the indices a list with
-<a href="reference/lisp-core/range.html" data-jmacs-doc="range">range</a>
+<a href="reference/lisp-core/range.html" data-godot-doc="range">range</a>
 and map over them. Ranges are half-open (the end value is excluded)
 and a negative step counts down:
 
@@ -227,9 +236,9 @@ and a negative step counts down:
 When the iteration is about *doing* rather than building a value — run
 this until that, do this n times, do this to each — three macros from
 the interpreter's prelude —
-<a href="reference/lisp-core/while.html" data-jmacs-doc="while">while</a>,
-<a href="reference/lisp-core/dotimes.html" data-jmacs-doc="dotimes">dotimes</a>, and
-<a href="reference/lisp-core/dolist.html" data-jmacs-doc="dolist">dolist</a>
+<a href="reference/lisp-core/while.html" data-godot-doc="while">while</a>,
+<a href="reference/lisp-core/dotimes.html" data-godot-doc="dotimes">dotimes</a>, and
+<a href="reference/lisp-core/dolist.html" data-godot-doc="dolist">dolist</a>
 — read the way you would say them. All three
 evaluate their bodies purely for effect and return `nil`.
 
@@ -243,13 +252,20 @@ possibly without running the body at all. Something must make the test
 change, which in practice means `set!` or an effect on the world:
 
 ```lisp
-(define n 10)
-(define total 0)
-(while (> n 0)
-  (set! total (+ total n))
-  (set! n (dec n)))
-total   ; ⇒ 55
+(let ((n 10) (total 0))
+  (while (> n 0)
+    (set! total (+ total n))
+    (set! n (dec n)))
+  total)   ; ⇒ 55
 ```
+
+The `let` keeps the loop's mutable state private to the loop — the
+same discipline the accumulator pattern below gets for free. And take
+the "something must change" clause seriously: when nothing does, the
+loop runs forever, and the running editor currently has no way to
+interrupt it (see the interrupts section of *Errors and Error
+Handling*) — a `(while #t …)` wedges its Lisp server. Write the exit
+condition first.
 
 ```lisp
 (dotimes var count body…)
@@ -277,6 +293,10 @@ bound to each element in order. (For a vector, use `for-each` — or
   (insert! w)
   (insert! "\n"))   ; types three lines into the buffer; ⇒ nil
 ```
+
+(`insert!` is an editor primitive, not part of the core language — it
+types text into the current buffer at point; *Editing Text from Lisp*
+covers it and its siblings.)
 
 None of this is new evaluator machinery. The three are ordinary macros,
 defined in the prelude in a few lines each: every use expands to a
@@ -361,7 +381,7 @@ There is a tension in the helper pattern: `(cons x (loop ...))` builds
 the result in order but is not a tail call. The standard resolution is
 to cons onto the accumulator — backwards, but in tail position — and
 hand the result to
-<a href="reference/lisp-core/reverse.html" data-jmacs-doc="reverse">reverse</a>
+<a href="reference/lisp-core/reverse.html" data-godot-doc="reverse">reverse</a>
 once at the end:
 
 ```lisp
@@ -413,6 +433,7 @@ lines.
 | one test, side effects on one side only | `when` / `unless` |
 | several tests, tried in order | `cond` |
 | a value that may be `#f`, plus a fallback | `or` |
+| a fallback for a value that may legitimately be `nil` | `nil?` / `empty?` — or `get`'s own fallback argument |
 | a chain of checks that must all pass | `and` |
 | the same operation on every element | `map` |
 | keeping only some elements | `filter` |

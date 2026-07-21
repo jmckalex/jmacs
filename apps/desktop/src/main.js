@@ -213,8 +213,9 @@ function createWindow(opts = {}) {
   // and outlive any window — closing one loses nothing (the server-side detach
   // reaps the client; unsaved edits stay in the server + its autosave). Only
   // QUITTING the app (before-quit / C-x C-c), which kills the server, runs the
-  // unsaved-changes confirm. (Cmd+W does NOT close a window — the renderer binds
-  // it to close-tab; only the traffic-light button and app.quit() close it.)
+  // unsaved-changes confirm. (Cmd+W does NOT close a window — it reaches the
+  // keymap as M-w, copy-region; only the traffic-light button and app.quit()
+  // close it.)
 
   // Keep the window registry current as windows close, and re-point `mainWindow`
   // at a survivor so the quit/menu fallbacks never reference a destroyed window.

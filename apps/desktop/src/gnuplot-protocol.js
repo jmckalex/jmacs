@@ -147,8 +147,8 @@ export function quoteGnuplot(s) {
  */
 export function sentinelsFor(id, nonce) {
   return {
-    stdout: `__JMACS_GP_DONE__${id}__${nonce}__`,
-    stderr: `__JMACS_GP_ERR__${id}__${nonce}__`,
+    stdout: `__GODOT_GP_DONE__${id}__${nonce}__`,
+    stderr: `__GODOT_GP_ERR__${id}__${nonce}__`,
   };
 }
 

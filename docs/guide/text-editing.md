@@ -16,14 +16,16 @@ in.
 A *buffer* holds text and its editing state — the cursor, the mark, the
 major and minor modes, the undo history. A *view* is the on-screen
 presentation of a buffer: the addressable thing with a name in the
-modeline and a place in a pane. The user-manual chapter *Views* lays
+modeline and a place in a pane. The user-manual chapter
+<a href="nodes/views.html" data-godot-doc="views">Views</a> lays
 out the full model.
 
 The primitives in this chapter are *host primitives*: procedures the
-desktop application registers into the Lisp when it boots. They take no
-buffer argument — every one resolves "the buffer" through the focused
-pane. There is no `with-current-buffer`, no way to address a buffer you
-are not looking at. What you evaluate is what you see.
+editor's Lisp server — the spine — registers into the Lisp when it
+boots. They take no buffer argument — every one resolves "the buffer"
+through the focused pane. There is no `with-current-buffer`, no way to
+address a buffer you are not looking at. What you evaluate is what you
+see.
 
 One naming note for readers of older material: the old spec's
 `buffer-name` is now `view-name` — names belong to the on-screen thing.
@@ -32,7 +34,7 @@ One naming note for readers of older material: the old spec's
 
 This chapter teaches the working subset — enough to write real editing
 commands. The complete catalog, one page per primitive, is the
-<a href="nodes/jmacs-buffer--host-primitives.html" data-jmacs-doc="jmacs-buffer--host-primitives">Buffer &amp; Host Primitives</a>
+<a href="nodes/godot-buffer--host-primitives.html" data-godot-doc="godot-buffer--host-primitives">Buffer &amp; Host Primitives</a>
 reference book.
 
 ### Point, the Mark, and Moving Around
@@ -68,7 +70,11 @@ Motion by unit comes as a pair of layers: `word-forward-offset`,
 `word-backward-offset`, `sentence-forward-offset`, and
 `sentence-backward-offset` are *pure* — each returns the offset such a
 motion would reach, without moving anything. Moving is then your
-decision: `(goto! (word-forward-offset))` steps point over a word.
+decision: `(goto! (word-forward-offset))` steps point over a word, and
+`(goto! (sentence-forward-offset))` over a sentence — which is the
+entire body of the cmd(forward-sentence) command on `M-e`, just as its
+backward twin on `M-a` is one `goto!` around
+`sentence-backward-offset`.
 
 The *mark* is the buffer's second remembered position, and the *region*
 is the stretch between mark and point. `(set-mark!)` anchors the mark
@@ -86,9 +92,25 @@ abandoning it.
 
 Mark and point come in either order, so code that needs the region's
 bounds normalises them — `(min (mark) (point))` and
-`(max (mark) (point))`, guarded by `(region-active?)` since `(mark)`
-is `nil` when unset. This is exactly the computation a command's
-`(interactive region)` clause performs on your behalf.
+`(max (mark) (point))`, guarded by `(region-active?)`. When no mark is
+set, `(mark)` returns `#f` — the miss convention, and this chapter's
+own `#f`-versus-`nil` lesson in one primitive: offset 0 is a perfectly
+good mark, so absence must be the one falsy value. A bare
+`(when (mark) …)` is therefore a safe guard, while the tempting
+`(when (not (nil? (mark))) …)` passes on the miss and hands `#f` to
+your arithmetic. The normalisation is exactly the computation a
+command's `(interactive region)` clause performs on your behalf.
+
+One refinement to "the" cursor: a buffer can carry several. The
+multi-cursor commands (`C-c d` cmd(add-cursor-next), `C-c D`
+cmd(select-all-matches)) are ordinary Lisp in `multi-cursor.lisp`,
+built on four primitives this chapter otherwise leaves alone:
+`(add-selection! point mark?)` adds a cursor, `(selections)` returns
+every cursor as a list of `(point . mark-or-nil)` pairs,
+`(cursor-count)` counts them, and `(collapse-to-primary!)` drops back
+to one. The reading primitives above — `point`, `mark`, `region-text`
+— answer for the *primary* cursor; code that means all of them walks
+`(selections)` itself.
 
 ### Reading the Buffer's Text
 
@@ -132,6 +154,14 @@ order, and leaves point at its start. All of them return `nil`.
 Two more, for bigger surgery: `(replace-range! a b s)` swaps the range
 `[a, b)` for the string `s` in one call, and `(set-buffer-text! s)`
 replaces the entire buffer.
+
+Typing, incidentally, *is* `insert!`: a printable key with no binding
+becomes an `(insert! key)` call in the dispatcher — and after that
+insertion the dispatcher runs `*post-self-insert-hook*`, the seam
+"electric" behaviours hang from (auto-fill-mode wraps the line there).
+The hook fires on self-inserting *keystrokes*, not on programmatic
+`insert!` calls, so your editing functions never trigger it by
+accident. *Writing Modes and Hooks* covers registering one.
 
 The canonical small editing function is the standard library's
 `surround` (`markdown.lisp`) — every Markdown formatting command,
@@ -188,7 +218,7 @@ an error: the edits made before the failure still form one undo step,
 and the error propagates on to the caller. The guarantee covers even a
 raw JavaScript exception from a faulting host primitive — the wrapper
 is built on `try`'s `finally` clause, which runs on that path too (see
-*Errors and Error Handling*).
+<a href="nodes/errors-and-error-handling.html" data-godot-doc="errors-and-error-handling">Errors and Error Handling</a>).
 
 The rule of thumb is simple: **any command that makes more than one
 buffer mutation wraps them in `atomic-change-group`.** The standard
@@ -215,29 +245,80 @@ the group on error. The grouping is re-entrant (nested groups fold into
 the outermost one), an empty group records nothing, and `undo!` and
 `redo!` are deliberately no-ops while a group is open. The
 `fill-paragraph!` primitive groups its own delete-and-insert
-internally, so `M-q` already undoes atomically.
+internally, so `M-q` already undoes atomically. (That primitive's fill
+column is a host-side constant, 72. The fills that live in Lisp are
+configurable: auto-fill-mode's wrap-as-you-type honours the
+`*fill-column*` customization — default 70, `C-x f` to set — and the
+mode-specific `M-q` replacements carry their own knobs.)
+
+### The Kill Ring Is a List
+
+Cut and paste is not a host service with an API — it is a Lisp list.
+`kill.lisp` defines
+
+```lisp
+(define *kill-ring* (list))
+```
+
+and every kill command — cmd(kill-region) on `C-w`, cmd(kill-line) on
+`C-k`, cmd(kill-word), the rest of the family — funnels its text
+through one function, `kill-ring-add!`, which conses the string onto
+that list and mirrors it out through the `clipboard-set-text!`
+primitive. Reading the ring is `car` and `nth`; from the REPL,
+`(car *kill-ring*)` is the text `C-y` would insert.
+
+The interesting machinery is *kill accumulation*: consecutive kills
+grow one ring entry rather than each pushing its own, so `C-k C-k C-y`
+reinserts both lines. "Consecutive" is judged by `*last-command*` — the
+dispatcher's record of the previous command, covered in *Commands,
+Keymaps, and the Minibuffer* — and the same variable is how
+cmd(yank-pop) (`M-y`) knows it directly follows a yank. cmd(yank)
+itself first pulls the `clipboard-text` primitive's current value onto
+the ring when it holds something new (paste from outside), then
+inserts the ring's top and records where, so a following `M-y` can
+swap the insertion for an older kill.
+
+The two clipboard primitives — `(clipboard-set-text! s)` and
+`(clipboard-text)` — are the system-integration seam: everything the
+ring shares with the outside world passes through them. (In the
+current server they are backed by an editor-local store: the ring
+round-trips fully inside Godot, and the OS-clipboard bridge is the
+seam's next occupant.) Because every kill funnels through
+`kill-ring-add!`, redefining that one function observes — or rewrites
+— the whole cut/copy family at once.
 
 ### Searching and Replacing from Lisp
 
-The interactive search on `C-s` is a host-driven loop — the
-`start-search!` family of primitives opens it for the user but returns
-nothing useful to Lisp. Programmable searching is three pure matchers,
-each returning a `(start . end)` pair of offsets or `#f` for no match
-(absence is `#f`, so the result is safe as a bare test):
+Searching needs no special machinery: the incremental search on `C-s`
+and `C-r` is itself ordinary Lisp — `search.lisp`, a state machine
+over `read-next-key` that owns the keyboard until you exit — built on
+the same pure matchers this section teaches. (Only the *regexp*
+isearch starters, `C-M-s`/`C-M-r`, remain host stubs awaiting their
+port.) Programmable searching is four pure matchers, each returning a
+`(start . end)` pair of offsets or `#f` for no match (absence is `#f`,
+so the result is safe as a bare test):
 
 ```lisp
 (find-string-forward "TODO" 0)          ; ⇒ (210 . 214) — first literal match
+(find-string-backward "TODO" (point))   ; last match starting at or before point
 (find-regexp-forward "TODO|FIXME" (point))   ; first match at or after point
 (find-regexp-backward "[0-9]+" (point))      ; last match before point
 ```
 
-The pattern syntax is JavaScript's regular-expression dialect; an
+The string pair scans for literal text — `find-string-backward` is the
+backward isearch step, returning the last match whose *start* is at or
+before the given offset. Its natural companion is `(point-max)`, the
+largest valid offset (the buffer length): searching backward "from the
+end" is `(find-string-backward q (point-max))`, which is exactly how
+isearch wraps past the top of the buffer.
+
+The regexp pair speaks JavaScript's regular-expression dialect; an
 invalid pattern yields `#f` rather than an error — the same value as a
-miss, since these back incremental search, where a half-typed regexp
-matches nothing. Remember that the
-Lisp reader has its own escapes, so a pattern's backslash is written
-doubled: `"\\d+"`. Walking matches is ordinary recursion — search, act,
-search again from the match's end:
+miss, since these back incremental interfaces where a half-typed
+regexp matches nothing. Remember that the Lisp reader has its own
+escapes, so a pattern's backslash is written doubled: `"\\d+"`.
+Walking matches is ordinary recursion — search, act, search again from
+the match's end:
 
 ```lisp
 (define (goto-next-todo)
@@ -254,9 +335,10 @@ its guard passes on a miss and `(car #f)` then errors.
 
 Wholesale replacement has dedicated primitives. `(replace-all! from to)`
 replaces every literal occurrence in the buffer and echoes a count to
-the REPL. `(replace-regexp-all! pat repl)` does the same for a regexp —
-the replacement honours `$1`…`$N`, `$&`, and `$$` — and returns the
-number of replacements, or `-1` for an invalid pattern:
+the echo area, returning `nil`. `(replace-regexp-all! pat repl)` does
+the same for a regexp — the replacement honours `$1`…`$N`, `$&`, and
+`$$` — and returns the number of replacements, or `-1` for an invalid
+pattern:
 
 ```lisp
 (replace-regexp-all! "(\\d+)px" "$1 px")   ; ⇒ 7 — replacements made
@@ -264,11 +346,17 @@ number of replacements, or `-1` for an invalid pattern:
 
 The surgical one you have already met: `replace-range!`, which is how
 the interactive `query-replace` swaps in each confirmed match. Indeed
-`occur` and `query-replace` are ordinary Lisp built on exactly these
-primitives — `occur.lisp` and `regex-search.lisp` are worth reading
-whole. (And since `(buffer-text)` is just a string, the core string
-library — `string-index-of`, `string-contains?` — is often the shorter
-spelling for a one-off check.)
+`query-replace` is ordinary Lisp built on exactly these primitives —
+`find-string-forward` to locate each match, `replace-range!` to swap
+the confirmed ones — and `search.lisp` and `regex-search.lisp` are
+worth reading whole: they are the best real-world study of the
+matchers, and of the `read-next-key` continuation style the next
+chapter teaches. `occur` (`M-s o`) makes the opposite point — it needs
+none of the matchers, just literal `string-contains?` over
+`(buffer-text)` split into lines, because a buffer's text is only a
+string and the core string library — `string-index-of`,
+`string-contains?` — is often the shorter spelling for a one-off
+check.
 
 ### Markers: Positions That Survive Edits
 
@@ -297,7 +385,12 @@ current offset:
 (define m (make-marker 5))
 (goto! 0) (insert! "abc")
 (marker-position m)     ; ⇒ 8 — the marker rode the insertion
+m                       ; the REPL prints #<marker 8 in notes.md>
 ```
+
+The handle prints as `#<marker OFFSET in BUFFER-NAME>` (or
+`#<marker released>` once released) — worth knowing when a marker
+turns up in REPL output mid-debugging.
 
 Edits before the marker shift it — insertions push it along, deletions
 pull it back, and a deletion spanning it collapses it to the edit
@@ -352,49 +445,99 @@ an active mark is deliberately left alone.
 Nested excursions restore inside-out, each level through its own
 marker.
 
+### Overlays: Decorated Ranges
+
+A marker is one durable position; an *overlay* is a durable range with
+a face — the mechanism behind "highlight every match", snippet fields,
+and their kin. Three primitives cover it:
+
+```lisp
+(add-overlay! start end face kind?)   ; ⇒ an id string
+(clear-overlays! kind?)               ; ⇒ nil — drop all, or one kind
+(overlay-count)                       ; ⇒ the buffer's live overlay count
+```
+
+`(add-overlay! start end face kind?)` decorates `[start, end)` with
+the named face (a string — `"search-match"`, `"isearch"`, or any face
+from the face system; see *Customization from Lisp*). The endpoints
+are pinned with markers, so the decorated range rides edits exactly as
+the previous section describes. Overlays belong to the buffer, not the
+window: every window showing the buffer draws them.
+
+The optional `kind` is a tag for bulk removal. Untagged overlays get
+the kind `"overlay"`; a feature that creates overlays should tag its
+own — `(clear-overlays! "my-feature")` then clears yours and nobody
+else's, while a bare `(clear-overlays!)` is the scorched-earth
+version.
+
+The working example ships in the editor: `M-s h`
+(cmd(highlight-matches)) paints every occurrence of the word at point
+— or of the region's text — with `search-match` overlays, and `M-s u`
+(cmd(unhighlight-all)) clears them. Its heart is a five-line walk that
+pairs a string search with overlay creation:
+
+```lisp
+(define (-add-match-overlays text needle n from)
+  "Add a search overlay at every occurrence of NEEDLE (length N) in
+   TEXT at or after FROM. Tail-recursive."
+  (let ((found (string-index-of text needle from)))
+    (cond
+      ((< found 0) nil)
+      (else
+        (add-overlay! found (+ found n) "search-match" "search")
+        (-add-match-overlays text needle n (+ found n))))))
+```
+
+Note the discipline: every overlay is tagged `"search"`, so both
+commands begin with `(clear-overlays! "search")` and never disturb an
+overlay some other feature owns.
+
 ### What the Lisp Does Not Expose
 
-Two gaps remain, and readers arriving from Emacs Lisp deserve them
-stated plainly.
-
-**There are no overlays.** Overlays (ranges with metadata) exist in
-the editor's host layer — snippet fields and the inline eval pills are
-built on them — but Lisp code cannot create one today. A feature that
-needs a decorated range reaches it through its own primitives.
-
-**There is no buffer targeting.** Every primitive acts on the current
-buffer; nothing lets a function address another buffer behind the
-scenes. (Markers stretch this the polite distance — reading
+One gap remains, and readers arriving from Emacs Lisp deserve it
+stated plainly: **there is no buffer targeting.** Every primitive acts
+on the current buffer; nothing lets a function address another buffer
+behind the scenes. (Markers stretch this the polite distance — reading
 `(marker-position m)` works from anywhere — but moving one, like every
 edit, happens only in the buffer in front of you.)
 
 ### Files and Saving from Lisp
 
-The file surface splits, as it so often does in jmacs, into commands
+The file surface splits, as it so often does in Godot, into commands
 that carry the policy and primitives that do the work.
 
-Opening: `C-x C-f` runs cmd(find-file), a Lisp command in `files.lisp`
-that prompts with TAB completion, seeding the prompt with the directory
-of the file the current buffer is visiting (falling back to your home
-directory). A path that names no existing file opens an empty buffer
-visiting it; the file is created on first save — the `find-file-new!`
-primitive. Programmatic opening skips the prompt:
-`(open-file-path! "/etc/hosts")`. To read a file *without* visiting it,
-`(read-file-text! path)` returns its contents as a string (`nil` on
-failure), with `(file-exists? path)` answering the obvious question.
+Opening: `C-x C-f` runs cmd(find-file). The prompt starts at a
+sensible directory — the directory of the file the current buffer is
+visiting, falling back to your home directory — and TAB completes
+paths; on submit the server reads the file and switches the window to
+it. (The prompt's fulfilment is host-side: the server recognises the
+`Find file: ` prompt and does the disk I/O itself, which is also why a
+directory path opens a directory view rather than a buffer.) A path
+that names no existing file is an error — `find-file: cannot open …`
+in the echo area — not an invitation to create one. Programmatic
+opening skips the prompt: `(open-file-path! "/etc/hosts")`. To read a
+file *without* visiting it, `(read-file-text! path)` returns its
+contents as a string (`nil` on any failure), with
+`(file-exists? path)` answering the obvious question.
 
-Saving: `C-x C-s` runs cmd(save-buffer), a one-line command wrapping the
-`save-buffer!` primitive, which writes the current buffer to its file.
-`(view-modified?)` reports whether the current buffer has unsaved
-changes — the same dirty flag the modeline dot and the quit guard read.
+Saving: `C-x C-s` runs cmd(save-buffer), a Lisp command over the
+`save-buffer!` primitive. The primitive writes the current buffer to
+its file and reports a status string; the command owns the policy that
+string drives — `"ok"` echoes a confirmation, `"no-path"` (a buffer
+that has never been saved) falls back to cmd(write-file), the
+`C-x C-w` save-as prompt, exactly as Emacs's `C-x C-s` behaves on a
+new buffer, and `"error"` surfaces the failed write. The primitive
+does the work; the command decides what the situation means. Write
+your own automation against whichever layer you mean.
 
-Closing shows the command/primitive split at its clearest. The
-`kill-view!` primitive destroys the current view, unconditionally. The
-`kill-view` *command* (`C-x k`) first asks `(view-modified?)` and, when
-the buffer is dirty, demands a `y` before it will call the primitive.
-The primitive does the work; the command owns the policy. Write your
-own automation against whichever layer you mean. Sessions, autosave,
-and recovery are user-manual territory — see *Files and buffers*.
+Closing: `C-x k` runs cmd(kill-view), which removes the current view
+and switches to another — the registry refuses to drop the last
+buffer, so the window is never empty. There is no per-kill
+are-you-sure prompt; the guard against losing unsaved work lives in
+the quit path instead, where `C-x C-c` walks every dirty buffer across
+all windows with a per-buffer y/n/!/q prompt (save-some-buffers
+style). Sessions, autosave, and recovery are user-manual territory —
+see <a href="nodes/files-and-buffers.html" data-godot-doc="files-and-buffers">Files and buffers</a>.
 
 ### A Complete Editing Function
 

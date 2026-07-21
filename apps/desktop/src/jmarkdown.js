@@ -1,7 +1,7 @@
 /**
  * @file JMarkdown rendering — main process.
  *
- * jmacs bundles no markdown engine. A sticky note's JMarkdown source is
+ * Godot bundles no markdown engine. A sticky note's JMarkdown source is
  * rendered by a *user-configured shell command*: the command receives
  * the source on stdin, and its stdout is taken as the note's HTML. The
  * renderer process is sandboxed, so the spawn happens here, in the main

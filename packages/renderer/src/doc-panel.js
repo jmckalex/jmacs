@@ -6,7 +6,7 @@
  * close. This is why we do NOT reuse a shared singleton doc-view.
  *
  * Content is pre-built HTML (the host's doc pages / rendered docstrings). The
- * doc-view's own behaviour is reused as-is: `[data-jmacs-doc]` cross-links call
+ * doc-view's own behaviour is reused as-is: `[data-godot-doc]` cross-links call
  * `openDoc(name)`, `q` calls `closeBuffer`, other chords go through `onKey`.
  *
  * The panel is non-modal: the doc-view owns its keys via its own keydown

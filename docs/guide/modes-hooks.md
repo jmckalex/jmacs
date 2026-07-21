@@ -7,7 +7,7 @@ major mode — chosen from its file name when the buffer first appears —
 and any number of minor modes layered on top. A mode is not a class
 and there is no mode "framework": it is a plain Lisp map, and
 everything the editor does with it is a lookup against agreed keys.
-The chapter on <a href="nodes/modes.html" data-jmacs-doc="modes">Modes</a>
+The chapter on <a href="nodes/modes.html" data-godot-doc="modes">Modes</a>
 describes living with them; this one is about making them — by its end
 you will have built a major mode from nothing and read your way around
 the largest real one the editor ships.
@@ -38,7 +38,7 @@ other value:
 (get python-mode :name)   ; ⇒ "Python"
 ```
 
-Because cmd(define-mode) is only sugar, there is no validation and no
+Because `define-mode` is only sugar, there is no validation and no
 closed option set: any key you supply is stored, and a key nothing
 reads is silently inert. What makes a map *behave* like a mode is the
 small set of keys the editor's machinery looks up.
@@ -74,12 +74,26 @@ Every key the shipped machinery reads, and its default when absent:
 - `:indent-tabs?` / `:tab-width` — per-mode pins overriding the
   global `*indent-tabs-mode*` and `*tab-width*`. `makefile-mode` pins
   `:indent-tabs? #t`: a recipe indented with spaces is broken.
+- `:fill-column` / `:fill-indent-function` — read by `auto-fill.lisp`,
+  the wrap-as-you-type minor mode (`M-x auto-fill-mode`; the manual's
+  *Writing* chapter covers using it). `:fill-column` pins a mode-local
+  wrap column over the global `*fill-column*`; `:fill-indent-function`
+  supplies the procedure that indents the continuation line after an
+  automatic break — a procedure, or preferably a *symbol naming* one,
+  resolved live like `:keymap`. `jmarkdown-mode` points it at
+  `jmarkdown-fill-indent`, which is how a wrapped list item's
+  continuation stays aligned under its text. Absent: the global
+  column applies, and a broken line's continuation reproduces the
+  line's own leading indentation.
 
 A minor mode is the same kind of map — typically just `:name`, perhaps
 `:keymap` and `:priority` — never registered against a suffix, only
-toggled per buffer with cmd(enable-minor-mode) and cmd(disable-minor-mode),
-both idempotent. The 36-line `math-preview.lisp` is the canonical
-minimal example.
+toggled per buffer with `enable-minor-mode` and `disable-minor-mode`,
+both idempotent. The tiny `math-preview.lisp` — a few dozen lines —
+is the canonical minimal example; `auto-fill.lisp` is the next size
+up — real machinery behind a mode map holding nothing but
+`:name "Fill"`, whose membership in the buffer is the feature's only
+on/off switch.
 
 ### Claiming a File Extension
 
@@ -90,12 +104,13 @@ A mode becomes a *major* mode by registration:
 ```
 
 The registry is a plain list of `(suffix . mode)` pairs. When a text
-buffer first appears with no mode, the host runs cmd(choose-major-mode!),
-which asks cmd(mode-for-name) for the mode whose suffix matches the
-buffer's name, and installs it with cmd(switch-major-mode) — running
-the old mode's disable hooks and the new mode's enable hooks. A name
-matching nothing falls back to `fundamental-mode`. Three rules govern
-the lookup:
+buffer first appears with no mode, the host runs `choose-major-mode!`
+(via the server's `-spine-choose-major-mode` wrapper in
+`apps/desktop/mwb/spine.js`), which asks `mode-for-name` for the mode
+whose suffix matches the buffer's name, and installs it with
+`switch-major-mode` — running the old mode's disable hooks and the new
+mode's enable hooks. A name matching nothing falls back to
+`fundamental-mode`. Three rules govern the lookup:
 
 - *Matching is by suffix*, with `string-suffix?` — so a "suffix" need
   not be an extension: `(register-mode "Makefile" makefile-mode)`
@@ -112,6 +127,18 @@ the lookup:
 Selection runs only when a buffer has no mode yet, and is never
 forced: `(switch-major-mode latex-mode)` in the REPL puts the current
 buffer in LaTeX mode regardless of its name.
+
+Choosing the major mode has a second half: minor modes can ride along
+automatically. `(register-default-text-minor-mode mode)` puts a minor
+mode on the `*default-text-minor-modes*` list, and
+`choose-major-mode!` finishes by enabling every listed mode in the
+buffer — so a registered mode is on in *every* text buffer from the
+moment its major mode is chosen, and again after a session-restore
+re-mount (`enable-minor-mode`'s idempotence makes the repeat
+harmless). The stdlib's bookmarks feature registers
+`bookmark-minor-mode` this way (`bookmarks.lisp`); your `init.lisp`
+can do the same for a minor mode you want everywhere. Non-text views
+never reach this path.
 
 ### The Display Name Is the Mode's Key
 
@@ -152,13 +179,15 @@ disabled:
 procedure of zero arguments; both calls are for effect. Hooks run
 when the mode is *enabled for a buffer*: for a major mode, when a
 buffer adopts it — on its first appearance, after a session restore,
-or on an explicit `switch-major-mode` — and for a minor mode, on
-every `enable-minor-mode`. The buffer being set up is current while
-the hook runs, so buffer primitives in the thunk act on it. Disable
-hooks run on the way out: when a buffer switches major mode, or via
-`disable-minor-mode`. The run order is fixed: the mode's built-in
-`:on-enable` (or `:on-disable`) procedure first, then the `add-hook`
-functions in registration order.
+or on an explicit `switch-major-mode` — and for a minor mode, on the
+`enable-minor-mode` that actually turns it on. (`enable-minor-mode`
+is guarded: re-enabling a mode already active in the buffer is a
+complete no-op, so the hooks do *not* run a second time.) The buffer
+being set up is current while the hook runs, so buffer primitives in
+the thunk act on it. Disable hooks run on the way out: when a buffer
+switches major mode, or via `disable-minor-mode`. The run order is
+fixed: the mode's built-in `:on-enable` (or `:on-disable`) procedure
+first, then the `add-hook` functions in registration order.
 
 Hooks are *additive* — each `add-hook` appends, nothing replaces — so
 the stdlib and your `init.lisp` can hook the same mode without
@@ -176,29 +205,39 @@ hooks at all: built-in setup goes in a mode's own `:on-enable` slot;
           (lambda () (show-status! "C-c C-c compiles, C-c C-v views.")))
 ```
 
+Under the bonnet the registry is `*mode-hooks*`, a plain map keyed
+`"<Name>/enable"` and `"<Name>/disable"`, and `run-mode-hook` is the
+runner that `switch-major-mode` and `enable-minor-mode` call. When a
+hook mysteriously fires — or fails to — inspect the registry
+directly: `(get *mode-hooks* "Journal/enable")` lists exactly the
+procedures that will run, in order.
+
 #### Hooks and Re-evaluation
 
 `add-hook` is idempotent against the *same procedure object*: re-adding
 a thunk it already holds (compared with `eq?`) is a no-op. But
 re-evaluating an `(add-hook … (lambda () …))` form builds a *fresh*
 procedure each time, which `eq?` cannot recognise — so re-evaluating
-the form by hand (`C-RET` on it, say) does stack a duplicate hook.
+the form by hand (`C-enter` on it, say) does stack a duplicate hook.
 The honest rules of thumb:
 
-- The standard reload path is safe. `C-x C-r` (cmd(reload-stdlib))
-  re-evaluates the whole stdlib — which resets the hook registry —
-  *before* replaying your `init.lisp`, so hooks registered there land
-  exactly once per reload. Reload; don't re-evaluate piecemeal.
+- Restarts are clean. Your `init.lisp` is evaluated exactly once per
+  launch, so hooks registered there land exactly once; duplicates
+  arise only from re-evaluating forms by hand in a running session.
 - Prefer thunks that are harmless to run twice. `enable-minor-mode` is
   itself idempotent, which makes the math-preview hook above safe even
-  if it is ever duplicated.
+  if it is ever duplicated. (This matters doubly because `remove-hook`
+  also matches by `eq?` — once the lambda that registered a duplicate
+  is gone, you cannot name it to remove it short of a restart.)
 
 ### Building a Mode from Scratch
 
 Suppose you keep a diary in `.journal` files and want a *Journal*
 mode: two commands under `C-c`, a menu, a greeting when a journal
-opens. What follows is complete — paste it into `init.lisp`, press
-`C-x C-r`, and open a `.journal` file. The commands are ordinary
+opens. What follows is complete — paste it into `init.lisp`, restart
+the editor (`init.lisp` is evaluated at every launch), and open a
+`.journal` file; in a running session you can instead evaluate the
+forms in place with `C-enter`. The commands are ordinary
 `defcommand`s, built on the buffer primitives — *Commands, Keymaps,
 and the Minibuffer* covers the form. (`snippet-date-string` is a host
 primitive formatting the current `"date"`, `"datetime"` or `"year"`.)
@@ -270,9 +309,10 @@ flat menu of the keymap's commands appears even without
 ### Anatomy of a Real Mode
 
 When you outgrow the toy, read
-`packages/stdlib/lisp/languages/jmarkdown.lisp` — 438 lines, shipped
-with the editor, exercising nearly every surface in this chapter. It
-opens exactly like journal-mode, with the declare-then-fill pattern:
+`packages/stdlib/lisp/languages/jmarkdown.lisp` — nearly nine hundred
+lines, shipped with the editor, exercising nearly every surface in
+this chapter. It opens like journal-mode, with the declare-then-fill
+pattern, plus one option the toy did not need:
 
 ```lisp
 (define jmarkdown-mode-map {})
@@ -280,15 +320,21 @@ opens exactly like journal-mode, with the declare-then-fill pattern:
 (define-mode jmarkdown-mode
   :name "JMarkdown"
   :highlight :jmarkdown
-  :keymap 'jmarkdown-mode-map)
+  :keymap 'jmarkdown-mode-map
+  ;; …
+  :fill-indent-function 'jmarkdown-fill-indent)
 
 (register-mode ".jmd" jmarkdown-mode)
 ```
 
-The map is declared empty so the mode can be defined at the top of the
-file and filled in at the bottom, once 350 lines of commands exist to
-bind. The fill-in shows a large `C-c` sub-map (25 entries; trimmed)
-and a mode-local override of a *global* binding, `M-q`:
+The fourth option is the auto-fill continuation indenter from *The
+define-mode Options* — stored as a symbol, the file's comment notes,
+"so it resolves live and load order doesn't matter": the procedure it
+names is defined hundreds of lines below. The map is declared empty
+so the mode can be defined at the top of the file and filled in near
+the bottom, once the commands exist to bind. The fill-in shows a
+large `C-c` sub-map (two dozen entries; trimmed here) and mode-local
+overrides of *global* bindings — `M-q`, and TAB:
 
 ```lisp
 (define jmarkdown-c-c-map
@@ -304,13 +350,46 @@ and a mode-local override of a *global* binding, `M-q`:
 ;; JMarkdown-aware one (the latex-mode-map does the same).
 (set! jmarkdown-mode-map
       {"C-c" jmarkdown-c-c-map
-       "M-q" 'jmarkdown-fill-paragraph})
+       "M-q" 'jmarkdown-fill-paragraph
+       ;; TAB / S-TAB indent / dedent the selection (snippets still win).
+       "tab" 'jmarkdown-tab
+       "S-tab" 'jmarkdown-backtab})
 ```
 
 Half the bindings borrow from *another file*: the formatting family
 around cmd(markdown-bold) lives in `markdown.lisp`, and borrowing it
 is just writing the names — keymaps bind symbols, resolved at
-dispatch. The showpiece, bound to `C-c @`, wraps the region in an
+dispatch.
+
+That wholesale `set!` is safe exactly once — in the file that owns
+the map, filling in the empty map it declared. Further down, the same
+file demonstrates the idiom every *later* extension must use. Its
+authoring layer ("AUCTeX for JMarkdown": compile on `C-c C-c`,
+completing environment and directive pickers, heading navigation on
+`C-c C-n` and `C-c C-u`, a `C-c C-f` font sub-map and `C-c C-t`
+toggle sub-map, the RefTeX chords `C-c (`, `C-c )`, `C-c [`, and
+`M-enter` to continue a list) adds its bindings by extending the
+existing maps with `assoc`, never by replacing them:
+
+```lisp
+(set! jmarkdown-c-c-map
+  (let* ((m jmarkdown-c-c-map)
+         (m (assoc m "C-c" 'jmarkdown-compile))       ; compile (format prompt)
+         (m (assoc m "C-f" jmarkdown-font-map))       ; font sub-map
+         ;; …fifteen more…
+         (m (assoc m "/"   'jmarkdown-index)))        ; RefTeX: index
+    m))
+```
+
+The distinction is worth internalising: maps are immutable values and
+a mode-map variable is shared, so a second wholesale `{…}` replace
+silently wipes every binding any other file — or your `init.lisp` —
+had added, keeping only its own. The file's own comment states the
+house rule: "Bindings are added by `assoc` … never a wholesale `{…}`
+replace, so nothing already on the map is dropped." Replace only the
+map you just declared; extend everything else.
+
+The showpiece, bound to `C-c @`, wraps the region in an
 `@begin()`/`@end()` pair and leaves a cursor inside *both* pairs of
 parentheses: type the environment's name once and it appears in both
 places, live; `C-g` collapses back to one cursor. Its essence:
@@ -330,18 +409,28 @@ places, live; `C-g` collapses back to one cursor. Its essence:
 One insertion, one arithmetic placement of the primary cursor, one
 `add-selection!` for the mirror — the multi-cursor machinery does the
 rest, and the `atomic-change-group` wrapper (see *Editing Text from
-Lisp*) makes the delete-and-insert one undo step. The file closes
-with a five-section menu — journal-mode's call shape at scale:
+Lisp*) makes the delete-and-insert one undo step. The menu is
+journal-mode's call shape at scale — and a lesson in itself, because
+the file registers it *twice*: a five-section core (Format / Insert /
+Blocks / Headings / Preview & Math) mid-file, then, once the
+authoring commands exist, a nine-section replacement that the file
+actually closes with (Compile & View / Format / Insert / Insert Block
+/ References / Navigate / Headings / Advanced / Preview & Math):
 
 ```lisp
 (register-mode-menu! "JMarkdown"
   (list
-    (cons "Format"
-          (list (cons "Bold" 'markdown-bold)
-                (cons "Italic" 'markdown-italic)))   ; …
-    ;; … Insert / Blocks / Headings / Preview & Math …
+    (cons "Compile & View"
+          (list (cons "Compile" 'jmarkdown-compile)
+                (cons "Compile to HTML" 'jmarkdown-compile-html)))  ; …
+    ;; … Format / Insert / … / Preview & Math …
     ))
 ```
+
+A later `register-mode-menu!` for the same display name wins
+outright — the menu registry is last-write-wins, so unlike a keymap
+there is no `assoc`-style incremental extension: an extension
+re-registers the *whole* menu, sections it keeps included.
 
 Also worth studying there: `jmarkdown-fill-paragraph`, a pure,
 unit-tested fill *planner* plus a thin command applying the plan — the

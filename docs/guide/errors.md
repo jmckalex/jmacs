@@ -1,12 +1,13 @@
 ## Errors and Error Handling
 
-When a jmacs Lisp program cannot continue — an argument is the wrong
+When a Godot Lisp program cannot continue — an argument is the wrong
 type, a file is missing, a precondition fails — it *signals* an error:
 evaluation of the current form stops, and the error travels outward
 until something catches it or it reaches the editor's surface. This
 chapter covers both ends of that journey: raising an error worth
 reading, catching one with `try`, guaranteeing cleanup with `finally`,
-what the mechanism deliberately does not do, and where an uncaught
+what the mechanism deliberately does not do, how interrupts ride the
+same rails, and where an uncaught
 error actually shows up in the running editor. The looping constructs error-handling code leans on are the
 territory of *Control Flow and Iteration*; macros that wrap bodies in
 error handling belong to *Writing Macros*.
@@ -16,7 +17,7 @@ error handling belong to *Writing Macros*.
 
 ### Signalling an Error
 
-The <a href="reference/lisp-core/error.html" data-jmacs-doc="error">error</a>
+The <a href="reference/lisp-core/error.html" data-godot-doc="error">error</a>
 primitive raises an error and never returns:
 
 ```lisp
@@ -51,11 +52,11 @@ shape. The common ones, with their exact message texts:
 | Referencing an undefined variable | `unbound symbol: foo` |
 | `set!` on an undefined variable | `cannot set! an unbound symbol: foo` |
 | Calling a value that is not a procedure | `not a procedure: 5` |
-| Wrong argument count | `f: expected 2 argument(s), got 1` — or `expected at least N` with a rest parameter |
+| Wrong argument count | `f: expected 2 argument(s), got 1` — `expected at least N` with a rest parameter; primitives with an optional argument report a range, `get: expected 2–3 argument(s), got 1` |
 | `car` or `cdr` of a non-pair | `car: expected a pair, got number` |
 | Wrong argument type to a primitive | `sqrt: expected a number, got string` (the same `name: expected a …, got <type>` shape throughout) |
 | Division by zero in `/` or `mod` | `division by zero` · `mod: division by zero` |
-| Malformed source given to `read-string` | `unclosed '(' opened at 1:1` |
+| Malformed source given to `read-string` | `unclosed '(' opened at 1:1` · `unclosed string opened at 1:5` |
 
 Reader errors carry their line and column embedded in the message text
 itself; every other error carries its location separately, in the
@@ -100,7 +101,7 @@ proper list of the irritant values (`nil` when there were none). When
 the evaluator can locate the form that failed, two more join them:
 `:line` and `:column`, the form's 1-based position in its source. Read
 them with
-<a href="reference/lisp-core/get.html" data-jmacs-doc="get">get</a>,
+<a href="reference/lisp-core/get.html" data-godot-doc="get">get</a>,
 like any other map:
 
 ```lisp
@@ -212,7 +213,10 @@ the host level, where the editor's own boundary reports it.
 Practically: when your code calls host primitives, `try` is not an
 absolute barrier. A handler around a host call catches the errors the
 primitive deliberately signals (well-written primitives wrap their
-failures in `LispError`), but a genuine host bug sails past it, and the
+failures in `LispError`; many of the editor's own go one step gentler
+and report failure as a value instead — `read-file-text!` returns `nil`
+for an unreadable file rather than signalling), but a genuine host bug
+sails past it, and the
 handler never runs. One thing *does* run on that path: a `finally`
 clause. Because `finally` is built on the host's own try/finally, its
 cleanup forms execute even as a raw JS exception unwinds through the
@@ -222,6 +226,33 @@ see the fault. Treat an error
 that ignores your `catch` as a host-side fault worth reporting, not a
 flaw in your handler. Stack overflow from deep non-tail recursion is a
 `RangeError`, so it too escapes every `try`.
+
+### Interrupts Are Errors Too
+
+The evaluator counts its steps, and every few thousand of them offers
+its host two ways to abort a running evaluation: an *interrupt check*
+(the host's chance to say the user asked to quit) and a *step budget*
+(a hard ceiling on how long any one evaluation may run). When either
+fires, the evaluation dies with an interrupt — an error whose message
+is `quit` for the check and `step budget exceeded (N steps)` for the
+budget.
+
+Two facts matter to Lisp code. First, an interrupt is deliberately a
+kind of Lisp error, so it unwinds through `try` exactly like one:
+`finally` cleanup runs on the way out, and an aborted run cannot leave
+an undo group open. Second, the same fact cuts the other way — a plain
+`(catch e …)` cannot tell an interrupt from an ordinary failure and
+will swallow the quit. A broad handler wrapped around a long-running
+loop should rethrow what it does not recognise (the rethrow idiom
+below), so that an abort actually aborts.
+
+One honest caveat: the machinery must be armed by the host, and the
+running editor does not currently arm it — no step budget and no quit
+check are installed in the live Lisp server, so a genuinely unbounded
+loop cannot be interrupted at all (*Control Flow and Iteration* issues
+the corresponding warning about `while`). Write handlers that pass
+`quit` along anyway; the discipline costs nothing and the arming is
+the host's to change.
 
 ### Idioms for Everyday Error Handling
 
@@ -282,13 +313,26 @@ itself, un-stringified.
 
 #### Error Messages Are User Interface
 
-In an editor, an uncaught error message is not a log line — it is what
-the person at the keyboard reads when a command refuses. Commands
-should therefore signal *human-readable* errors: name the command, say
-what was wrong, give the expected range when there is one. Compare
+In an editor, an error message is not a log line — it is what the
+person at the keyboard reads when a command refuses. Commands should
+therefore signal *human-readable* errors: name the command, say what
+was wrong, give the expected range when there is one. Compare
 `car: expected a pair, got nil` leaking out of an unguarded helper with
 `insert-rule: width must be a number` — the second tells the user what
 to fix, the first tells them to go read your source.
+
+There are two channels, and choosing between them is part of the
+craft. `error` *refuses*: it aborts the command, unwinds to a host
+boundary, and is visible to any caller that wraps the command in
+`try` — but, for a command run from a key, the uncaught message
+currently lands on the server console rather than in front of the user
+(see *Where Errors Appear* below). `show-status!` *informs*: it puts
+one line in the echo area, where the user is actually looking, and the
+command carries on — or returns normally, having declined to act. So
+for a refusal the user must read — "no match", "width must be a
+number" — catch your own predictable failures and report them with
+`show-status!`; keep `error` for genuine can't-continue faults and for
+the benefit of programmatic callers.
 
 ### Keeping try Out of the Loop
 
@@ -342,30 +386,40 @@ flat no matter how long the list is.
 
 ### Where Errors Appear in the Running Editor
 
-An error nobody catches does not crash jmacs; the host catches it at
-the boundary and reports it. Where you see it depends on how the code
-was running:
+An error nobody catches does not crash Godot; it is caught at a host
+boundary. *Which* boundary depends on how the code was running — and,
+candidly, not every boundary reports somewhere you can see:
 
 - **The REPL** (`C-x p`, cmd(toggle-repl)) prints the message in its
   error styling in place of a result, with the source location
   appended — `unbound symbol: foo (at line 2:1)` — whenever the
-  evaluator tagged one. The REPL is also the editor's
-  error log of record — most of the paths below write here.
-- **Inline evaluation** — `C-RET` (cmd(eval-expression-at-point)) and
+  evaluator tagged one. A form typed here runs in the same Lisp world
+  as every command, so the REPL is the surface to reach for when
+  something misbehaves: re-run the suspect code and read the error in
+  full.
+- **Inline evaluation** — `C-enter` (cmd(eval-expression-at-point)) and
   `C-x C-e` (cmd(eval-expression-before-point)) — shows a red pill
-  beside the form reading `! ` plus the message, truncated to a line;
-  the full text also lands in the REPL and in the `*Eval log*` buffer
-  — see cmd(show-eval-log) — where successes are marked `⇒` and
-  failures `!`.
+  beside the form reading `! ` plus the message. The pill is the whole
+  report: unlike successful results, which are truncated to about two
+  hundred characters, an error message arrives entire.
 - **A command run from a key, `M-x`, or a menu**: the error is caught
-  at the host boundary (a keystroke is consumed, not replayed) and the
-  message is appended to the REPL. If the dock is closed, nothing
-  visible happens at all — so when a key seems to silently do nothing,
-  open the REPL; the explanation is usually sitting there.
-- **Startup and reload**: a standard-library or `init.lisp` file that
-  fails to load is reported by name in the REPL and the rest still
-  load — a broken file degrades the editor, it does not brick it.
-- **JavaScript faults** that escape to the window are caught by the
+  at the server boundary (the keystroke is consumed, not replayed) and
+  logged as `intent error: …` on the *server process's console* — the
+  terminal you launched Godot from — and nowhere in the editor itself.
+  A failing command therefore looks like a dead key. When a key seems
+  to silently do nothing, run the command's code in the REPL, where
+  the same failure is reported properly; and when writing your own
+  commands, surface predictable refusals with `show-status!` (see
+  *Error Messages Are User Interface* above) so they never fall into
+  this hole.
+- **Startup and reload**: a broken `init.lisp` or `custom.lisp` is
+  caught — the editor still boots without it — and reported as
+  `init.lisp load failed: …`, again on the server console; the
+  auto-loaded language modes are equally tolerant, a broken one
+  skipped by name. (The standard library proper gets no such guard —
+  a broken core file aborts the server at boot — but those files ship
+  with the editor and its test suite.)
+- **JavaScript faults** that escape to a window are caught by the
   renderer's error boundary, which notes them in the REPL, flashes a
   one-line minibuffer message, and snapshots unsaved work for recovery.
 
@@ -398,10 +452,12 @@ converts the minibuffer string with `string->number`, which yields `#f`
 for input like `"abc"` — the command really can receive a non-number,
 and says so in its own name. The second check folds the offending value
 into the message (for the human) and attaches it as an irritant (for
-any caller). Run interactively with a bad width, nothing is inserted
-and `insert-rule: width must be a number` lands in the REPL; run with
-`80`, it inserts the rule. And because a command is an ordinary
-function, a program can call it and field the failure itself:
+any caller). Run interactively with a bad width, nothing is inserted —
+though the message itself goes where uncaught command errors go today,
+the server console, not the editor (see *Where Errors Appear* above; a
+command that wants its refusal *seen* reports it with `show-status!`).
+Run with `80`, it inserts the rule. And because a command is an
+ordinary function, a program can call it and field the failure itself:
 
 ```lisp
 (insert-rule 10)                       ; inserts a 10-dash rule

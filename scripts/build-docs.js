@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @file build-docs — render the jmacs documentation.
+ * @file build-docs — render the Godot documentation.
  *
  * Invokes the user's installed `jmarkdown` binary on
  * `docs/MANUAL.jmd` (the root source that <<include>>s the topic
@@ -95,7 +95,7 @@ function main() {
   // process.cwd(). Run jmarkdown from the repo root and pass the
   // output directory through an env variable so the script can use
   // it without hard-coding `docs/build`.
-  process.env.JMACS_DOCS_OUT = relative(repoRoot, outPath) || '.';
+  process.env.GODOT_DOCS_OUT = relative(repoRoot, outPath) || '.';
 
   const mainHtml = join(outPath, 'MANUAL.html');
   const res = spawnSync(

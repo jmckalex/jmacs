@@ -14,7 +14,7 @@
  * test.
  */
 
-/** File-name suffix → audio MIME type, for the suffixes jmacs opens
+/** File-name suffix → audio MIME type, for the suffixes Godot opens
  *  as audio. The keys are lower-case, with the leading dot. The MIME
  *  type is informational — the renderer's `<audio>` element does its
  *  own sniffing — but we keep the table parallel to the video one for
@@ -30,7 +30,7 @@ const AUDIO_MIME_TYPES = {
   '.opus': 'audio/ogg',
 };
 
-/** File-name suffix → video MIME type, for the suffixes jmacs opens
+/** File-name suffix → video MIME type, for the suffixes Godot opens
  *  as video. Note that not every browser plays every container — most
  *  notably Chromium does not natively play `.mkv`. The view still
  *  mounts; the `<video>` element shows its native error UI. */
@@ -64,7 +64,7 @@ export function mimeTypeForAudio(name) {
 }
 
 /**
- * Whether a file name names an audio file jmacs should open through
+ * Whether a file name names an audio file Godot should open through
  * the audio view rather than as text.
  *
  * @param {string} name - A file name or path.
@@ -88,7 +88,7 @@ export function mimeTypeForVideo(name) {
 }
 
 /**
- * Whether a file name names a video file jmacs should open through
+ * Whether a file name names a video file Godot should open through
  * the video view rather than as text.
  *
  * @param {string} name - A file name or path.
@@ -142,7 +142,7 @@ export function mediaUrlForPath(filePath) {
  *   - `2` NETWORK: file couldn't be fetched from disk.
  *   - `3` DECODE: the file is recognised but data is truncated/corrupt.
  *   - `4` SRC_NOT_SUPPORTED: the codec or container is one Chromium
- *      doesn't decode. The most common path on jmacs — and the one
+ *      doesn't decode. The most common path on Godot — and the one
  *      that takes the most tailored advice (the `.mkv` case in
  *      particular has a one-line remux that almost always works).
  *

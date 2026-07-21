@@ -1635,7 +1635,7 @@ test('mode-menu-entries is empty for a mode that binds no commands', async () =>
 // --- customisation registry ---------------------------------------------
 
 const DECLARE =
-  '(defcustom *test-opt* 7 :integer :group (quote jmacs) :doc "a test")';
+  '(defcustom *test-opt* 7 :integer :group (quote godot) :doc "a test")';
 
 test('defcustom defines a variable and registers the setting', async () => {
   const { interpreter } = await editor();
@@ -1715,7 +1715,7 @@ test('re-declaring a customised setting keeps its value', async () => {
 
 test('defgroup registers a group and customs-in-group finds members', async () => {
   const { interpreter } = await editor();
-  interpreter.evaluate('(defgroup (quote test-group) (quote jmacs) "tests")');
+  interpreter.evaluate('(defgroup (quote test-group) (quote godot) "tests")');
   interpreter.evaluate('(defcustom *test-a* 1 :integer :group (quote test-group) :doc "")');
   interpreter.evaluate('(defcustom *test-b* 2 :integer :group (quote test-group) :doc "")');
   assert.equal(

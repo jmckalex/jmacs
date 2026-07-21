@@ -4,7 +4,7 @@
 phases 1–3 are implemented. Phase 4 remains.**
 
 A *mode* is a tagged behavioural configuration for a buffer (per the
-glossary). This document proposes how modes work in jmacs: the data
+glossary). This document proposes how modes work in Godot: the data
 model, where per-buffer state lives, how mode keymaps compose with the
 global keymap, and how modes are chosen. It ends with a phasing plan
 and the open questions worth a decision before implementation.

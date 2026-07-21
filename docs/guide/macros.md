@@ -6,8 +6,7 @@ evaluated, something no function can do. This chapter is about writing
 your own. We build up from the idea, through the tools (`defmacro`,
 quasiquote, `gensym`), to a ladder of worked examples ending at a real
 macro from the editor's standard library — with the two classic traps,
-variable capture and multiple evaluation, treated on the way, because
-every macro writer falls into both exactly once.
+variable capture and multiple evaluation, treated on the way.
 
 > *A macro does not compute a value; it computes the code that will.*
 
@@ -39,9 +38,10 @@ This is equally why `when` and `unless` cannot be functions: `(unless
 (saved?) (save!))` must not evaluate `(save!)` until it has looked at
 the test. The only way to receive code *unevaluated* — and decide its
 fate — is to be a special form or a macro. The special forms are a
-closed set of seventeen, built into the evaluator; macros are how you
-extend that set yourself — `when` and `unless` are in fact prelude
-macros, and we read their source below.
+closed set built into the evaluator (seventeen at this writing; §4 of
+the Lisp specification, `docs/spec/lisp.md`, tables them); macros are
+how you extend that set yourself — `when` and `unless`
+are in fact prelude macros, and we read their source below.
 
 ### Defining a Macro with defmacro
 
@@ -51,7 +51,10 @@ macros, and we read their source below.
 
 `defmacro` builds a transformer — an ordinary procedure with parameter
 list `params` and body `body…` — and binds `name` to it, marked as a
-macro. It returns the name symbol, like `define`. The parameter list has
+macro. It returns the name symbol, like `define`. The name must be a
+symbol and the body must hold at least one form — a bare
+`(defmacro name params)` is rejected with `defmacro: expected
+(defmacro name params body...)`. The parameter list has
 the same shapes as `lambda`'s: fixed parameters, a dotted rest parameter
 `(test . body)`, or a bare symbol that receives the whole argument list
 — a rest parameter is the usual way to accept a body of many forms.
@@ -73,6 +76,9 @@ object itself (it prints as `#<macro name>`; applying it as a procedure
 is an error), and macros cannot carry docstrings — `doc` on a macro
 returns `#f`, so a leading string in a `defmacro` body is convention
 for the human reader, nothing more.
+(<a href="reference/lisp-core/describe.html" data-godot-doc="describe">describe</a>
+still answers something: `(describe when)` reports `:kind` `macro` and
+the `:name` — the discoverable rump of an undocumentable object.)
 
 ### Expansion Happens Every Time
 
@@ -87,8 +93,8 @@ sites picks up the new definition immediately.
 ### Asking for an Expansion
 
 Two primitives —
-<a href="reference/lisp-core/macroexpand-1.html" data-jmacs-doc="macroexpand-1">macroexpand-1</a> and
-<a href="reference/lisp-core/macroexpand.html" data-jmacs-doc="macroexpand">macroexpand</a>
+<a href="reference/lisp-core/macroexpand-1.html" data-godot-doc="macroexpand-1">macroexpand-1</a> and
+<a href="reference/lisp-core/macroexpand.html" data-godot-doc="macroexpand">macroexpand</a>
 — let you look at what a macro call will become without
 running it. `(macroexpand-1 form)` performs **one** expansion step: if
 `form` is a list whose head names a macro in the global environment,
@@ -126,7 +132,11 @@ the second step where `macroexpand-1` stops; in the last line the inner
 `(unless …)` sits inside the `begin`, not in head position, so it
 survives unexpanded. (A macro that expands to itself would never
 finish; `macroexpand` gives up after a thousand steps with
-`macroexpand: expansion did not terminate`.) These two are the macro
+`macroexpand: expansion did not terminate`.) One scoping caveat: both
+primitives resolve the head in the **global** environment, wherever
+the call appears — a macro defined inside a module (*Modules and
+Program Structure*) is invisible to them, and its calls come back
+unchanged. These two are the macro
 writer's first debugging tool: when an expansion misbehaves, read the
 code it actually built before reasoning about what that code does. And
 since the expansion is plain data, `eval` (this chapter's final
@@ -162,6 +172,11 @@ is the standard idiom for conditionally including a form:
 ; ⇒ (begin (println "go") (step!) (record!))
 ```
 
+A comma can also stand in the dotted tail position: `` `(a . ,rest) ``
+evaluates `rest` and makes it the whole tail of the list — with `rest`
+bound to `(2 3)`, the result is `(a 2 3)`. It is the idiomatic way to
+splice into a dotted position, where `,@` cannot go.
+
 Nesting, in one careful paragraph: quasiquote tracks depth, so a
 quasiquote inside a quasiquote preserves its own unquotes as data —
 `` `(a `(b ,(+ 1 2))) `` yields `(a (quasiquote (b (unquote (+ 1 2)))))`
@@ -196,14 +211,16 @@ body with `begin` consed on. The expansion, evaluated in place of the
 call, is `(if done nil (begin (println "still working")))`. No
 quasiquote here — at this size `list` and `cons` are perfectly readable;
 both styles are legitimate. The macros
-<a href="reference/lisp-core/when.html" data-jmacs-doc="when">when</a> and
-<a href="reference/lisp-core/unless.html" data-jmacs-doc="unless">unless</a>
+<a href="reference/lisp-core/when.html" data-godot-doc="when">when</a> and
+<a href="reference/lisp-core/unless.html" data-godot-doc="unless">unless</a>
 are described as control flow in *Control Flow and Iteration*; here you
 see they are two lines each.
 
 #### How the Prelude Defines dotimes
 
-*Control Flow and Iteration* presented `dotimes` as a counting loop;
+*Control Flow and Iteration* presented
+<a href="reference/lisp-core/dotimes.html" data-godot-doc="dotimes">dotimes</a>
+as a counting loop;
 here is what it actually is — the real definition, verbatim from the
 same prelude:
 
@@ -221,11 +238,17 @@ same prelude:
          (,loop 0)))))
 ```
 
-Ask for an expansion and read them together:
+Ask for an expansion and read them together (re-indented here — the
+REPL prints an expansion on one line):
 
 ```
 λ (macroexpand-1 '(dotimes i 3 (println i)))
-(let ((count__2 3)) (letrec ((dotimes__1 (lambda (i) (when (< i count__2) (println i) (dotimes__1 (+ i 1)))))) (dotimes__1 0)))
+(let ((count__2 3))
+  (letrec ((dotimes__1 (lambda (i)
+                         (when (< i count__2)
+                           (println i)
+                           (dotimes__1 (+ i 1))))))
+    (dotimes__1 0)))
 ```
 
 The template wraps the body in a `letrec`-bound loop procedure whose
@@ -234,14 +257,18 @@ constant stack at any count (*Functions and Closures*). The caller's
 variable drops into the lambda's parameter list through `,var` — the
 one binding the caller is *supposed* to see, under the caller's own
 chosen name. Everything else the macro introduces hides behind
-<a href="reference/lisp-core/gensym.html" data-jmacs-doc="gensym">gensym</a>:
+<a href="reference/lisp-core/gensym.html" data-godot-doc="gensym">gensym</a>:
 the loop's name, so a body that happens to mention a variable called
 `loop` or `dotimes` cannot collide with it, and the count, bound once
 *outside* the loop so the `count` expression is evaluated a single time
 however many iterations run. Hold onto those two moves — gensym for
 introduced names, bind-once for caller forms — because they are the two
 disciplines the rest of this chapter teaches, already at work in a
-dozen lines of prelude.
+dozen lines of prelude. The prelude's other loops,
+<a href="reference/lisp-core/while.html" data-godot-doc="while">while</a> and
+<a href="reference/lisp-core/dolist.html" data-godot-doc="dolist">dolist</a>,
+are the same shape — a gensym-named `letrec` loop with its self-call
+in tail position — and make the natural next reads in that file.
 
 The classic exercise is still worth doing: a counting loop of your own,
 on different machinery —
@@ -259,8 +286,8 @@ The call expands to `(for-each (lambda (i) (println i)) (range 3))`:
 the body splices in through `,@body`, and the count form lands inside
 `(range …)`, evaluated once when the expansion runs. Everything the
 macro uses —
-<a href="reference/lisp-core/for-each.html" data-jmacs-doc="for-each">for-each</a>,
-<a href="reference/lisp-core/range.html" data-jmacs-doc="range">range</a>,
+<a href="reference/lisp-core/for-each.html" data-godot-doc="for-each">for-each</a>,
+<a href="reference/lisp-core/range.html" data-godot-doc="range">range</a>,
 `lambda` — already exists; the macro contributes only syntax, and it
 behaves like the real one apart from building the whole index list up
 front. What makes it easy: the only binding this expansion introduces
@@ -299,11 +326,17 @@ value, and hands it straight back. Neither variable moves. This is
 *variable capture*, and the macros of this Lisp are *non-hygienic*:
 nothing automatically keeps the names a macro introduces apart from the
 names at the call site. That is your job, and the tool is
-<a href="reference/lisp-core/gensym.html" data-jmacs-doc="gensym">gensym</a>.
-`(gensym "tmp")` returns a fresh **uninterned** symbol — it prints like
-`tmp__41`, but it is a different symbol from any the reader will ever
-produce, even one spelled identically, so it cannot collide. The correct
-`swap!`, with its transformer factored out for inspection:
+<a href="reference/lisp-core/gensym.html" data-godot-doc="gensym">gensym</a>.
+`(gensym "tmp")` returns a fresh symbol whose name joins the prefix to
+a counter — `tmp__41`. The counter is global to the process and only
+climbs, which is why the numbers in a session's expansions keep rising;
+call `gensym` with no argument and the prefix is `g`. Be precise about
+what is guaranteed: variables are bound and looked up by *name*, so the
+freshness lives entirely in the name — a caller who literally wrote
+`tmp__41` would still collide. No plausible program contains such a
+name, and that convention is the whole mechanism — entirely sufficient
+in practice. The
+correct `swap!`, with its transformer factored out for inspection:
 
 ```lisp
 (define (swap-expansion a b)
@@ -322,7 +355,7 @@ produce, even one spelled identically, so it cannot collide. The correct
 Notice the two levels at work: the outer `let` runs at expansion time,
 binding the macro-writer's `tmp` to a fresh symbol; the inner,
 quasiquoted `let` is part of the expansion and runs later, in the
-caller's world, under that uncollidable name. And because the
+caller's world, under that fresh name. And because the
 transformer is a plain function, it shows you any expansion on demand.
 The discipline, stated plainly: **every binding a macro introduces uses
 a gensym, and every form the caller passes in is evaluated exactly once,
@@ -419,9 +452,8 @@ exclusively when the job is one of three: introducing *bindings* (as
 `dotimes` does), controlling the *order or fact* of evaluation (as
 `unless` and `atomic-change-group` do), or giving a settled idiom a
 syntax of its own — and even then, keep the macro thin over a function.
-One honest sentence about the future: hygienic, `syntax-case`-style
-macros are the stated design target for this Lisp, and gensym-disciplined
-macros will survive that transition.
+Hygienic, `syntax-case`-style macros are the stated design target for
+this Lisp; gensym-disciplined macros will survive that transition.
 
 ### eval and read-string: Programs at Runtime
 
@@ -440,8 +472,9 @@ where the call appears:
 That pin is a feature in the editor's own plumbing — a keymap binds
 command *names*, and evaluating the symbol at keypress time finds the
 current global definition, so redefining a command retargets its key
-instantly — but it means `eval` is no substitute for a macro or a
-closure when lexical context matters.
+instantly; *Modules and Program Structure* builds its whole live-reload
+story on this late resolution — but it means `eval` is no substitute
+for a macro or a closure when lexical context matters.
 
 `(read-string s)` is the reader exposed to Lisp: it parses the source
 text `s` and returns the list of **all** forms read, unevaluated —

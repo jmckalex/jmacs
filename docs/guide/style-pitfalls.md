@@ -11,22 +11,32 @@ surprises you.
 
 ### What a Name Promises
 
-jmacs Lisp has one namespace and no access control, so names carry the
+Godot Lisp has one namespace and no access control, so names carry the
 contract. Four conventions do the work:
 
 | Shape | Promise | Real examples |
 |-------|---------|---------------|
 | trailing `?` | a *predicate* — returns `#t` or `#f`, no side effects | `nil?`, `even?`, `region-active?`, `view-modified?` |
 | trailing `!` | a *side effect* — mutates the buffer, the display, or the world | `insert!`, `goto!`, `set-mark!`, `kill-view!` |
-| `*earmuffs*` | global, user-visible *state or setting* — read it, `set!` it, customise it | `*theme*`, `*tab-width*`, `*kill-ring*` |
+| `*earmuffs*` | global, user-visible *state or setting* | `*theme*`, `*tab-width*`, `*kill-ring*` |
 | leading `-` | a file-private *helper* — internal, free to change | `-split-path`, `-keyboard-quit-base` |
 
+The earmuff row splits in two, and the split decides how you write.
+`*kill-ring*` is plain *state* — read it and `set!` it freely.
+`*theme*` and `*tab-width*` are `defcustom`'d *settings*, and their
+proper write path is `custom-apply!`, not `set!`: a bare `set!`
+changes the variable but leaves the customize registry stale and
+skips the `:on-change` hook — the desync *Customization from Lisp*
+spells out.
+
 The `!` rule has a corollary worth stating on its own: **opening a
-panel is a side effect**. The stdlib's canonical case is the view list:
+panel is a side effect**. The instructive case is the view list:
 `(view-list)` is the host primitive that returns the data — the list of
-open view handles — while cmd(view-list!) is the command that opens the
-*View List* panel on screen. The `!` keeps the data name free; give an
-opener the `!` even though Emacs would not. The leading `-`, by
+open view handles — while the panel that shows the open buffers is a
+separate *command* (cmd(list-views), `C-x C-b`). Give an opener you
+write the `!` even though Emacs would not: the `!` keeps the data name
+free, and the next pitfall shows exactly what goes wrong when an
+opener claims the bare name. The leading `-`, by
 contrast, is convention rather than mechanism — nothing stops another
 file from calling `-split-path`. For enforced privacy, put helpers in a
 `(module …)` and export only the public names; see *Modules and
@@ -205,6 +215,30 @@ move everything keyed to it — hooks, the `register-mode-menu!` entry,
 the `snippets/<name>/` directory — in the same edit. See *Writing
 Modes and Hooks*.
 
+#### A Fresh Map Wipes the Other Files' Bindings
+
+A mode's keymap is one shared variable, and more than one file adds
+bindings to it — the stdlib fills `latex-mode-map` from several
+feature files, and your `init.lisp` may add more. Extending it with a
+wholesale replace looks right:
+
+```lisp
+(set! latex-mode-map {"C-c" my-c-c-map})   ; wipes every other binding
+```
+
+— and silently drops everything anyone else had put on the map,
+keeping only yours. The house rule, stated in `jmarkdown.lisp`'s own
+comments: bindings are added by `assoc`, never a wholesale `{…}`
+replace —
+
+```lisp
+(set! latex-mode-map (assoc latex-mode-map "C-c" my-c-c-map))
+```
+
+A wholesale `set!` is right exactly once: in the file that declared
+the map empty, filling it in before anyone else could touch it. See
+*Writing Modes and Hooks*.
+
 #### The Stale Import
 
 `(import name)` copies each exported binding's *current value* into the
@@ -279,16 +313,18 @@ policy decision per keystroke costs nothing you can feel.
 The editor is its own debugger; the loop is short. Start in the REPL —
 `C-x p` (cmd(toggle-repl)) — which shares the live editor's buffers: a
 probe like `(point)` or `(view-list)` reports on the document in front
-of you. For code in a file, evaluate in place: pressing `C-RET`
+of you. For code in a file, evaluate in place: pressing `C-enter`
 runs cmd(eval-expression-at-point), evaluating the form enclosing point
 and showing the result as a green pill — red for an error — beside the
 closing bracket; `C-x C-e` (cmd(eval-expression-before-point)) takes
-the form just before point; the running record is the `*Eval log*`
-buffer (cmd(show-eval-log)).
+the form just before point.
 
 When a name is unfamiliar, ask before guessing: `(doc f)` returns the
 docstring, `(where-defined f)` the definition's `"line:col"`, and
-`(describe f)` a map with kind, name, parameters, and location. For
+`(describe f)` a map with kind, name, parameters, and location. When
+you don't *have* a name, `C-h a` (cmd(apropos-doc)) searches every
+docstring for a word, and `C-h .` (cmd(describe-symbol-at-point))
+describes the symbol under the cursor without leaving the buffer. For
 keys, `C-h k` (cmd(describe-key)) reads the next chord and reports what
 it runs; `C-h f` (cmd(describe-command)) looks a command up by name.
 
@@ -314,18 +350,18 @@ in full. If nothing is caught
 at all, suspect a raw JavaScript exception from a host primitive —
 those escape every Lisp handler (though a `finally` clause's cleanup
 still runs), as *Errors and Error Handling*
-explains. Finally, after editing stdlib files or your `init.lisp`,
-`C-x C-r` (cmd(reload-stdlib)) re-evaluates the standard library and
-replays your configuration into the running interpreter; because
-keymaps bind command symbols resolved at dispatch time, redefinitions
-take effect on the next keystroke.
+explains. Finally, redefinition is live: because keymaps bind command
+symbols resolved at dispatch time, re-evaluating a `defcommand`
+(`C-enter` on it) changes what its key does from the very next
+keystroke — no reload step. Edits to `init.lisp` itself land at the
+next launch; it is evaluated once, at startup.
 
 ### Where the Standard Library Keeps Things
 
-The best style guide is the standard library itself — about sixty Lisp
-files in `packages/stdlib/lisp/`, loaded in the explicit, commented
-order of `STDLIB_FILES` in `packages/stdlib/src/index.js`. Read
-whichever file already does something like what you want:
+The best style guide is the standard library itself — a hundred-odd
+Lisp files in `packages/stdlib/lisp/`: the core files at the top
+level, the per-language modes under `languages/`. Read whichever file
+already does something like what you want:
 
 | File | What it shows you |
 |------|-------------------|
@@ -339,8 +375,24 @@ whichever file already does something like what you want:
 | `views.lisp`, `panes.lisp` | view switching and the pane-tree commands |
 | `occur.lisp` | the exemplary file shape — pure helpers, one thin command |
 | `custom.lisp` | `defcustom`, `defgroup`, the customize machinery |
-| `faces.lisp`, `themes.lisp` | `defface`, the four themes, the `*theme*` setting |
-| `languages/*.lisp` | thirty-six drop-in modes — `python.lisp` is the documented template, `jmarkdown.lisp` the rich worked example |
+| `faces.lisp`, `themes.lisp` | `defface`, the shipped themes, the `*theme*` setting |
+| `languages/*.lisp` | the drop-in language modes — `languages/README.md` documents the template (`python.lisp` is a minimal instance), `jmarkdown.lisp` the rich worked example |
+
+How the files *load* is a small pitfall gallery of its own, worth
+knowing before you add one. There are two load lists, not one:
+`STDLIB_FILES` in `packages/stdlib/src/index.js` (the package's own
+loader, which the test suites run) and `SPINE_STDLIB` in
+`apps/desktop/mwb/spine.js` — the list the running editor's server
+actually loads — and their orders differ. A new stdlib file must be
+added to *both*; added to only one, it works under test and silently
+never loads in the app, or the reverse. Two corollaries of the load
+order. The `languages/` directory is globbed *after* the listed core
+files, in roughly alphabetical order — so wiring that must see a
+language mode belongs in that mode's own file, not in an
+earlier-loaded neighbour. And because `define` rebinds freely in the
+one namespace, a name collision between two files resolves silently
+as later-load-wins — grep the stdlib for a name before claiming it
+(or `describe` it in the REPL).
 
 The prelude — `when`, `unless`, the loop macros `while`, `dotimes`,
 and `dolist`, the predicates `any?` and `every?`, `cadr` and friends —

@@ -1,7 +1,7 @@
 ;;; latex-compile.lisp — AUCTeX's compile / view loop for latex-mode.
 ;;;
 ;;; This is Phase 1 of plans/AUCTeX.md: `TeX-command-master` brought to
-;;; jmacs. It adds three commands to the `C-c` prefix map that latex.lisp
+;;; Godot. It adds three commands to the `C-c` prefix map that latex.lisp
 ;;; installed:
 ;;;
 ;;;   C-c C-c  latex-compile        — save + run the LaTeX toolchain

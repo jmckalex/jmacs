@@ -1,5 +1,5 @@
 /*
- * jmacs documentation — typography and link styling.
+ * Godot documentation — typography and link styling.
  *
  * Loaded by both the standalone pages opened in a browser and the
  * doc-view inside the editor (over app://docs/assets/docs.css). Kept
@@ -91,7 +91,7 @@ a:hover {
 }
 
 /* Cross-references to other doc pages — emphasised. */
-a[data-jmacs-doc] {
+a[data-godot-doc] {
   font-family: var(--doc-mono);
   font-size: 0.95em;
   padding: 0 0.15em;

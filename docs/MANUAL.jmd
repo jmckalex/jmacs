@@ -1,11 +1,11 @@
-Title: The jmacs Manual
+Title: The Godot Manual
 Author: J. McKenzie Alexander
 Date: 2026-05-22
 ---
 
-# The jmacs Manual
+# The Godot Manual
 
-This is the manual for *jmacs* — a Lisp-extensible editor with an
+This is the manual for *Godot* — a Lisp-extensible editor with an
 Electron presentation layer. It explains what the editor is, how it is
 put together, how to use it, and how to extend it.
 
@@ -37,14 +37,14 @@ each Lisp procedure one by one.
 [[chapters/customization.md]]
 [[chapters/architecture.md]]
 
-# The jmacs Reference
+# The Godot Reference
 
 The manual above describes the editor feature by feature. This
 *reference* documents each Lisp procedure on its own — every command,
 every buffer primitive, every core function — grouped by tier. Read
 `index` first for how an entry is laid out and what the naming
 conventions mean. For the language itself (evaluation, special forms,
-macros, modules, errors), read *Programming in jmacs Lisp* — the
+macros, modules, errors), read *Programming in Godot Lisp* — the
 language guide that follows the reference.
 
 [[reference/index.md]]
@@ -56,9 +56,10 @@ language guide that follows the reference.
 [[reference/productivity.md]]
 [[reference/search-and-edit.md]]
 [[reference/latex.md]]
+[[reference/jmarkdown.md]]
 [[reference/help-and-config.md]]
 
-# Programming in jmacs Lisp
+# Programming in Godot Lisp
 
 The editor is written to be rewritten. This part is the language
 guide: a ground-up account of the editor's Lisp — the dialect itself,
@@ -68,12 +69,17 @@ customization. It assumes you can program but not that you know Lisp.
 Read it in order the first time: the early chapters (*Lisp Data
 Types* through *Writing Macros*) teach the language; the later ones
 (*Editing Text from Lisp* onward) teach the editor's extension
-surface. The per-function reference above is the companion volume —
+surface. If you already know a Lisp, start instead with the
+dialect-comparison chapter — *Godot Lisp for Lisp Programmers* —
+which maps this dialect's choices against the
+Lisp you came from, then dip into the ground-up chapters as needed.
+The per-function reference above is the companion volume —
 this part explains the model and the craft, the reference states each
 procedure's contract. Where a chapter touches a procedure in passing,
 it links there rather than repeating it.
 
 [[guide/intro.md]]
+[[guide/dialect.md]]
 [[guide/data-types.md]]
 [[guide/evaluation.md]]
 [[guide/functions.md]]
@@ -90,13 +96,13 @@ it links there rather than repeating it.
 <script data-type="jmarkdown">
   // The cross-link helper. After this <script>, any `cmd(name)` written
   // in markdown body text (inline) expands to an <a> with both the
-  // relative href (for browser use) and a data-jmacs-doc attribute
+  // relative href (for browser use) and a data-godot-doc attribute
   // (intercepted by the editor's doc-view). The function entries below
   // each declare their own `path`; this helper assumes the convention
   // `reference/commands/<name>.html`. For names whose path doesn't
   // follow the convention, write the anchor by hand.
   global.cmd = function (name) {
-    return `<a href="reference/commands/${name}.html" data-jmacs-doc="${name}">${name}</a>`;
+    return `<a href="reference/commands/${name}.html" data-godot-doc="${name}">${name}</a>`;
   };
   export_to_jmarkdown('cmd');
 </script>
@@ -104,7 +110,7 @@ it links there rather than repeating it.
 <script data-type="jmarkdown-postprocess">
   // Split the rendered document into per-function pages and write the
   // name → path manifest. The output directory is passed in by
-  // scripts/build-docs.js via the JMACS_DOCS_OUT env var (default
+  // scripts/build-docs.js via the GODOT_DOCS_OUT env var (default
   // 'docs/build' when run directly).
   //
   // Collisions: two different functions can share a short name (a
@@ -117,7 +123,7 @@ it links there rather than repeating it.
   // fuzzy search so callers can still reach either page.
   const fs = require('node:fs');
   const path = require('node:path');
-  const outDir = process.env.JMACS_DOCS_OUT || 'docs/build';
+  const outDir = process.env.GODOT_DOCS_OUT || 'docs/build';
   const PREFERRED_TIERS = ['commands', 'lisp-core', 'buffer-primitives'];
   // Tier inferred from path: reference/<tier>/<name>.html — anything
   // outside this shape goes into the catch-all bucket 'other'.
@@ -143,7 +149,7 @@ it links there rather than repeating it.
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>${escapeHtml(title)} — jmacs</title>
+<title>${escapeHtml(title)} — Godot</title>
 <link rel="stylesheet" href="${cssHref}">
 </head>
 <body>
@@ -168,7 +174,7 @@ ${bodyInner}
     const fragment = $el.html();
     const body =
       `<article class="doc-page function-page" ` +
-      `data-jmacs-doc-name="${name}" data-node-id="${name}">\n${fragment}\n</article>`;
+      `data-godot-doc-name="${name}" data-node-id="${name}">\n${fragment}\n</article>`;
     fs.writeFileSync(file, pageHtml(name, cssHref, body));
     note(name, target);
     for (const alias of aliases) note(alias, target);
@@ -297,7 +303,7 @@ ${bodyInner}
         const label = c.level === 99
           ? `<code>${escapeHtml(c.title)}</code>`
           : escapeHtml(c.title);
-        return `<li><a href="${c.path}" data-jmacs-doc="${cid}">${label}</a></li>`;
+        return `<li><a href="${c.path}" data-godot-doc="${cid}">${label}</a></li>`;
       }).join('');
       menu = `<nav class="doc-menu"><h2 class="doc-menu-title">In this section</h2><ul>${items}</ul></nav>`;
     }
@@ -346,7 +352,7 @@ ${bodyInner}
         '<ul class="doc-index-list">\n';
       for (const name of groups.get(L)) {
         body +=
-          `<li><a href="${functions[name]}" data-jmacs-doc="${escapeHtml(name)}">` +
+          `<li><a href="${functions[name]}" data-godot-doc="${escapeHtml(name)}">` +
           `<code>${escapeHtml(name)}</code></a></li>\n`;
       }
       body += '</ul>\n';
@@ -363,8 +369,8 @@ ${bodyInner}
     );
     // The index files under the reference book when it exists (it is
     // reference material), falling back to the manual root.
-    const indexUp = nodes['the-jmacs-reference']
-      ? 'the-jmacs-reference'
+    const indexUp = nodes['the-godot-reference']
+      ? 'the-godot-reference'
       : manualId;
     nodes[indexId] = {
       id: indexId, title: 'Command index', level: 2,

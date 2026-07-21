@@ -1,6 +1,6 @@
 ## Functions and Closures
 
-Procedures are the working material of jmacs Lisp: every command you
+Procedures are the working material of Godot Lisp: every command you
 bind, every hook you register, every callback a prompt resumes is a
 value of one type — a *procedure*, made with `lambda`, carrying the
 environment it was created in. This chapter covers how procedures are
@@ -21,7 +21,10 @@ Evaluating a `lambda` form builds a procedure: an object pairing the
 parameter list and body forms (held unevaluated) with the environment
 in force at that moment. The result is a first-class value — pass it to
 another procedure, store it in a map, return it — printed as
-`#<procedure anonymous>` until a `define` adopts it. At least one body
+`#<procedure anonymous>` until a `define` adopts it. The predicate for
+"is this callable?" is `procedure?`, which answers `#t` for lambdas and
+primitives alike (macros are not procedures — they rewrite forms, they
+are not called on values). At least one body
 form is required; `(lambda (x))` is the error
 `lambda: expected (lambda params body...)`.
 
@@ -63,6 +66,9 @@ The first evaluates `value` and binds it to `name` in the current
 frame. One nicety: a procedure still named `anonymous` takes on the
 defined name — after `(define double (lambda (x) (* 2 x)))`, `double`
 prints as `#<procedure double>` — but it gains no docstring this way.
+The adoption happens in exactly this one place: binding a lambda with
+`let`, assigning it with `set!`, or storing it in a map or vector never
+renames it.
 
 The second shape is the function shorthand, and it is how nearly every
 procedure in the standard library is written: it builds the lambda,
@@ -148,11 +154,14 @@ exactly: too few or too many arguments raise
 `greet: expected 1 argument(s), got 0`. A rest parameter sets a floor,
 not a ceiling: `name: expected at least N argument(s), got M` when the
 parameters before the dot are not all supplied. A procedure that was
-never named reports itself as `anonymous`. These are ordinary Lisp
-errors, catchable with `try` (*Errors and Error Handling*).
+never named reports itself as `anonymous`. Primitives run the same
+check but may advertise a *range* when an argument is optional —
+`(get m)` is the error `get: expected 2–3 argument(s), got 1` — the
+same `name: expected …, got M` shape throughout. These are ordinary
+Lisp errors, catchable with `try` (*Errors and Error Handling*).
 
 When the arguments you want to pass are already in a list, spread them
-with <a href="reference/lisp-core/apply.html" data-jmacs-doc="apply">apply</a>
+with <a href="reference/lisp-core/apply.html" data-godot-doc="apply">apply</a>
 — `(apply proc arg … list)` calls `proc` with the leading arguments
 followed by the elements of the final argument, a proper list:
 
@@ -161,15 +170,20 @@ followed by the elements of the final argument, a proper list:
 (apply max '(3 1 4 1 5))  ; ⇒ 5
 ```
 
+The final argument really must be a proper list — a dotted pair, or
+anything else, is the error `expected a proper list`.
+
 ### The Everyday Higher-Order Toolkit
 
 The natural way to traverse a sequence is to hand a procedure to a
-procedure. The core toolkit is deliberately small — five workhorses
-beyond `apply`, all accepting lists *or* vectors as sequence arguments,
-all returning lists. Their one-page entries live in the core Lisp
-reference; this is the teaching tour.
+procedure. The core toolkit is deliberately small — the four workhorses
+`map`, `filter`, `reduce`, and `for-each` (the same four *Control Flow
+and Iteration* leans on), plus the index-maker `range` — all accepting
+lists *or* vectors as sequence arguments, all returning lists
+(`for-each`, run for its side effects, returns `nil`). Their one-page
+entries live in the core Lisp reference; this is the teaching tour.
 
-<a href="reference/lisp-core/map.html" data-jmacs-doc="map">map</a> —
+<a href="reference/lisp-core/map.html" data-godot-doc="map">map</a> —
 `(map proc seq …)` — applies `proc` across one or more sequences in
 step, collecting the results:
 
@@ -178,7 +192,7 @@ step, collecting the results:
 (map + '(1 2 3) '(10 20 30 40))      ; ⇒ (11 22 33) — stops at the shortest
 ```
 
-<a href="reference/lisp-core/filter.html" data-jmacs-doc="filter">filter</a> —
+<a href="reference/lisp-core/filter.html" data-godot-doc="filter">filter</a> —
 `(filter pred seq)` — keeps the elements for which `pred` does not
 return `#f`. Remember the truthiness rule: only `#f` rejects; a
 predicate returning `nil` or `0` *keeps* the element.
@@ -187,7 +201,7 @@ predicate returning `nil` or `0` *keeps* the element.
 (filter odd? (range 10))   ; ⇒ (1 3 5 7 9)
 ```
 
-<a href="reference/lisp-core/reduce.html" data-jmacs-doc="reduce">reduce</a> —
+<a href="reference/lisp-core/reduce.html" data-godot-doc="reduce">reduce</a> —
 `(reduce proc init seq)` — folds left-to-right:
 `(proc (proc init e1) e2) …`. The shape is exactly three arguments and
 **the initial value is required** — there is no two-argument form that
@@ -198,7 +212,7 @@ seeds from the first element. `proc` receives the accumulator first:
 (reduce (lambda (acc x) (cons x acc)) nil '(1 2 3))  ; ⇒ (3 2 1)
 ```
 
-<a href="reference/lisp-core/for-each.html" data-jmacs-doc="for-each">for-each</a> —
+<a href="reference/lisp-core/for-each.html" data-godot-doc="for-each">for-each</a> —
 `(for-each proc seq)` — applies `proc` to each element purely for its
 side effects and returns `nil`; use it where `map` would build a result
 nobody reads:
@@ -207,7 +221,7 @@ nobody reads:
 (for-each println '("one" "two"))   ; prints one, then two; ⇒ nil
 ```
 
-<a href="reference/lisp-core/range.html" data-jmacs-doc="range">range</a> —
+<a href="reference/lisp-core/range.html" data-godot-doc="range">range</a> —
 `(range end)`, `(range start end)`, or `(range start end step)` — a
 list of numbers from `start` (default `0`) up to but excluding `end`,
 by `step` (default `1`). A negative step counts down; a zero step is
@@ -219,7 +233,7 @@ the error `range: step must not be zero`.
 ```
 
 Three more round out the toolkit.
-<a href="reference/lisp-core/sort.html" data-jmacs-doc="sort">sort</a> —
+<a href="reference/lisp-core/sort.html" data-godot-doc="sort">sort</a> —
 `(sort seq less?)` —
 returns a sorted copy of a list or vector, leaving the input untouched
 and preserving its type (a vector in, a vector out). The sort is
@@ -228,8 +242,8 @@ the optional `less?` is a Scheme-style strict less-than: `(less? a b)`
 truthy means `a` orders before `b`. Without it, all-numbers and
 all-strings sequences sort by `<`; anything mixed needs the predicate.
 And the two sequence predicates
-<a href="reference/lisp-core/any%3F.html" data-jmacs-doc="any?">any?</a> and
-<a href="reference/lisp-core/every%3F.html" data-jmacs-doc="every?">every?</a>
+<a href="reference/lisp-core/any%3F.html" data-godot-doc="any?">any?</a> and
+<a href="reference/lisp-core/every%3F.html" data-godot-doc="every?">every?</a>
 ask whether a
 predicate holds for *some* or for *every* element: both return strict
 booleans, both stop at the first deciding element, and on an empty
@@ -259,7 +273,11 @@ only comfortable because the interpreter implements proper tail calls: a
 call in *tail position* — one whose value becomes the caller's value
 with no further work — is bounced through a trampoline instead of
 growing the JavaScript stack, so a tail-recursive procedure runs at any
-depth, a million iterations and beyond, in constant stack.
+depth, a million iterations and beyond, in constant stack. (Constant
+stack does not mean the interpreter loses control of a long run: the
+trampoline counts its bounces and periodically offers its host the
+chance to abort — the cooperative interrupt described in *Errors and
+Error Handling*.)
 
 The guarantee is positional, so you need the exact list. These are tail
 positions:
@@ -376,7 +394,7 @@ depth, because each crossing call below is the whole branch of its
 
 ### One Namespace: Values, Procedures, Commands
 
-jmacs Lisp is a Lisp-1: one namespace, in which a name means one thing.
+Godot Lisp is a Lisp-1: one namespace, in which a name means one thing.
 The `f` in `(f x)` is looked up exactly as the variable `f` would be —
 no separate function cell, no `funcall`; a procedure is a value that
 happens to be callable, which is what makes `(map car pairs)` work
@@ -406,21 +424,24 @@ of `defcommand` is in *Commands, Keymaps, and the Minibuffer*.
 Procedures defined with the `define` shorthand carry their own
 documentation and provenance, and three primitives surface them:
 
-- <a href="reference/lisp-core/doc.html" data-jmacs-doc="doc">doc</a> —
+- <a href="reference/lisp-core/doc.html" data-godot-doc="doc">doc</a> —
   `(doc f)` — the docstring, or `#f` when there is none; always `#f`
   for primitives and macros, since only the shorthand attaches one (a
   missing docstring is an absence — `#f`, by the library's convention).
-- <a href="reference/lisp-core/where-defined.html" data-jmacs-doc="where-defined">where-defined</a> —
+- <a href="reference/lisp-core/where-defined.html" data-godot-doc="where-defined">where-defined</a> —
   `(where-defined f)` — the definition site as a `"line:col"` string,
   or `#f`; the position is within whatever source was read — a file's
   line for standard-library code, your submission at the REPL.
-- <a href="reference/lisp-core/describe.html" data-jmacs-doc="describe">describe</a> —
+- <a href="reference/lisp-core/describe.html" data-godot-doc="describe">describe</a> —
   `(describe x)` — a map describing any value:
   `{:kind :procedure :name … :params … :doc … :defined-at …}` for a
   defined procedure (the parameter list dotted when there is a rest
   parameter); `{:kind :primitive :name …}` for a primitive;
   `{:kind :macro :name …}` for a macro; `{:kind :value :type …}` for
-  anything else.
+  anything else. One asymmetry to note: where `doc` and `where-defined`
+  report an absence as `#f`, `describe`'s `:doc` and `:defined-at`
+  fields hold `nil` when unknown — and `nil` is *truthy*, so test those
+  fields with `nil?` where a bare `(if (doc f) …)` would have done.
 
 A REPL session shows all three at work:
 
@@ -438,6 +459,7 @@ shout
 ```
 
 This is the floor under the editor's "explains itself" principle: the
-`C-h` help commands described in *Extending jmacs* are built on these
-three primitives, so the docstring you write in a `define` today is
-what the editor shows back to you tomorrow.
+`C-h` help commands described in the manual's *Extending Godot* chapter
+read the same record — `describe-key` and `describe-command` print a
+command's docstring through `doc` — so the docstring you write in a
+`define` today is what the editor shows back to you tomorrow.
