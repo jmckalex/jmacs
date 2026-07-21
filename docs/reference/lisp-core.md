@@ -1,30 +1,43 @@
-Title: jmacs Core Lisp Reference
+Title: Godot Core Lisp Reference
 Author: J. McKenzie Alexander
-Date: 2026-05-22
+Date: 2026-07-21
 ---
 
-## jmacs Core Lisp Reference
+## Godot Core Lisp Reference
 
 This document describes the *core primitives* — the procedures built
-into the jmacs Lisp itself — and the *prelude*, a small amount of Lisp
+into the Godot Lisp itself — and the *prelude*, a small amount of Lisp
 evaluated at startup. Together they are the language's standard library,
 independent of the editor: they would be present in any program written
-in this Lisp.
+in this Lisp. The spec's own overview of the standard library is
+`docs/spec/lisp.md` §10.
 
 - The primitives are defined in `packages/lisp/src/primitives.js`
-  (JavaScript) and installed into the global environment at startup.
+  (JavaScript) and installed into the *base* environment at startup.
+  The global environment — where the REPL and your own `define`s live —
+  is a child of the base, which is why a user definition can shadow a
+  primitive, and why modules (each another child of the base) get
+  namespaces of their own.
+- Three of them — `eval`, `macroexpand-1` and `macroexpand` — are
+  defined in `packages/lisp/src/interpreter.js` instead, because they
+  must close over the global environment. That is also *why* `eval`
+  sees only global bindings.
 - The prelude is defined in `packages/lisp/src/interpreter.js` as a
   string of Lisp, evaluated once the primitives are in place.
 
 For the editor's own procedures — commands, buffer operations — see
-`commands.jmd` and `buffer-primitives.jmd`. For the language's
+`commands.md` and `buffer-primitives.md`. For the language's
 *special forms* (`define`, `lambda`, `if`, `let`, `defmacro`, …), which
 are not procedures and so not listed here, see `docs/spec/lisp.md` §4.
 
-Conventions (see `index.jmd`): predicates end in `?`; conversions are
+Conventions (see `index.md`): predicates end in `?`; conversions are
 written `from->to`; a trailing `…` marks a variadic procedure; a
 bracketed argument is optional. The primitives raise a `LispError` on a
-type or arity mismatch.
+type or arity mismatch. One further convention deserves stating up
+front — the *miss convention*: where a lookup can fail (`get`, `doc`,
+`where-defined`), absence is `#f`, the language's only falsy value, so
+a bare `(if (get m k) …)` test is safe. `nil` would not do as a miss
+value: `nil` is truthy here.
 
 ---
 
@@ -69,7 +82,8 @@ Raises an error on division by zero.
 
 `mod` is the result with the sign of the divisor (always non-negative
 for a positive `b`); `quotient` is truncating integer division;
-`remainder` keeps the sign of the dividend.
+`remainder` keeps the sign of the dividend. `mod` signals an error
+(`mod: division by zero`) when `b` is zero.
 :::
 
 :::function{name="abs" path="reference/lisp-core/abs.html"}
@@ -150,7 +164,10 @@ proper (`nil`-terminated) chain of pairs.
 `(number? x)` … `(map? x)`
 
 True when `x` is of the named type. `procedure?` is true for
-primitives, closures and macros alike.
+primitives and closures, but *not* for macros — a macro is a source
+transformer, not a value you can call, and `procedure?` reflects that:
+`(procedure? when)` is `#f`. (`describe` still classifies one, as
+`:macro`.)
 :::
 
 :::function{name="zero?" aliases="positive? negative? even? odd?" path="reference/lisp-core/zero%3F.html"}
@@ -268,13 +285,18 @@ The final element of a list, or `nil` when it is empty.
 `(member x list)`
 
 The first sublist of `list` whose head is `equal?` to `x`, or `false`
-when `x` is not present. The truthy result doubles as a "found" flag.
+when `x` is not present: `(member 2 '(1 2 3))` is `(2 3)`. The truthy
+result doubles as a "found" flag — `(when (member x xs) …)` is the
+membership-test idiom.
 :::
 
 ### Higher-order procedures
 
-These accept lists *or* vectors for their sequence arguments; they
-return lists — except `sort`, which preserves its input's type.
+These accept lists *or* vectors for their sequence arguments. What
+comes back varies by procedure: `map` and `filter` return lists;
+`sort` preserves its input's type; `reduce` returns the fold's
+accumulator; `for-each` returns `nil`; `apply` returns whatever `proc`
+returns.
 
 :::function{name="apply" path="reference/lisp-core/apply.html"}
 #### `apply`
@@ -337,7 +359,7 @@ elements neither of which orders before the other compare equal. The
 sort is *stable* — equal elements keep their input order. When `less?`
 is omitted, all-numbers and all-strings sequences sort by `<`;
 anything else raises `sort: mixed or unordered elements need a
-comparator`.
+comparator`. `(sort '(3 1 2) >)` is `(3 2 1)`.
 :::
 
 :::function{name="range" path="reference/lisp-core/range.html"}
@@ -364,7 +386,7 @@ non-strings (numbers, symbols, …). The everyday string-builder.
 `(string-append s …)`
 
 Concatenate strings. Unlike `str`, every argument must already be a
-string.
+string — a non-string signals an error.
 :::
 
 :::function{name="string-join" path="reference/lisp-core/string-join.html"}
@@ -373,8 +395,9 @@ string.
 
 Join the elements of a list or vector into one string, separated by
 `sep` (default `""`). Each element is coerced through its display
-form, as `str` does. The join happens in a single host pass — prefer
-it to building a long string element-by-element in Lisp.
+form, as `str` does: `(string-join '(1 2 3) ", ")` is `"1, 2, 3"`. The
+join happens in a single host pass — prefer it to building a long
+string element-by-element in Lisp.
 :::
 
 :::function{name="string-length" path="reference/lisp-core/string-length.html"}
@@ -396,6 +419,28 @@ The slice of `s` from `start` to `end` (or to the end of the string).
 `(string-upcase s)` / `(string-downcase s)`
 
 `s` with every letter in upper or lower case.
+:::
+
+:::function{name="string-capitalize" path="reference/lisp-core/string-capitalize.html"}
+#### `string-capitalize`
+`(string-capitalize s)`
+
+`s` with the first character of every word upcased and the rest
+downcased: `(string-capitalize "hello WORLD")` is `"Hello World"`. A
+"word" here is a run of letters, digits or underscores, in any script
+(Unicode-aware). Emacs's `capitalize`.
+:::
+
+:::function{name="char-word?" path="reference/lisp-core/char-word%3F.html"}
+#### `char-word?`
+`(char-word? ch)`
+
+Whether `ch` — a one-character string — is a word constituent: a
+letter or digit in any script, or an underscore. This is the single
+word-character definition the editor's word motion and word selection
+share, so a Lisp extension that tests characters with `char-word?`
+agrees with cmd(forward-word) about where words end. See
+`commands.md` for the word commands themselves.
 :::
 
 :::function{name="string-repeat" path="reference/lisp-core/string-repeat.html"}
@@ -462,7 +507,9 @@ same way but accepts any values.
 #### `string->symbol` / `symbol->string`
 `(string->symbol s)` / `(symbol->string sym)`
 
-Convert between a string and an interned symbol.
+Convert between a string and an interned symbol. `symbol->string` also
+accepts a keyword — `(symbol->string :tag)` is `"tag"` — though
+`keyword->string` is the natural spelling for that.
 :::
 
 :::function{name="string->keyword" aliases="keyword->string" path="reference/lisp-core/string-%3Ekeyword.html"}
@@ -478,7 +525,9 @@ no leading colon: `(string->keyword "tag")` is `:tag`, and
 #### `string->number`
 `(string->number s)`
 
-The number `s` denotes, or `false` when it is not numeric.
+The number `s` denotes, or `false` when it is not numeric. One
+JavaScript inheritance to know: the empty string — and a
+whitespace-only string — coerces to `0`, not `false`.
 :::
 
 :::function{name="number->string" path="reference/lisp-core/number-%3Estring.html"}
@@ -525,21 +574,33 @@ Convert between a vector and a list.
 A map is an immutable key-value table. The "mutating" operations return
 a *new* map.
 
+Key equality is *identity* (the JavaScript `Map` rule, SameValueZero),
+not `equal?`. Numbers, strings, and interned symbols and keywords
+behave as you expect; but a list or vector key matches only the very
+same object — a structurally-`equal?` copy misses:
+`(get (hash-map '(1) 'x) '(1))` is `#f`, because the two `'(1)`s are
+distinct pairs. Compare `member`, which does use `equal?`. Keyword
+keys are the idiom.
+
 :::function{name="hash-map" path="reference/lisp-core/hash-map.html"}
 #### `hash-map`
 `(hash-map k v …)`
 
 A map from alternating key/value arguments. The map literal `{…}` is
-sugar for this. Requires an even number of arguments.
+sugar for this. Signals an error on an odd number of arguments.
 :::
 
 :::function{name="get" path="reference/lisp-core/get.html"}
 #### `get`
 `(get coll key [fallback])`
 
-The value for `key` in a map, or the element at index `key` in a
-vector. Returns `fallback` (default `nil`) when the key or index is
-absent.
+The value for `key` in a map, or the element at zero-based index `key`
+in a vector. When the key or index is absent, returns `fallback` —
+default `#f`, per the miss convention, so a bare `(if (get m k) …)`
+test is safe. The three-argument form returns its fallback unchanged:
+use it when a stored `#f` (or any other sentinel) must be
+distinguishable from a missing key. Signals an error when `coll` is
+neither a map nor a vector.
 :::
 
 :::function{name="assoc" path="reference/lisp-core/assoc.html"}
@@ -560,7 +621,8 @@ A copy of `map` with `key` removed.
 #### `contains?`
 `(contains? map key)`
 
-True when `map` has an entry for `key`.
+True when `map` has an entry for `key`. Maps only — unlike `get`, it
+does not accept a vector; anything else signals an error.
 :::
 
 :::function{name="keys" aliases="vals" path="reference/lisp-core/keys.html"}
@@ -577,14 +639,24 @@ The keys / values of `map`, as a list.
 `(gensym [prefix])`
 
 A fresh, *uninterned* symbol — `prefix` (default `g`) plus a counter,
-never `eq?` to any symbol the reader produces. Use it for names
-introduced by a macro, since macros are not hygienic in v0
-(`docs/spec/lisp.md` §5).
+never `eq?` to any symbol the reader produces. Two symbols can print
+alike yet differ: `(eq? (gensym "g") 'g__1)` is `#f` even when the
+gensym happens to print as `g__1`, because the reader's `g__1` is
+interned and the gensym is not. Use it for names introduced by a
+macro, since macros are not hygienic in v0 (`docs/spec/lisp.md` §5).
 :::
 
 ### Output
 
-The output sink is the REPL.
+These write to a *host-provided* sink — the `write` option of
+`createInterpreter` (`packages/lisp/src/interpreter.js`), which
+defaults to discarding output. In the running editor that default is
+what you get: the server's single interpreter is created with a
+discard sink, so `print` and friends produce nothing visible, and the
+REPL echoes only the *value* each expression evaluates to. To see
+something in the REPL, make it the result — return the value rather
+than printing it. An embedding of the language elsewhere can, of
+course, wire the sink wherever it likes.
 
 :::function{name="display" path="reference/lisp-core/display.html"}
 #### `display`
@@ -626,13 +698,18 @@ trailing newline.
 Signal an error: raise a `LispError` carrying `message` and any
 `irritant` values. Caught by `(try … (catch e …))`, where `e` is bound
 to a condition map with `:message` and `:irritants` (`docs/spec/lisp.md`
-§7).
+§7). When the error carries a source location the map also has `:line`
+and `:column` — what a handler needs to report *where* a failure
+happened, not just what it said.
 :::
 
 ### Introspection
 
-The editor's "explain itself" principle. See also `commands.jmd` —
-`describe-key`, `describe-command` — for the interactive surface.
+The editor's "explain itself" principle (`docs/spec/lisp.md` §11).
+See also `commands.md` — `describe-key`, `describe-command` — for the
+interactive surface, and the in-app manual (cmd(open-manual), on
+`C-h d`, and cmd(open-doc)), which renders these very entries inside
+the editor.
 
 :::function{name="identity" path="reference/lisp-core/identity.html"}
 #### `identity`
@@ -652,7 +729,8 @@ A keyword naming `x`'s type — `:number`, `:string`, `:pair`, and so on.
 #### `doc`
 `(doc proc)`
 
-The docstring of a procedure defined with `define`, or `nil`. A
+The docstring of a procedure defined with `define`, or `#f` when
+there is none — including for any primitive (the miss convention). A
 procedure's docstring is the leading string literal in its body.
 :::
 
@@ -660,16 +738,20 @@ procedure's docstring is the leading string literal in its body.
 #### `where-defined`
 `(where-defined proc)`
 
-The `"line:col"` a procedure was defined at, or `nil` for a primitive.
+The `"line:col"` a procedure was defined at, or `#f` for a primitive
+or a procedure with no recorded source (the miss convention).
 :::
 
 :::function{name="describe" path="reference/lisp-core/describe.html"}
 #### `describe`
 `(describe x)`
 
-A map describing `x`: its `:kind`, and — for a procedure — its `:name`,
-`:params`, `:doc` and `:defined-at`. The structured form behind the
-`describe-command` command.
+A map describing `x`: its `:kind`, and — for a user-defined procedure
+— its `:name`, `:params`, `:doc` and `:defined-at`. `:kind` is one of
+`:procedure`, `:primitive`, `:macro` or `:value`; a primitive or a
+macro gets just `:kind` and `:name`, and any other value gets `:kind`
+plus its `:type`. The structured form behind the `describe-command`
+command.
 :::
 
 :::function{name="macroexpand-1" path="reference/lisp-core/macroexpand-1.html"}
@@ -752,6 +834,7 @@ Evaluate `body` with `var` bound to `0`, `1`, … `count - 1` in turn.
 Evaluate `body` with `var` bound to each element of the list `lst` in
 order. `lst` is evaluated once. Lists only — for a vector, use
 `for-each` (or `vector->list` first).
+`(let ((sum 0)) (dolist x '(1 2 3) (set! sum (+ sum x))) sum)` is `6`.
 :::
 
 ### List accessors
