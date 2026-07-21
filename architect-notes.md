@@ -3708,3 +3708,42 @@ headless except: the inline-editor blur guard and real download UX (focus/
 download need a visible window).
 
 ---
+
+## [2026-07-13 δ] SVG editor: live-pass bug fixes (branch `svg-editor`, unmerged)
+
+Jason ran the app and found four real bugs across two passes; all fixed with
+headless regressions, suite green. (Supersedes the "awaiting live pass" line
+of the γ note — the live pass happened.)
+
+- `8e18fb92` — **node tool reverted to Select instantly**: click Node → click
+  canvas opened the inline label editor and focused its textarea, then the
+  mousedown DEFAULT action focused the stage → blurred the editor → empty
+  commit → cancel → tool revert, all in one frame. Fix in three layers
+  (preventDefault the node pointerdown; click-away = explicit commit; blur
+  refocuses on a stage-steal). LESSON: synthetic events have no default
+  actions AND hidden windows don't dispatch focus/blur → headless can't test
+  focus chains (only the blur guard needs live eyes).
+- `6833977b` — **(a)** a node border's gradient/pattern params were collected
+  but not re-applied on a border refit, so any rebuild (resize / label / font)
+  reverted it to solid and the Angle select "did nothing"; refit now re-applies
+  every preserved attr + records the primary for a none-filled border so the
+  Fill swatch works. **(b)** a one-sided cubic (smooth→corner) serialised its
+  end control point ON the endpoint → zero-length tangent → WebKit oriented the
+  arrowhead at 0° (sideways) in exported SVGs; serializer nudges the degenerate
+  control ≤2u along the true tangent (parse→serialize fixpoint; both ends).
+- `370ba5e0` — **a connector's START didn't follow its node**: it had never
+  attached. The pen used pure containment hit-testing, but the compass anchor
+  dots straddle the border, so a click on the dot/on the edge fell outside the
+  shape → plain unattached anchor. `connectableNear(p, tol)` attaches within
+  tolerance of the border (containment first, else ray-to-border distance);
+  the hover affordance uses the same rule (dots showing ⇒ click attaches).
+  Also: node-edit was detaching an endpoint on pointer-DOWN, so a click to
+  inspect it silently severed the attachment — detach now fires on first
+  movement of a drag.
+
+**State**: branch `svg-editor` @ godot-svg worktree, tip `370ba5e0`, UNMERGED,
+MERGE-READY (main is the merge-base — conflict-free `--no-ff`; runbook at the
+top of the repo-root HANDOVER.md). Suite green (8x fail 0). Still live-only:
+the blur guard and the PNG/Export download UX (both need a visible window).
+
+---
