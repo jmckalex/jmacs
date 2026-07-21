@@ -52,7 +52,7 @@ an active snippet before its usual behaviour.
 
 ### Group
 
-`(defgroup 'snippets 'jmacs …)` — a customize subgroup under `jmacs`.
+`(defgroup 'snippets 'godot …)` — a customize subgroup under `godot`.
 
 ### Keymap contributions (`snippets-keymap.lisp`)
 

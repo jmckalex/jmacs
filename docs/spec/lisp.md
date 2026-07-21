@@ -181,9 +181,12 @@ An importer holds a *snapshot* of what it imported, so a redefined
 *private helper*, by contrast, is seen immediately: the exported
 procedures resolve it through the reused module environment.
 
-The editor uses this. `reload-stdlib` (bound to `C-x C-r`) re-evaluates
-the standard library, and the running editor switches to the new
-command definitions without a restart.
+The editor uses this at a finer grain: because commands are bound by
+name and resolved late, re-evaluating any `defcommand` in the REPL (or
+a scratch buffer) switches the running editor to the new definition at
+once. (A wholesale stdlib hot-reload command existed in the retired
+in-renderer era; under the server topology, editing a standard-library
+file takes effect on the next launch.)
 
 ## 7. Errors and conditions
 
