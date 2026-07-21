@@ -2,70 +2,94 @@
 
 Finding a string and moving to it are the same act seen from two
 angles. This chapter covers the commands that locate text — incremental
-search, replacement, and `occur` — and the commands that remember where
-you have been and let you move through a buffer by structure rather than
-by line: bookmarks, expand-region, and folding.
+search, replacement, `occur`, and match highlighting — the mark and the
+region, moving through a buffer by structure rather than by line, and
+the commands that remember where you have been: bookmarks,
+expand-region, and folding.
 
-The interactive parts of search — the find-as-you-type loop, the
-per-match prompts — run in the minibuffer, which is host code. The Lisp
-commands documented here *start* those loops; the keymap that binds them
-lives in `keymap.lisp`. Keys follow the manual's notation: `C-` is
-Control or Command, `M-` is Option, `S-` is Shift.
+Incremental search runs as a Lisp loop in the server: a small state
+machine reads each keystroke, finds the match, and moves the cursor,
+while your window's only jobs are to paint the highlights and the echo
+area. The keymap that binds all of these commands lives in
+`keymap.lisp`. Keys follow the manual's notation: `C-` is Control,
+`M-` is Command (the Mac's Meta), `A-` is Option, `S-` is Shift — see
+the *Keys and commands* chapter.
 
 ### Incremental search
 
 Incremental search finds text as you type it. Begin a forward search
 with `C-s` (cmd(isearch-forward)) or a backward search with `C-r`
-(cmd(isearch-backward)). A prompt — `I-search:` or `I-search backward:`
-— opens in the minibuffer, and with each character you add the editor
-jumps to the first match from the cursor in the search direction and
-*highlights* it: the match is shown as a selection, with the mark at its
-start and the point at its end. There is no separate "search" mode to
-remember; the buffer simply follows your typing.
+(cmd(isearch-backward)). A prompt — `I-search: ` or
+`I-search backward: ` — opens in the minibuffer, and with each
+character you add the editor jumps to the first match from where you
+started, in the search direction, and *highlights* it: the current
+match is lit with the bright `isearch` face, and — a beat later —
+every other match in view is lit with the dimmer `search-match` face,
+so you can see the field of candidates at a glance. No selection is
+made and the mark is untouched; the highlighting is overlay paint, and
+it vanishes when the search ends.
 
-Three things govern the search:
+Where the cursor lands is deliberate and asymmetric: a forward search
+puts the point at the *end* of the match, a backward search at its
+*start* — in each case, the far side in the direction you are
+travelling. That is where the cursor stays when you exit.
 
-- **Repeating.** Pressing `C-s` again, with a query already typed, moves
-  to the *next* match forward; `C-r` moves to the next match backward.
-  Both keys stay live throughout the loop, so a search begun forward can
-  reverse mid-stream and reverse again — each press steps one match in
-  the chosen direction from the current match. When no further match
-  exists, the minibuffer reports `no more matches` and the cursor stays
-  put.
+Four things govern the search:
 
-- **No match.** While you type, a query with nothing ahead of it shows
-  `no match` in the minibuffer and leaves the cursor where it was;
-  deleting back to a matching prefix resumes the highlight. Erasing the
-  query entirely returns the cursor to where the search began.
+- **Repeating.** Pressing `C-s` again, with a query already typed,
+  moves to the *next* match forward; `C-r` moves to the next match
+  backward. Both keys stay live throughout the loop, so a search begun
+  forward can reverse mid-stream and reverse again. Repeats *wrap*: a
+  forward search past the last match continues from the top of the
+  buffer, a backward search past the first continues from the bottom.
+  If the query matches nowhere at all, the cursor simply stays put.
 
-- **Ending.** `Enter` ends the search, leaving the cursor at the match
-  (the highlight is cleared, but the point remains). `C-g`
-  (cmd(keyboard-quit)) cancels and returns the cursor to its original
-  position, as though the search had never run.
+- **No match.** While you type, a query with nothing ahead of it leaves
+  the cursor where it was and the highlight disappears — that vanishing
+  is the signal; no message is printed. `Backspace` shrinks the query
+  and re-searches from where the search began; deleting back to a
+  matching prefix resumes the highlight, and erasing the query entirely
+  returns the cursor to the starting point. `Space` adds a literal
+  space to the query.
+
+- **Ending.** `Enter` or `Escape` ends the search, leaving the cursor
+  at the match (the highlight is cleared, but the point remains). In
+  fact *any* key that is not part of the search ends it the same way —
+  the terminating keystroke is consumed, not executed, so a stray
+  `C-a` exits at the match rather than jumping to the line start.
+
+- **Aborting.** `C-g` (cmd(keyboard-quit)) cancels and returns the
+  cursor to its original position, as though the search had never run.
 
 Search is plain literal substring — what you type is what is matched,
-case-sensitively, with no special characters. For pattern matching, use
-regexp search instead: `C-M-s` (cmd(isearch-regexp-forward)) and `C-M-r`
-(cmd(isearch-regexp-backward)) run the same minibuffer loop, but the
-query is a JavaScript regular-expression source rather than a literal
-string. An incomplete or invalid expression typed mid-search simply
-matches nothing — it raises no error — so you can build a pattern up a
-character at a time without the loop breaking.
+case-sensitively, with no special characters. The regexp variants,
+`C-M-s` (cmd(isearch-regexp-forward)) and `C-M-r`
+(cmd(isearch-regexp-backward)), are currently being rebuilt for the
+server architecture: pressing them announces
+`I-search regexp: temporarily unavailable in server-mode (being
+rebuilt)` and does nothing further. For pattern matching in the
+meantime, use cmd(replace-regexp) (below).
 
 ### Replace
 
-jmacs offers three replacement commands, differing in whether they ask
+Godot offers three replacement commands, differing in whether they ask
 before each change and in whether the pattern is literal or a regexp.
 
-**Replace every occurrence.** `M-r` (cmd(replace-string)) prompts for a
-string to find and a string to replace it with, then replaces every
-occurrence in the buffer at once, without asking. It is the blunt
+**Replace every occurrence.** `M-r` (cmd(replace-string)) prompts
+`Replace: ` for a string to find and `Replace with: ` for its
+replacement, then replaces every occurrence in the buffer at once,
+without asking, and reports the tally in the echo area — `replaced 12
+occurrence(s) of "foo"`, or `"foo" not found`. It is the blunt
 instrument: fast when you are sure.
 
 **Ask at each match.** `M-%` (cmd(query-replace)) is the considered
-form. It prompts for a `from` and a `to` string, then walks forward from
-the cursor. At each match it jumps to the match, highlights it as a
-selection, and waits for a single keystroke telling it what to do:
+form. The `%` arrives shifted, so the physical chord is
+`Cmd+Shift+5`. It prompts `Query replace: ` for a `from` string and
+`Query replace with: ` for a `to` string, then walks forward from the
+cursor. At each match it jumps there, highlights the match as a
+selection (mark at its start, point at its end), shows
+`Query replacing from with to: (y/n/q/! RET)`, and waits for a single
+keystroke telling it what to do:
 
 | Key | Effect |
 |-----|--------|
@@ -74,32 +98,102 @@ selection, and waits for a single keystroke telling it what to do:
 | `q`, `Escape` | Quit, leaving the rest untouched |
 | `!` | Replace this match and every remaining one, then quit |
 
-Any other key re-asks without changing anything — the match stays
-selected. When the pass finishes (or you quit), the minibuffer reports
-how many replacements were made. Like incremental search,
+Any other key re-asks, prefixing the prompt with a gentle hint —
+`(use y, n, q, !, RET — got C-t)` — and the match stays selected while
+you collect yourself. When the pass finishes (or you quit), the prompt
+clears and the selection drops. Like incremental search,
 `query-replace` matches a literal string, not a pattern.
 
-**Replace by pattern.** `C-M-%` (cmd(replace-regexp)) prompts for a
-regexp and a replacement and replaces every match across the buffer in
-one pass. The replacement string uses JavaScript's back-reference
-syntax, not Emacs's: `$1`, `$2`, … insert the corresponding capture
-group, `$&` inserts the whole match, and `$$` inserts a literal dollar
-sign.
+**Replace by pattern.** `C-M-%` (cmd(replace-regexp)) — physically
+`Cmd+Ctrl+Shift+5` — prompts `Regexp: ` and `Replace with: `, then
+replaces every match across the buffer in one pass. The replacement
+string uses JavaScript's back-reference syntax, not Emacs's: `$1`,
+`$2`, … insert the corresponding capture group, `$&` inserts the whole
+match, and `$$` inserts a literal dollar sign.
 
 ### Occur
 
-Where search moves you to matches one at a time, `occur` lists them all
-at once. `M-s o` (cmd(occur)) prompts for a literal substring and opens
-a fresh view named `*Occur: PATTERN*` containing every line of the
-current buffer that holds the pattern, each prefixed by its (1-based)
-source line number, right-aligned in a column. A header line counts the
-matches — `3 matches for "foo":` — and a search that finds nothing
-produces a view that says `(no matches)` rather than an empty one.
+Where search moves you to matches one at a time, `occur` lists them
+all at once. `M-s o` (cmd(occur)) prompts `Occur: ` for a literal
+substring and opens a fresh view named `*Occur: PATTERN*` containing
+every line of the current buffer that holds the pattern, each prefixed
+by its 1-based source line number, right-aligned in a column. A header
+line counts the matches, and a search that finds nothing produces a
+view that says so rather than an empty one. Searching a Lisp buffer
+for `mark`, say:
+
+```
+3 matches for "mark":
+
+ 12: (define (set-mark-command)
+ 40:   ;; the mark rides edits
+118: (clear-mark!)
+```
 
 The matching is plain literal substring, with no regexp. The results
 view is an ordinary text view that the command writes into; it is a
 snapshot of the matches at the moment you ran the command, not a live
 index.
+
+### Highlighting matches
+
+The other two members of the `M-s` search prefix paint matches without
+moving you anywhere. `M-s h` (cmd(highlight-matches)) highlights every
+occurrence of the word at point — or, with an active region, of the
+region's text — using the same `search-match` face as isearch's lazy
+highlight, and reports `Highlighted 7 match(es) of "foo"`. The
+highlights are overlays: their endpoints are buffer markers, so they
+ride edits correctly, and they are shared state — every window showing
+the buffer sees them. Running `M-s h` again on a different word
+replaces the set. `M-s u` (cmd(unhighlight-all)) clears them
+(`Highlights cleared`).
+
+### The mark and the region
+
+The *mark* is the editor's second position: together with the point it
+delimits the *region*, the stretch of text that region commands — kill,
+copy, case-change, and the rest (see *Basic editing*) — act on.
+
+`C-SPC` (cmd(set-mark-command)) sets the mark at the point and echoes
+`Mark set`. From then on, moving the cursor extends the region — it is
+shown as a selection — until `C-g` (cmd(keyboard-quit)) or `Escape`
+(cmd(deselect)) clears it. The mark commands:
+
+| Action | Key | Command |
+|--------|-----|---------|
+| Set the mark; start a region | `C-SPC` | cmd(set-mark-command) |
+| Swap point and mark | `C-x C-x` | cmd(exchange-point-and-mark) |
+| Select the whole buffer | `C-x h` | cmd(mark-whole-buffer) |
+| Mark the next word | `M-@` | cmd(mark-word) |
+| Mark the paragraph | `M-h` | cmd(mark-paragraph) |
+
+`C-x C-x` (cmd(exchange-point-and-mark)) puts the point where the mark
+was and the mark where the point was — the quick way to revisit the
+other end of the region, or to check where a region begins. `M-@`
+(cmd(mark-word); physically `Cmd+Shift+2`) sets the mark at the end of
+the next word, and pressing it again extends the region a word at a
+time. `M-h` (cmd(mark-paragraph)) selects the paragraph around the
+cursor, point at its start and mark at its end. (Selections can also
+be made without the mark ceremony — `S-`arrows and friends — see
+*Basic editing*.)
+
+### Moving by structure
+
+Three families of motion belong to this chapter's "navigation" remit;
+the character/word/line motions live in *Basic editing*.
+
+| Action | Key | Command |
+|--------|-----|---------|
+| Go to a line by number | `M-g` | cmd(goto-line) |
+| Start / end of the buffer | `M-<` / `M->` | cmd(beginning-of-buffer) / cmd(end-of-buffer) |
+| Back / forward a paragraph | `M-{` / `M-}` | cmd(backward-paragraph) / cmd(forward-paragraph) |
+
+`M-g` (cmd(goto-line)) prompts `Goto line: ` for a number and jumps
+there. `M-<` and `M->` (the symbols arrive shifted, so physically
+`Cmd+Shift+comma` / `Cmd+Shift+period`) jump to the very start and end
+of the buffer; `C-↑` and `C-↓` are synonyms. `M-{` and `M-}` step by
+paragraphs — maximal runs of non-blank lines — extending an active
+region as they go.
 
 ### Bookmarks
 
@@ -115,34 +209,45 @@ Emacs's register-and-bookmark family.
 |--------|-----|---------|
 | Set (or move) a bookmark | `C-x r m` | cmd(bookmark-set) |
 | Jump to a bookmark | `C-x r b` | cmd(bookmark-jump) |
-| List the buffer's bookmarks | `C-x r l` | cmd(list-bookmarks) |
+| Toggle the bookmark outline | `C-x r l` | cmd(list-bookmarks) |
 | Delete a bookmark | — | cmd(bookmark-delete) |
 
-`C-x r m` prompts for a name and sets a bookmark at the cursor; reusing
-a name *moves* that bookmark rather than creating a second one. `C-x r b`
-prompts for a name and jumps to it. There is deliberately no key for
-deletion — `C-x r d` is `delete-rectangle` in Emacs, and is left free —
-so delete a bookmark with `M-x bookmark-delete` or from the bookmark
-list.
+`C-x r m` prompts `Set bookmark: ` for a name and sets a bookmark at
+the cursor; reusing a name *moves* that bookmark rather than creating a
+second one. `C-x r b` prompts `Jump to bookmark: ` and jumps. There is
+deliberately no key for deletion — `C-x r d` is `delete-rectangle` in
+Emacs, and is left free — so delete a bookmark with
+`M-x bookmark-delete` (which prompts `Delete bookmark: `) or from the
+bookmark outline.
 
-**The bookmark list.** `C-x r l` (cmd(list-bookmarks)) opens an outline
-of the current buffer's bookmarks in *document order* — the order they
-appear in the text, not the order you set them. Within the outline you
-navigate with the arrow keys or `n`/`p`, press `Enter` to jump to the
-bookmark under the cursor, and edit the list in place: `r` renames, `d`
-deletes, `Tab` / `S-Tab` indent and outdent an entry to build a
-hierarchy, `Space` folds a subtree, and `q` closes the outline.
+**The bookmark outline.** `C-x r l` (cmd(list-bookmarks)) *toggles* an
+outline of the current buffer's bookmarks beside the document — it
+opens the outline, or closes it if it is already open. Bookmarks list
+in *document order* — the order they appear in the text, not the order
+you set them. Within the outline you navigate with the arrow keys or
+`n`/`p`, press `Enter` to jump to the bookmark under the cursor, and
+edit the list in place: `r` renames, `d` deletes, `Tab` / `S-Tab`
+indent and outdent an entry (with its whole subtree) to build a
+hierarchy, `Space` folds a subtree, `g` refreshes the outline after
+source edits, and `q` closes it. Right-clicking a row offers the same
+rename and delete as a context menu.
 
 **Persistence.** Bookmarks belong to the buffer's file, and are written
 to a sidecar named `.NAME.godot-metadata` alongside it — the same
-metadata sidecar that holds the file's other per-document state. Each
-record stores the marker's position by name, so reopening the file
-restores its bookmarks where the text has carried them.
+metadata sidecar that holds the file's other per-document state, so
+reopening the file restores its bookmarks where the text has carried
+them. Each bookmark is saved with a short slice of the text on either
+side of it, and if the file was edited while Godot was not watching —
+closed in between, or changed by another tool — the saved position is
+*relocated* on load: an unchanged offset is trusted, an exact context
+match that merely shifted is found next, and failing that a fuzzy
+best-match near the old position wins. Bookmarks survive external
+edits, in other words, not just your own.
 
 Bookmark support is provided by `bookmark-minor-mode`, a minor mode
-enabled by default in every text buffer. It carries no keymap of its own
-— the keys above are global under `C-x r` — and serves only to mark a
-buffer as bookmark-capable and to show "Bookmark" in the modeline.
+enabled by default in every text buffer. It carries no keymap of its
+own — the keys above are global under `C-x r` — and serves only to mark
+a buffer as bookmark-capable.
 
 ### Expand-region
 
@@ -170,9 +275,11 @@ between presses and the chain resets: the next `C-=` starts over at the
 word step, around wherever the cursor now sits. There is no contracting
 counterpart — to shrink, cancel the selection with `C-g` and grow again.
 
-A word, for this command, is a run of letters, digits, and underscores; a
-paragraph is a maximal run of non-blank lines, or — if the cursor is on a
-blank line — just that line.
+A word, for this command, is a run of letters and digits (in any
+script) or underscores — the editor-wide word definition, the same one
+word motion (`M-f`/`M-b`) uses; a paragraph is a maximal run of
+non-blank lines, or — if the cursor is on a blank line — just that
+line.
 
 ### Folding
 
@@ -193,9 +300,35 @@ is done by the editor view. The bindings sit under the `C-c` prefix.
 on a line that is itself a foldable header, that region folds or
 unfolds; otherwise the smallest fold *enclosing* the cursor toggles.
 `C-c C-,` (cmd(fold-all)) collapses every foldable scope in the buffer at
-once, and `C-c C-.` (cmd(unfold-all)) opens them all again.
+once, and `C-c C-.` (cmd(unfold-all)) opens them all again. The mouse
+works too: the gutter shows a chevron (`▾` / `▸`) beside each foldable
+header — click it to toggle that fold — and a folded header carries a
+`…` glyph where its body was.
 
 Folding depends on the buffer's language knowing what counts as a
 foldable scope. In a buffer whose major mode supplies no fold support,
 these commands are no-ops — they neither fold anything nor report an
 error.
+
+### Command index
+
+| Command | Key | Effect |
+|---------|-----|--------|
+| cmd(isearch-forward) / cmd(isearch-backward) | `C-s` / `C-r` | Incremental search, forward / backward |
+| cmd(replace-string) | `M-r` | Replace every occurrence, no questions |
+| cmd(query-replace) | `M-%` | Replace with a per-match y/n/q/! prompt |
+| cmd(replace-regexp) | `C-M-%` | Replace every regexp match in one pass |
+| cmd(occur) | `M-s o` | List every matching line in a fresh view |
+| cmd(highlight-matches) / cmd(unhighlight-all) | `M-s h` / `M-s u` | Paint / clear overlays on every match of the word at point |
+| cmd(set-mark-command) | `C-SPC` | Set the mark; start a region |
+| cmd(exchange-point-and-mark) | `C-x C-x` | Swap the region's two ends |
+| cmd(mark-whole-buffer) | `C-x h` | Select everything |
+| cmd(mark-word) / cmd(mark-paragraph) | `M-@` / `M-h` | Mark the next word / the paragraph |
+| cmd(goto-line) | `M-g` | Jump to a line by number |
+| cmd(beginning-of-buffer) / cmd(end-of-buffer) | `M-<` / `M->` | Jump to the buffer's ends |
+| cmd(backward-paragraph) / cmd(forward-paragraph) | `M-{` / `M-}` | Move by paragraphs |
+| cmd(bookmark-set) / cmd(bookmark-jump) | `C-x r m` / `C-x r b` | Set / jump to a named bookmark |
+| cmd(list-bookmarks) | `C-x r l` | Toggle the bookmark outline |
+| cmd(expand-region) | `C-=` | Grow the selection one structural step |
+| cmd(toggle-fold-at-point) | `C-c Tab` | Fold / unfold the region at the cursor |
+| cmd(fold-all) / cmd(unfold-all) | `C-c C-,` / `C-c C-.` | Collapse / open every fold |
