@@ -2,8 +2,12 @@
 
 **Status:** Phases 1–4 essentially BUILT (+ big slices of Phase 5); branch
 `svg-editor` (this worktree), rebased-by-merge onto Model-B-default main
-2026-07-12, tip `8887f9c1`, **merge-ready** (main is the merge-base — a
-`--no-ff` merge applies conflict-free). The live registration is
+2026-07-12, tip `863fd179`, **merge-ready** (main is the merge-base — a
+`--no-ff` merge applies conflict-free; runbook at the top of the repo-root
+HANDOVER.md). Jason's live pass is DONE — four bugs found and fixed
+(`8e18fb92` node-tool focus steal, `6833977b` gradient-wipe + WebKit
+sideways arrowhead, `370ba5e0` near-border connector attach + click-detach);
+each has a headless regression, suite green. The live registration is
 `ELEMENT_VIEW_SPECS` in `apps/desktop/src/element-spec.js` (the renderer
 Lisp interpreter is deleted; `element-view-svg-editor.lisp` is
 stdlib-test parity only).
