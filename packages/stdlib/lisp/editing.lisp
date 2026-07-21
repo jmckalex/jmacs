@@ -271,6 +271,39 @@
                     (delete-region! start1 end2)
                     (insert! (str w2 mid w1)))))))))))
 
+;; --- typographic quotes ------------------------------------------------
+;; The editor's own curly-quote layout, on the Option brackets: the
+;; BRACKET picks the side (open/close), SHIFT picks double — which is
+;; the layout the architect finds intuitive, replacing macOS's
+;; Option-compose defaults (where A-[ composes a DOUBLE quote). Because
+;; these are bound chords, they are claimed by the keymap before the
+;; unbound-A-chord fallthrough can insert the macOS-composed character;
+;; the old global Keyboard Maestro quote macros must EXCLUDE this app,
+;; or KM swallows the chord first and re-types it as synthetic
+;; keystrokes the key router cannot interpret.
+
+(define (-insert-as-typed! ch)
+  "Insert CH exactly like a self-inserting keystroke — electric
+   behaviours (auto-fill's post-self-insert hook) run after it."
+  (insert! ch)
+  (run-post-self-insert-hook ch))
+
+(defcommand insert-single-open-quote ()
+  "Insert a left single curly quote ‘ (A-[)."
+  (-insert-as-typed! "‘"))
+
+(defcommand insert-single-close-quote ()
+  "Insert a right single curly quote ’ (A-])."
+  (-insert-as-typed! "’"))
+
+(defcommand insert-double-open-quote ()
+  "Insert a left double curly quote “ (A-S-[)."
+  (-insert-as-typed! "“"))
+
+(defcommand insert-double-close-quote ()
+  "Insert a right double curly quote ” (A-S-])."
+  (-insert-as-typed! "”"))
+
 ;; --- case conversion ---------------------------------------------------
 ;; The word commands are Emacs's dwim versions: with an active region
 ;; they convert the region, otherwise they convert from the cursor to

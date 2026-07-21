@@ -28,6 +28,7 @@ const LISP_FILES = [
   'kill.lisp',
   'yank-pop.lisp',
   'line-ops.lisp',
+  'modes.lisp', // keymap-chain resolves through the mode chain at rest
   'keymap.lisp',
 ];
 
@@ -424,6 +425,33 @@ test('zap-to-char with no match leaves the buffer alone', async () => {
   assert.equal(buffer.text, 'hello');
 });
 
+// --- typographic quotes -------------------------------------------------
+
+test('the Option-bracket chords insert the editor quote layout', async () => {
+  const { buffer, run } = await editor('');
+  run('(handle-key "A-[")');
+  run('(handle-key "A-]")');
+  run('(handle-key "A-S-[")');
+  run('(handle-key "A-S-]")');
+  assert.equal(buffer.text, '‘’“”'); // ‘ ’ “ ”
+});
+
+test('a quote insert replaces an active selection', async () => {
+  const { buffer, run } = await editor('say word here');
+  run('(set-mark! 4)');
+  run('(goto! 8)'); // "word" selected
+  run("(run-command 'insert-double-open-quote)");
+  assert.equal(buffer.text, 'say “ here');
+});
+
+test('a quote insert runs the post-self-insert hook', async () => {
+  const { run } = await editor('');
+  run('(define -quote-hook-seen nil)');
+  run('(add-post-self-insert-hook (lambda (k) (set! -quote-hook-seen k)))');
+  run("(run-command 'insert-single-close-quote)");
+  assert.equal(run('-quote-hook-seen'), '’');
+});
+
 // --- keybindings --------------------------------------------------------
 
 test('the new commands are bound to their Emacs keys', async () => {
@@ -443,6 +471,10 @@ test('the new commands are bound to their Emacs keys', async () => {
     'M-h': 'mark-paragraph',
     'C-S-backspace': 'kill-whole-line',
     'C-t': 'transpose-chars',
+    'A-[': 'insert-single-open-quote',
+    'A-]': 'insert-single-close-quote',
+    'A-S-[': 'insert-double-open-quote',
+    'A-S-]': 'insert-double-close-quote',
   };
   for (const [key, command] of Object.entries(expect)) {
     assert.equal(

@@ -267,6 +267,14 @@
    "M-S-2"        'mark-word
    "M-h"          'mark-paragraph
    "C-S-backspace" 'kill-whole-line
+   ;; Typographic quotes on the Option brackets: bracket picks the
+   ;; side, Shift picks double (see editing.lisp). Claimed chords beat
+   ;; the unbound-A- compose fallthrough, so these override the macOS
+   ;; defaults (which put the DOUBLE quotes on the unshifted chords).
+   "A-["          'insert-single-open-quote
+   "A-]"          'insert-single-close-quote
+   "A-S-["        'insert-double-open-quote
+   "A-S-]"        'insert-double-close-quote
    "M-g"          'goto-line
    "M-r"          'replace-string
    "M-q"          'fill-paragraph

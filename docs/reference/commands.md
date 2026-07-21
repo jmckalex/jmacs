@@ -335,6 +335,37 @@ both — repeated presses drag a line downward. Bound to `C-x C-t`. Does
 nothing on the first line. Defined in `line-ops.lisp`.
 :::
 
+:::function{name="insert-single-open-quote" path="reference/commands/insert-single-open-quote.html"}
+#### `insert-single-open-quote`
+`(insert-single-open-quote)`
+
+Insert a left single curly quote `‘`. Bound to `A-[`. The quote family
+puts the *side* on the bracket and *double* on Shift — the editor's own
+layout, replacing the macOS Option-compose defaults. Electric
+behaviours (auto-fill) run as for a typed character.
+:::
+
+:::function{name="insert-single-close-quote" path="reference/commands/insert-single-close-quote.html"}
+#### `insert-single-close-quote`
+`(insert-single-close-quote)`
+
+Insert a right single curly quote `’`. Bound to `A-]`.
+:::
+
+:::function{name="insert-double-open-quote" path="reference/commands/insert-double-open-quote.html"}
+#### `insert-double-open-quote`
+`(insert-double-open-quote)`
+
+Insert a left double curly quote `“`. Bound to `A-S-[`.
+:::
+
+:::function{name="insert-double-close-quote" path="reference/commands/insert-double-close-quote.html"}
+#### `insert-double-close-quote`
+`(insert-double-close-quote)`
+
+Insert a right double curly quote `”`. Bound to `A-S-]`.
+:::
+
 :::function{name="upcase-word" path="reference/commands/upcase-word.html"}
 #### `upcase-word`
 `(upcase-word)`

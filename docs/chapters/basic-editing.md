@@ -98,7 +98,14 @@ is active, so you can select and delete in one stroke.
 
 `Enter` (cmd(newline)) inserts a line break and copies the current
 line's leading indentation onto the new line, so you stay at the same
-indent as you type. `C-o` (cmd(open-line)) opens a blank line *after*
+indent as you type.
+
+Typographic quotes live on the Option brackets, laid out so the
+*bracket* picks the side and *Shift* picks double: `A-[` `A-]` insert
+`‘` `’` (cmd(insert-single-open-quote) / cmd(insert-single-close-quote)),
+and `A-S-[` `A-S-]` insert `“` `”` (cmd(insert-double-open-quote) /
+cmd(insert-double-close-quote)). This replaces the macOS Option-compose
+defaults, which put the double quotes on the unshifted chords. `C-o` (cmd(open-line)) opens a blank line *after*
 point without moving onto it — handy for making room below. `Tab`
 (cmd(insert-tab)) inserts indentation: by default two spaces, but a
 literal tab where the major mode or your settings call for one (a
