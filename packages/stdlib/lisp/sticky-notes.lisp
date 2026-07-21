@@ -3,7 +3,7 @@
 ;;; A sticky note is a resizable rectangle drawn on top of the text,
 ;;; holding JMarkdown source whose rendered HTML is shown in the note.
 ;;; Notes are anchored into the document and scroll with it; they
-;;; persist to a companion <file>.jmacs-metadata file.
+;;; persist to a hidden companion .<file>.godot-metadata file.
 ;;;
 ;;; The notes themselves are managed by host primitives (note-create!,
 ;;; note-delete!, …). These commands are the keyboard surface, bound
@@ -15,7 +15,7 @@
 ;; docstring path in the documentation viewer. The default is "marked"
 ;; — the bundled marked.js library, a known-working CommonMark+GFM
 ;; renderer that requires no external programs. Any other string is
-;; treated as a shell command: jmacs feeds the source on stdin and
+;; treated as a shell command: Godot feeds the source on stdin and
 ;; shows the command's stdout (the original integration path, kept
 ;; for users who want JMarkdown or pandoc features). Change it
 ;; through the customisation UI, or directly:

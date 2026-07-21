@@ -5310,7 +5310,7 @@ doc-view,
   border-bottom-style: solid;
 }
 
-.doc-view .doc-page a[data-jmacs-doc] {
+.doc-view .doc-page a[data-godot-doc] {
   font-family: var(--font-mono);
   padding: 0 0.15em;
 }

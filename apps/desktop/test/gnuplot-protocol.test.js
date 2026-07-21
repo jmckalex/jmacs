@@ -28,8 +28,8 @@ test('quoteGnuplot does not interpret backslashes (gnuplot single-quote semantic
 
 test('sentinelsFor builds distinct stdout/stderr tokens carrying id and nonce', () => {
   const { stdout, stderr } = sentinelsFor(7, 'deadbeef');
-  assert.match(stdout, /^__JMACS_GP_DONE__7__deadbeef__$/);
-  assert.match(stderr, /^__JMACS_GP_ERR__7__deadbeef__$/);
+  assert.match(stdout, /^__GODOT_GP_DONE__7__deadbeef__$/);
+  assert.match(stderr, /^__GODOT_GP_ERR__7__deadbeef__$/);
   assert.notEqual(stdout, stderr);
 });
 

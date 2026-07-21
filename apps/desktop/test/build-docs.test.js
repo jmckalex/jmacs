@@ -32,7 +32,7 @@ function jmarkdownAvailable() {
 const skip = !jmarkdownAvailable();
 
 test('build-docs renders a function entry into a per-function page', { skip }, () => {
-  const work = mkdtempSync(join(tmpdir(), 'jmacs-build-docs-'));
+  const work = mkdtempSync(join(tmpdir(), 'godot-build-docs-'));
   try {
     // The .jmd is laid out the same way the real source does: a root
     // file that registers `cmd()` and a postprocessor that walks the
@@ -44,7 +44,7 @@ test('build-docs renders a function entry into a per-function page', { skip }, (
 
 <script data-type="jmarkdown">
 global.cmd = function (name) {
-  return '<a href="reference/commands/' + name + '.html" data-jmacs-doc="' + name + '">' + name + '</a>';
+  return '<a href="reference/commands/' + name + '.html" data-godot-doc="' + name + '">' + name + '</a>';
 };
 export_to_jmarkdown('cmd');
 </script>
@@ -60,7 +60,7 @@ Move the cursor one character to the right. Cousin of cmd(backward-char).
 <script data-type="jmarkdown-postprocess">
 const fs = require('node:fs');
 const path = require('node:path');
-const outDir = process.env.JMACS_DOCS_OUT;
+const outDir = process.env.GODOT_DOCS_OUT;
 const manifest = {};
 $('function').each((_, el) => {
   const $el = $(el);
@@ -114,8 +114,8 @@ fs.writeFileSync(path.join(outDir, 'manifest.json'), JSON.stringify(manifest));
       'utf8'
     );
     // The inline cmd(backward-char) expanded to an anchor with both
-    // the relative href and the data-jmacs-doc attribute.
-    assert.ok(page.includes('data-jmacs-doc="backward-char"'), 'cmd() produced data-jmacs-doc');
+    // the relative href and the data-godot-doc attribute.
+    assert.ok(page.includes('data-godot-doc="backward-char"'), 'cmd() produced data-godot-doc');
     assert.ok(page.includes('href="reference/commands/backward-char.html"'), 'cmd() produced relative href');
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -128,7 +128,7 @@ test('the real manual build produces an acyclic node tree', { skip }, () => {
   // pushed into that node's children, making the node its own child —
   // and the doc-view sidebar, which recurses over this graph, blew the
   // stack. The build must never emit a cycle.
-  const outDir = mkdtempSync(join(tmpdir(), 'jmacs-docs-cycles-'));
+  const outDir = mkdtempSync(join(tmpdir(), 'godot-docs-cycles-'));
   try {
     const res = spawnSync(
       process.execPath,

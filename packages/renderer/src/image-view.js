@@ -43,7 +43,7 @@ import { defineViewElement, ViewElement } from './view-elements.js';
 /** A bare modifier press is not a key in its own right. */
 const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
-/** File-name suffix → image MIME type, for the suffixes jmacs opens as
+/** File-name suffix → image MIME type, for the suffixes Godot opens as
  *  images. The keys are lower-case, with the leading dot. */
 const IMAGE_MIME_TYPES = {
   '.png': 'image/png',
@@ -70,7 +70,7 @@ export function mimeTypeForImage(name) {
 }
 
 /**
- * Whether a file name names an image jmacs should open as an image
+ * Whether a file name names an image Godot should open as an image
  * buffer rather than as text.
  *
  * @param {string} name - A file name or path.

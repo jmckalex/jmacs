@@ -135,7 +135,7 @@ function writeConfigText(name, text) {
  *  CUSTOM_FILE_HEADER (B2.2a moved persistence server-side). */
 const SPINE_CUSTOM_FILE_HEADER = `;;; custom.lisp — your saved customisations.
 ;;;
-;;; jmacs writes this file; edits made by hand will be overwritten the
+;;; Godot writes this file; edits made by hand will be overwritten the
 ;;; next time a setting is saved. For free-form configuration, use
 ;;; init.lisp instead.
 
@@ -3558,7 +3558,7 @@ export function createSpine(options, effects = {}) {
     ;; B4 fix: open the doc as a SERVER 'doc' data-source (switchable tab), not a
     ;; renderer-only view. open-manual opens the manual's Top node by its known id.
     (define (open-doc! name) (open-doc-view! name))
-    (define (open-manual!) (open-doc-view! "the-jmacs-manual"))
+    (define (open-manual!) (open-doc-view! "the-godot-manual"))
     (define (open-docstring-page! name source) (open-doc-source-view! name source))
     ;; docs.lisp's apropos-doc (-> start-doc-search!) is shadowed by the embedded
     ;; show-apropos apropos-doc above (C-h a), so this never runs; a no-op stub

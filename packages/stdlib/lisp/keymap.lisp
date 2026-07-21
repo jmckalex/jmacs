@@ -27,7 +27,9 @@
 (define c-x-keymap
   {"C-f"   'find-file
    "C-s"   'save-buffer
-   "C-r"   'reload-stdlib
+   ;; C-x C-r is deliberately unbound: the renderer-era reload-stdlib
+   ;; command has no server-side registration (system.lisp is not in
+   ;; SPINE_STDLIB) — redefine live via the REPL, or relaunch.
    "C-c"   'quit-editor
    ;; C-x f — set the fill column (Emacs's binding; auto-fill.lisp).
    "f"     'set-fill-column
@@ -70,7 +72,7 @@
    ;; Visual add-pane macro: highlights every splitter + the four
    ;; outer borders of the editor area; click one to insert there.
    "+"     'add-pane
-   ;; Move-views-between-panes commands (jmacs additions; no Emacs
+   ;; Move-views-between-panes commands (Godot additions; no Emacs
    ;; analogue). `x` sends the focused view to the next pane;
    ;; capital-X swaps with it. Same alphabet position as `o` for
    ;; navigating between panes.

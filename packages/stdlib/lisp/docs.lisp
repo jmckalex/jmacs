@@ -1,7 +1,7 @@
 ;;; docs.lisp — the in-editor documentation system.
 ;;;
 ;;; A `pnpm run docs` build (scripts/build-docs.js) renders the
-;;; jmacs manual to HTML and produces `docs/build/manifest.json`,
+;;; Godot manual to HTML and produces `docs/build/manifest.json`,
 ;;; a flat name → relative-path map. The host loads that manifest
 ;;; at startup and exposes it as the list of names through the
 ;;; `load-doc-manifest!` primitive; `open-doc!` reads a doc page

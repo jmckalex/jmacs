@@ -227,7 +227,7 @@ function spawnSession(sessionId, sender, options = {}) {
       : homedir();
 
   // Per-session temp dir for the cell SVGs; reaped on terminate / exit.
-  const tmpDir = mkdtempSync(join(tmpdir(), 'jmacs-gp-'));
+  const tmpDir = mkdtempSync(join(tmpdir(), 'godot-gp-'));
 
   // GNUTERM=unknown stops gnuplot trying to auto-select an interactive
   // terminal (qt/x11/wxt) at startup. We set the real `svg` terminal per

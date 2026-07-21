@@ -412,7 +412,7 @@ function stripExternalResources(html) {
  * ------------------------------------------------------------------ */
 
 function main() {
-  const tmpDir = mkdtempSync(join(tmpdir(), 'jmacs-gpwt-'));
+  const tmpDir = mkdtempSync(join(tmpdir(), 'godot-gpwt-'));
   try {
     // 1. Render the plots.
     const svgByName = new Map();

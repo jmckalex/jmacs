@@ -10,7 +10,7 @@
  * Info-style key resolves to a node id and calls back through `openDoc(id)`;
  * the host fetches that page and calls `setBuffer` again (in place), so the
  * manual reads like one navigable Info buffer rather than a pile of tabs.
- * Cross-links carry `data-jmacs-doc`; the capture-phase click handler routes
+ * Cross-links carry `data-godot-doc`; the capture-phase click handler routes
  * them, so menu/breadcrumb/sidebar links and the Prev/Up/Next/Contents
  * buttons all share one path. Back-history (`l`) is tracked here.
  *
@@ -24,7 +24,7 @@ const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
 
 /**
  * The cross-link target for an event target — the value of the nearest
- * `[data-jmacs-doc]` ancestor's attribute, or `null` if there isn't one.
+ * `[data-godot-doc]` ancestor's attribute, or `null` if there isn't one.
  * Pure, so the click-routing logic is unit-testable.
  *
  * @param {Element | null | undefined} target
@@ -32,9 +32,9 @@ const MODIFIERS = new Set(['Shift', 'Control', 'Alt', 'Meta']);
  */
 export function docLinkName(target) {
   if (!target || typeof target.closest !== 'function') return null;
-  const link = target.closest('[data-jmacs-doc]');
+  const link = target.closest('[data-godot-doc]');
   if (!link || typeof link.getAttribute !== 'function') return null;
-  const name = link.getAttribute('data-jmacs-doc');
+  const name = link.getAttribute('data-godot-doc');
   return name || null;
 }
 
@@ -156,7 +156,7 @@ function createDocView(container, options = {}) {
   const contentsBtn = navButton('≡ Contents', 'Contents (t)');
   buttons.append(backBtn, prevBtn, upBtn, nextBtn, contentsBtn);
   // Back has no target node — it walks the history; the rest set
-  // data-jmacs-doc per page so the shared click handler routes them.
+  // data-godot-doc per page so the shared click handler routes them.
   backBtn.addEventListener('click', () => goBack());
 
   const body = doc.createElement('div');
@@ -282,7 +282,7 @@ function createDocView(container, options = {}) {
   function navLink(id, label, isCode) {
     const a = doc.createElement('a');
     a.href = '#';
-    a.setAttribute('data-jmacs-doc', id);
+    a.setAttribute('data-godot-doc', id);
     if (isCode) { const c = doc.createElement('code'); c.textContent = label; a.append(c); }
     else a.textContent = label;
     return a;
@@ -315,10 +315,10 @@ function createDocView(container, options = {}) {
   function setBtn(btn, id) {
     if (id != null && nodeOf(id)) {
       btn.disabled = false;
-      btn.setAttribute('data-jmacs-doc', id);
+      btn.setAttribute('data-godot-doc', id);
     } else {
       btn.disabled = true;
-      btn.removeAttribute('data-jmacs-doc');
+      btn.removeAttribute('data-godot-doc');
     }
   }
   function renderButtons(id) {
@@ -467,7 +467,7 @@ function createDocView(container, options = {}) {
     const source = inner ?? tmp;
     currentNodeId =
       (inner && inner.getAttribute('data-node-id')) ||
-      (inner && inner.getAttribute('data-jmacs-doc-name')) ||
+      (inner && inner.getAttribute('data-godot-doc-name')) ||
       buffer.docName ||
       null;
     article.replaceChildren(...Array.from(source.childNodes));

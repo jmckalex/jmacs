@@ -15,15 +15,15 @@ import {
 
 // A minimal stand-in for the bit of the DOM the routing actually
 // reads — closest() walking up ancestors, and getAttribute() on the
-// chosen one. The chain models `<article><p><a data-jmacs-doc="foo">…`
+// chosen one. The chain models `<article><p><a data-godot-doc="foo">…`
 // where target is the inner-most node.
 function mockTarget({ name, hasAncestor = true } = {}) {
   const link = {
-    getAttribute: (key) => (key === 'data-jmacs-doc' ? name : null),
+    getAttribute: (key) => (key === 'data-godot-doc' ? name : null),
   };
   return {
     closest: (selector) =>
-      selector === '[data-jmacs-doc]' && hasAncestor ? link : null,
+      selector === '[data-godot-doc]' && hasAncestor ? link : null,
   };
 }
 
@@ -49,7 +49,7 @@ test('docLinkName returns null when the data attribute is empty', () => {
 });
 
 test('docLinkName ignores other selectors', () => {
-  // The handler should only check the [data-jmacs-doc] selector. If
+  // The handler should only check the [data-godot-doc] selector. If
   // closest() returns nothing for that selector, we don't consult any
   // other.
   const target = {

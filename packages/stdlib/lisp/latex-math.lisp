@@ -1,6 +1,6 @@
 ;;; latex-math.lisp — AUCTeX Phase 3: LaTeX-math-mode, a minor mode where
 ;;; a configurable prefix (default backtick `) followed by a key inserts a
-;;; LaTeX math-symbol macro (`a -> \alpha, `> -> \geq, …). This is jmacs's
+;;; LaTeX math-symbol macro (`a -> \alpha, `> -> \geq, …). This is Godot's
 ;;; richer, LaTeX-specific, configurable port of AUCTeX's `LaTeX-math-list`.
 ;;;
 ;;; Loaded after latex-insert.lisp (AUCTeX Phase 2): it reuses that file's

@@ -136,7 +136,7 @@
   (focus-pane-direction! 'down))
 
 ;; --- close-vs-kill aliases --------------------------------------------
-;; jmacs's split between `delete-pane!` (collapses a pane; the view stays
+;; Godot's split between `delete-pane!` (collapses a pane; the view stays
 ;; in the global list, reachable via `switch-view` / buffer-menu) and
 ;; `kill-view!` (removes the view entirely) is the same distinction
 ;; Emacs makes between `C-x 0` (delete-window) and `C-x k` (kill-buffer).

@@ -151,7 +151,7 @@ import { createClientBuffer } from '../mwb/client-buffer.js';
 
 const WELCOME = `
 
-      jmacs
+      Godot
 
 
       A Lisp-extensible editor — a successor in spirit to Emacs, on a
@@ -2167,7 +2167,7 @@ async function openFileByPath(filePath, {
 
 
 // --- sticky-note metadata ----------------------------------------------
-// Sticky notes persist to a `<file>.jmacs-metadata` companion file.
+// Sticky notes persist to a hidden `.<file>.godot-metadata` companion file.
 // Writes are debounced and coalesced per buffer; a buffer with no file
 // path keeps its notes in memory until its first save.
 
@@ -5015,7 +5015,7 @@ function highlightCodeForDocView(text, language) {
 
 // The documentation view — the view a `doc`-kind buffer is shown
 // through. Cross-links inside the rendered HTML carry
-// `data-jmacs-doc="name"`; clicking one routes through Lisp's
+// `data-godot-doc="name"`; clicking one routes through Lisp's
 // `open-doc`, which calls `open-doc!` (host primitive) below.
 // Phase 3e: doc-view is a custom element now. Factory is reused by
 // the tabline mount path for per-tab `<doc-view>` instances.

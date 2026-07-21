@@ -108,7 +108,7 @@ test('mediaErrorAdvice returns null for ABORTED (user-initiated)', () => {
 });
 
 test('mediaErrorAdvice tailors SRC_NOT_SUPPORTED for .mkv to a remux command', () => {
-  // The .mkv case is the most common SRC_NOT_SUPPORTED jmacs sees;
+  // The .mkv case is the most common SRC_NOT_SUPPORTED Godot sees;
   // a stream-copy remux is nearly always instant and lossless.
   const advice = mediaErrorAdvice({ code: 4 }, 'movie.mkv');
   assert.ok(advice);
