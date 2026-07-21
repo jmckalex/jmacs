@@ -70,6 +70,10 @@ export {
 export { ShellView } from './shell-view.js';
 export { GnuplotView } from './gnuplot-view.js';
 export { createHistory } from './gnuplot-history.js';
+// The SVG editor (M-x svg-edit): importing it registers the bundled
+// <svg-editor-view> custom element so the element-view mounts it by tag
+// with an empty :module.
+export { SvgEditorView, TOOLS as SVG_EDITOR_TOOLS } from './svg-editor-view.js';
 // The Architecture-A cell notebook (M-x notebook-cells): all cells in ONE real
 // editor over a unified buffer. Importing it registers the bundled
 // <notebook-cells-view> custom element so the element-view mounts it by tag

@@ -3570,5 +3570,180 @@ files). Open a `.jmd`, then:
 
 **State**: branch `jmarkdown-auctex`, ~8 commits, unmerged, suite green,
 self-verified, reviewed. Depends on `auto-fill-mode` (merge that first).
+## [2026-06-26 02:00] SVG editor (overnight build): MVP shipped, two decisions parked
+
+**Context**: Built the Inkscape-like `<svg-editor-view>` per plans/SVG-EDITOR.md
+on branch `svg-editor`. Phase-1 MVP (rect/ellipse/line/text + select/move/resize
++ save) and the headline LaTeX math boxes are in and reachable via `M-x svg-edit`.
+6 commits, all on top of the design-doc commit; renderer suite 841/0, stdlib 883/0.
+Live-verify is yours in the morning (I can't launch the GUI).
+
+**Decision 1 — `.svg` default handler.** I did NOT change `.svg` ownership.
+Plain `.svg` still opens as the read-only image view (media-kinds.js untouched);
+the editor is an explicit `M-x svg-edit` entry point that opens a BLANK canvas.
+The spec's §"Open questions" #1 recommends editor-by-default with a "view as
+image" escape hatch — that is your call because it changes behaviour for anyone
+who just wanted to *look* at an SVG. To make the editor the default later: route
+`.svg` in `apps/desktop/src/media-kinds.js` and add an open-existing path
+(parse file bytes → `setBuffer({svgText})`). I left it as-is to avoid a
+behaviour change while you sleep. **Recommend: editor-by-default + a "View as
+image" command, but confirm.**
+
+**Decision 2 — MathJax defs id de-collision approach.** I took the
+**prefix-rewrite** route, not `fontCache:'none'`. `svg-mathjax-ids.js`
+(pure + 9 tests) namespaces every id and its references (`id=`,
+`href`/`xlink:href` `#frag`, `url(#X)`) per box, so two math boxes in one
+document don't collide MathJax's repeated `MJX-N-...` glyph ids and each box's
+`<use>` resolves to its own `<defs>`. This keeps file size down and the
+round-trip valid. The `fontCache:'none'` alternative (inline paths, no `<use>`)
+is simpler but fatter; the prefix approach is the spec's recommendation (§"Open
+questions" #2). **Needs your live spike: type two different formulas in two boxes,
+save, reopen in a browser/Inkscape, confirm both render correctly.** The pure
+helper is unit-tested but the real MathJax output structure can only be confirmed
+live — if the namespacing misses an id form MathJax emits, that test sample
+needs updating.
+
+**What's NOT done (the budget line for one overnight session):**
+- Host file-backed **save/open-existing** wiring. The MVP `save()` downloads the
+  cleaned `.svg` via a Blob (works, but it's a download, not an in-place file
+  write). Real save needs either an `onSave` host bridge through the element-view
+  wrapper or the Model-B server-owned `svg-document` data-source (spec §6 / Phase
+  0 + 5). I deliberately did NOT touch app.js territory for this overnight run.
+- **Model-B / server data-source** (`svg-document` kind, per-instance client view,
+  session-restore) — Phase 0/5, mirrors the shell/gnuplot ports. Untouched.
+- Connectors, arrowheads, groups, rotate, pan/zoom UI, multi-select, snapping,
+  PNG/PDF export — all later phases per the spec.
+
+**State of the work**: branch `svg-editor`, 6 commits past the design doc, working
+tree clean (this note is the only uncommitted change), both suites green. Pure
+helpers (geometry / mathjax-ids / document-model) carry 38 unit tests; the live
+element is exercised by you in Electron. Build order followed the brief: pure
+testable helpers first, then the element, then the wiring.
+
+---
+
+## [2026-07-12 β] SVG editor: TikZ nodes + pen/bezier + properties panel (branch `svg-editor`, unmerged)
+
+**Context**: Jason asked for TikZ-like text nodes (typeset math, rect/circle/
+ellipse borders), shapes with resize handles, bezier splines with adjustable
+control points, click-to-select with property editing, "and anything else
+useful". Built on the `svg-editor` worktree after merging main in (the branch
+was 325 commits stale, pre-Model-B-default).
+
+**What landed** (8 commits, full suite green — 3540 tests / 0 fail):
+- merge of main + the JS-registry rewire (`ELEMENT_VIEW_SPECS['svg-edit']` in
+  element-spec.js — the .lisp file is test-parity only now; without the
+  registry entry M-x svg-edit was dead on arrival).
+- pure modules + tests: svg-path-model (34), svg-node (21), svg-properties(13).
+- pen + node-edit tools; TikZ nodes (inline overlay editor, MathJax island
+  embed w/ per-node id namespacing, TikZ border geometry incl. diamond);
+  properties sidebar; snapshot undo/redo; multi-select; zoom/pan; host-backed
+  Save/Save As/Open + clean Export; per-colour arrowhead markers.
+- MVP bugs fixed on the way: overlay/document coordinate mismatch (the
+  original selection handles drew misaligned); zero-length "phantom handles"
+  from parse shadowing anchors; the saved file used to carry the editor's
+  inline style/class.
+
+**Decisions I made you should review**:
+1. **Save keeps `data-godot-*`** (file re-opens fully editable); a separate
+   Export… writes the stripped clean SVG. The MVP stripped on save, which
+   made nodes un-re-editable.
+2. The old `text`/`math` tools are UNIFIED into the node tool ('t'): plain
+   prose → native <text>, `$…$`/TeX → math island, mixed prose+$math$ →
+   \text{…} wrap (real TikZ label semantics). Legacy shapes from old files
+   still select/edit.
+3. Node resize scales font-size + padding uniformly (TikZ-ish), not the
+   border independently.
+4. `keyboard: 'share'` kept; the canvas owns M-s/M-z/M-S-z/M-d (stopPropagation)
+   while focused.
+
+**Still parked** (from the design doc, unchanged): `.svg` default-handler
+(image vs editor — currently still image; M-x svg-edit is the entry point),
+and the server-owned `svg-document` data-source — an `element` view has no
+filePath, so an svg-edit pane VANISHES from a restored workspace, and there
+is no multi-window fan-out. That's the natural next phase if the tool earns
+its keep.
+
+**State of the work**: branch `svg-editor` @ worktree godot-svg, 8 commits
+ahead of the merge point, unmerged, suite green, headless-verified end to end
+(drive.js: real M-x → key/pointer events; save → reopen → still editable).
+Your live pass: `cd apps/desktop && ./node_modules/.bin/electron .` then
+M-x svg-edit — draw (r/e/l), pen a spline (p; Enter/close/Esc), edit points
+(n; drag anchors + handles, dbl-click to insert/toggle), place nodes
+(t; "accept $q_0$", dbl-click to re-edit), panel edits, M-z/M-S-z, M-d,
+wheel/meta-wheel/space-pan, Save/Open/Export.
+
+---
+
+## [2026-07-12 γ] SVG editor round 2: text/math split, TikZ connectors, showcase wave (branch `svg-editor`, unmerged)
+
+**Context**: Jason asked (1) text typeset natively (resizable/reflowed like a
+div, selectable font) with math via MathJax; (2) pen-drawn paths that attach
+to node anchors and terminate on node borders with TikZ-perfect arrow tips;
+(3) knot/control-point insertion (already existed — Edit Pts dbl-click);
+then (4) "as many features as possible, your judgement" for a showcase.
+
+**Landed** (3 commits on top of the focus fix: `776b0553`, `b36eaede`, + the
+focus fix `8e18fb92`; suite green 3560+/0):
+- Flowed text nodes: greedy wrap into tspans (pure wrapParagraph), resize =
+  wrap width, Font + Text-width panel knobs. Math/mixed unchanged (MathJax).
+- Connectors: pen click on node/rect/ellipse starts at the border (compass
+  dots; near-dot pins, elsewhere TikZ auto), click a shape terminates +
+  arrowhead tip EXACTLY on the border (marker refX=10); data-godot-from/to;
+  LIVE reroute on move/resize/label-rebuild; endpoint drag detaches; delete
+  detaches; duplicate remaps among clones. Pure svg-connect.js ray geometry.
+- Wave: linear/radial gradients + hatch/crosshatch/dots/checker patterns
+  (def-backed, panel-driven, borders included); align/distribute rows;
+  grid + snap ('g'); PNG export at 2x (data: URLs — CSP blocks blob:);
+  group/ungroup (M-g/M-S-g) with group-aware moves and duplicates.
+
+**Decisions to review**: connector default gets an arrowhead; text-node
+resize changes wrap width not font size; PNG is white-background 2x to
+~/Downloads (no binary host-save path exists); grid is 10u, editor-local
+state (not persisted).
+
+**State**: branch `svg-editor` @ godot-svg worktree, tip `b36eaede`, UNMERGED,
+awaiting your live pass (checklist in HANDOVER.md). Everything drive-verified
+headless except: the inline-editor blur guard and real download UX (focus/
+download need a visible window).
+
+---
+
+## [2026-07-13 δ] SVG editor: live-pass bug fixes (branch `svg-editor`, unmerged)
+
+Jason ran the app and found four real bugs across two passes; all fixed with
+headless regressions, suite green. (Supersedes the "awaiting live pass" line
+of the γ note — the live pass happened.)
+
+- `8e18fb92` — **node tool reverted to Select instantly**: click Node → click
+  canvas opened the inline label editor and focused its textarea, then the
+  mousedown DEFAULT action focused the stage → blurred the editor → empty
+  commit → cancel → tool revert, all in one frame. Fix in three layers
+  (preventDefault the node pointerdown; click-away = explicit commit; blur
+  refocuses on a stage-steal). LESSON: synthetic events have no default
+  actions AND hidden windows don't dispatch focus/blur → headless can't test
+  focus chains (only the blur guard needs live eyes).
+- `6833977b` — **(a)** a node border's gradient/pattern params were collected
+  but not re-applied on a border refit, so any rebuild (resize / label / font)
+  reverted it to solid and the Angle select "did nothing"; refit now re-applies
+  every preserved attr + records the primary for a none-filled border so the
+  Fill swatch works. **(b)** a one-sided cubic (smooth→corner) serialised its
+  end control point ON the endpoint → zero-length tangent → WebKit oriented the
+  arrowhead at 0° (sideways) in exported SVGs; serializer nudges the degenerate
+  control ≤2u along the true tangent (parse→serialize fixpoint; both ends).
+- `370ba5e0` — **a connector's START didn't follow its node**: it had never
+  attached. The pen used pure containment hit-testing, but the compass anchor
+  dots straddle the border, so a click on the dot/on the edge fell outside the
+  shape → plain unattached anchor. `connectableNear(p, tol)` attaches within
+  tolerance of the border (containment first, else ray-to-border distance);
+  the hover affordance uses the same rule (dots showing ⇒ click attaches).
+  Also: node-edit was detaching an endpoint on pointer-DOWN, so a click to
+  inspect it silently severed the attachment — detach now fires on first
+  movement of a drag.
+
+**State**: branch `svg-editor` @ godot-svg worktree, tip `370ba5e0`, UNMERGED,
+MERGE-READY (main is the merge-base — conflict-free `--no-ff`; runbook at the
+top of the repo-root HANDOVER.md). Suite green (8x fail 0). Still live-only:
+the blur guard and the PNG/Export download UX (both need a visible window).
 
 ---

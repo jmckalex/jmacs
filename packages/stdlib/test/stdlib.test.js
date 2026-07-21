@@ -4418,6 +4418,22 @@ test('define-element-view :title defaults to the tag', async () => {
   );
 });
 
+test('svg-edit command is registered for the bundled <svg-editor-view>', async () => {
+  const { interpreter } = await editor();
+  // element-view-svg-editor.lisp loaded and parsed: the command exists and
+  // its spec names the renderer-bundled tag with an empty :module.
+  assert.equal(interpreter.evaluate(`(contains? *commands* 'svg-edit)`), true);
+  assert.equal(interpreter.evaluate(`(procedure? svg-edit)`), true);
+  assert.equal(
+    interpreter.evaluate(`(get (element-view-spec 'svg-edit) :tag nil)`),
+    'svg-editor-view'
+  );
+  assert.equal(
+    interpreter.evaluate(`(get (element-view-spec 'svg-edit) :module nil)`),
+    ''
+  );
+});
+
 test('bib-search reads a `Bibliography:` metadata-header line', async () => {
   const { interpreter } = await editor();
   // A header line names the document's bibliography (value trimmed).
