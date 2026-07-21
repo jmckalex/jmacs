@@ -154,9 +154,13 @@ behaviour), which usually saves reaching for the region commands at all.
 | Collapse surrounding blank lines to one | `C-x C-o` | cmd(delete-blank-lines) |
 
 cmd(just-one-space) (`M-SPC`) inserts a space even when there is none —
-it *normalises* to exactly one. (macOS claims `Cmd+Space` for Spotlight,
-so the key only reaches jmacs if you have that shortcut off; the command
-is always available by name.) cmd(delete-indentation) (`M-^`) is the
+it *normalises* to exactly one. macOS claims `Cmd+Space` for Spotlight
+before any app sees it, so the command is *also* bound to Hyper+Space
+(`C-M-A-S-space`): a Karabiner rule shipped in
+`tools/karabiner/godot-cmd-space.json` rewrites `Cmd+Space` to that
+chord while the editor is frontmost, giving the real `M-SPC` key here
+without losing Spotlight anywhere else (and a Karabiner *hyper* key —
+fn, say — reaches it directly). cmd(delete-indentation) (`M-^`) is the
 upward twin of cmd(join-line): it joins the *current* line onto the end
 of the previous one. cmd(delete-blank-lines) (`C-x C-o`) on a blank line
 collapses the whole run of blank lines around it to one; on the sole

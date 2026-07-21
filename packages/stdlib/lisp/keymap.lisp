@@ -252,6 +252,12 @@
    ;; this only fires where that shortcut is off/remapped; the command
    ;; is always reachable via M-x just-one-space.
    "M-space"      'just-one-space
+   ;; Hyper+Space — the working route to just-one-space on Jason's
+   ;; keyboard stack: fn is Karabiner-mapped to hyper (C-M-A-S-), so
+   ;; fn+Space lands here; and tools/karabiner/godot-cmd-space.json
+   ;; rewrites Cmd+Space to this chord while Godot is frontmost, giving
+   ;; the real M-SPC key without losing Spotlight elsewhere.
+   "C-M-A-S-space" 'just-one-space
    ;; M-^ (delete-indentation) — Shift+6, so the normalised key is M-S-6.
    "M-S-6"        'delete-indentation
    ;; M-{ / M-} (paragraph motion) — Shift+bracket.

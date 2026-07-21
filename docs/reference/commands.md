@@ -387,8 +387,11 @@ line. Bound to `M-\`.
 `(just-one-space)`
 
 Replace the spaces and tabs around the cursor with a single space,
-inserting one when there is none. Bound to `M-SPC` (note macOS claims
-`Cmd+Space` for Spotlight; the command is always reachable via `M-x`).
+inserting one when there is none. Bound to `M-SPC` and to Hyper+Space
+(`C-M-A-S-space`). macOS claims `Cmd+Space` for Spotlight before apps
+see it; the Karabiner rule in `tools/karabiner/godot-cmd-space.json`
+rewrites `Cmd+Space` to Hyper+Space while the editor is frontmost, so
+the natural key works here and Spotlight survives everywhere else.
 :::
 
 :::function{name="delete-indentation" path="reference/commands/delete-indentation.html"}

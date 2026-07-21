@@ -435,6 +435,7 @@ test('the new commands are bound to their Emacs keys', async () => {
     'M-c': 'capitalize-word',
     'M-backslash': 'delete-horizontal-space',
     'M-space': 'just-one-space',
+    'C-M-A-S-space': 'just-one-space', // hyper-space: fn+Space / the Karabiner Cmd+Space bridge
     'M-S-6': 'delete-indentation',
     'M-S-[': 'backward-paragraph',
     'M-S-]': 'forward-paragraph',
