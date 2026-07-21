@@ -59,6 +59,9 @@ import { createBuffer as createStorageBuffer } from '@editor/storage';
  * @typedef {object} CursorState
  * @property {number} point - The caret offset.
  * @property {number | null} mark - The selection anchor, or `null`.
+ * @property {number} [goal] - The goal column an unbroken run of
+ *   vertical moves is aiming for (absent outside such a run). Owned by
+ *   `moveUp`/`moveDown`; never serialized (`selections` omits it).
  */
 
 /**
@@ -223,10 +226,23 @@ export function createBuffer(initialText = '', options = {}) {
   }
 
   /**
+   * Forget a cursor's remembered vertical-motion column (see `moveUp`).
+   * Every operation except an up/down move goes through here, so the
+   * goal column only survives an unbroken run of vertical moves —
+   * Emacs's temporary-goal-column rule.
+   */
+  function clearGoal(cursor) {
+    if (cursor.goal !== undefined) delete cursor.goal;
+  }
+
+  /**
    * Move a single cursor to OFFSET, optionally extending its mark to
    * preserve a selection. Used by the multi-cursor movement methods.
+   * Drops any remembered goal column; `moveUp`/`moveDown` re-assert
+   * theirs after calling this.
    */
   function moveCursor(cursor, offset, opts) {
+    clearGoal(cursor);
     if (opts && opts.extend) {
       if (cursor.mark === null) cursor.mark = cursor.point;
     } else {
@@ -570,12 +586,23 @@ export function createBuffer(initialText = '', options = {}) {
       emit(null);
     },
 
-    /** @param {{ extend?: boolean }} [opts] */
+    /**
+     * A vertical move aims for the *goal column*: the column the run of
+     * consecutive up/down moves started at (`cursor.goal`), not the
+     * column the cursor was left at after clamping to a short line — so
+     * moving through a short line and on into a longer one restores the
+     * original column (Emacs's temporary-goal-column). Any other
+     * operation clears the memory via `clearGoal`.
+     *
+     * @param {{ extend?: boolean }} [opts]
+     */
     moveUp(opts) {
       for (const c of cursors()) {
         const { line, column } = storage.positionAt(c.point);
-        const target = line === 0 ? 0 : storage.offsetAt(line - 1, column);
+        const goal = c.goal ?? column;
+        const target = line === 0 ? 0 : storage.offsetAt(line - 1, goal);
         moveCursor(c, target, opts);
+        if (line > 0) c.goal = goal;
       }
       dedupeCursors();
       emit(null);
@@ -585,11 +612,13 @@ export function createBuffer(initialText = '', options = {}) {
     moveDown(opts) {
       for (const c of cursors()) {
         const { line, column } = storage.positionAt(c.point);
-        const target =
-          line >= storage.lineCount - 1
-            ? storage.length
-            : storage.offsetAt(line + 1, column);
+        const goal = c.goal ?? column;
+        const onLastLine = line >= storage.lineCount - 1;
+        const target = onLastLine
+          ? storage.length
+          : storage.offsetAt(line + 1, goal);
         moveCursor(c, target, opts);
+        if (!onLastLine) c.goal = goal;
       }
       dedupeCursors();
       emit(null);
@@ -665,6 +694,7 @@ export function createBuffer(initialText = '', options = {}) {
           shift += text.length;
         }
         c.mark = null;
+        clearGoal(c);
       }
       dedupeCursors();
       // The L1 change captured only the *last* low-level edit; for a
@@ -714,6 +744,7 @@ export function createBuffer(initialText = '', options = {}) {
           }
         }
         c.mark = null;
+        clearGoal(c);
       }
       dedupeCursors();
       emit(lastChange);
@@ -760,6 +791,7 @@ export function createBuffer(initialText = '', options = {}) {
           }
         }
         c.mark = null;
+        clearGoal(c);
       }
       dedupeCursors();
       emit(lastChange);
@@ -778,6 +810,7 @@ export function createBuffer(initialText = '', options = {}) {
       collapseInPlace();
       primary().point = 0;
       primary().mark = null;
+      clearGoal(primary());
       emit(lastChange);
     },
 
@@ -808,6 +841,7 @@ export function createBuffer(initialText = '', options = {}) {
       collapseInPlace();
       primary().point = clamp(lastChange.start + lastChange.inserted.length);
       primary().mark = null;
+      clearGoal(primary());
       emit(lastChange);
       return true;
     },
@@ -822,6 +856,7 @@ export function createBuffer(initialText = '', options = {}) {
       collapseInPlace();
       primary().point = clamp(lastChange.start + lastChange.inserted.length);
       primary().mark = null;
+      clearGoal(primary());
       emit(lastChange);
       return true;
     },

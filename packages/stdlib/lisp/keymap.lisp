@@ -53,6 +53,12 @@
    "j"     'jukebox
    "C-x"   'exchange-point-and-mark
    "C-e"   'eval-expression-before-point
+   ;; Emacs line/region editing under C-x: C-x C-t transpose-lines,
+   ;; C-x C-o delete-blank-lines, C-x C-u / C-x C-l case the region.
+   "C-t"   'transpose-lines
+   "C-o"   'delete-blank-lines
+   "C-u"   'upcase-region
+   "C-l"   'downcase-region
    ;; C-x r — bookmarks (set / jump; see bookmark-keymap above).
    "r"     bookmark-keymap
    ;; Panes (phase 3a of plans/PANES.md) — Emacs's C-x 2/3/0/1/o.
@@ -231,6 +237,44 @@
    "A-S-down"     'next-line-extending
    "M-m"          'back-to-indentation
    "M-v"          'scroll-down
+   ;; Transpose / case / whitespace — the Emacs M- editing family. As
+   ;; everywhere in this keymap, an Emacs meaning outranks the macOS
+   ;; one (M-a is already backward-sentence, not select-all): M-t
+   ;; transposes words, M-u/M-l/M-c case the word (or region), M-h
+   ;; marks the paragraph (shadowing the app menu's Hide accelerator —
+   ;; the menu item itself still works).
+   "M-t"          'transpose-words
+   "M-u"          'upcase-word
+   "M-l"          'downcase-word
+   "M-c"          'capitalize-word
+   "M-backslash"  'delete-horizontal-space
+   ;; M-SPC — macOS claims Cmd+Space for Spotlight at the OS level, so
+   ;; this only fires where that shortcut is off/remapped; the command
+   ;; is always reachable via M-x just-one-space.
+   "M-space"      'just-one-space
+   ;; Hyper+Space — the working route to just-one-space on Jason's
+   ;; keyboard stack: fn is Karabiner-mapped to hyper (C-M-A-S-), so
+   ;; fn+Space lands here; and tools/karabiner/godot-cmd-space.json
+   ;; rewrites Cmd+Space to this chord while Godot is frontmost, giving
+   ;; the real M-SPC key without losing Spotlight elsewhere.
+   "C-M-A-S-space" 'just-one-space
+   ;; M-^ (delete-indentation) — Shift+6, so the normalised key is M-S-6.
+   "M-S-6"        'delete-indentation
+   ;; M-{ / M-} (paragraph motion) — Shift+bracket.
+   "M-S-["        'backward-paragraph
+   "M-S-]"        'forward-paragraph
+   ;; M-@ (mark-word) — Shift+2.
+   "M-S-2"        'mark-word
+   "M-h"          'mark-paragraph
+   "C-S-backspace" 'kill-whole-line
+   ;; Typographic quotes on the Option brackets: bracket picks the
+   ;; side, Shift picks double (see editing.lisp). Claimed chords beat
+   ;; the unbound-A- compose fallthrough, so these override the macOS
+   ;; defaults (which put the DOUBLE quotes on the unshifted chords).
+   "A-["          'insert-single-open-quote
+   "A-]"          'insert-single-close-quote
+   "A-S-["        'insert-double-open-quote
+   "A-S-]"        'insert-double-close-quote
    "M-g"          'goto-line
    "M-r"          'replace-string
    "M-q"          'fill-paragraph

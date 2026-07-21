@@ -66,16 +66,20 @@ follow Emacs, so the two notations name the same commands.
 | Line | `↑` `↓` / `C-p` `C-n` |
 | Word | `M-f` `M-b` |
 | Sentence | `M-e` `M-a` |
+| Paragraph | `M-}` `M-{` (cmd(forward-paragraph) / cmd(backward-paragraph)) |
 | To line start / end | `Home` `End` / `C-a` `C-e` / `C-←` `C-→` |
 | To buffer start / end | `C-↑` `C-↓` / `M-<` `M->` |
 | To first non-blank | `M-m` (cmd(back-to-indentation)) |
 | By a screenful | `C-v` `M-v` |
 | To a line number | `M-g` (cmd(goto-line)) |
 
-A *word* is a run of word characters, decided by the buffer layer rather
-than guessed at; cmd(forward-word) moves to the end of the next one,
-cmd(backward-word) to the start of the previous. A sentence ends at `.`,
-`!`, or `?` followed by whitespace or the buffer's end.
+A *word* is a run of word characters — letters and digits in any script,
+plus underscore, so accented and non-Latin text moves naturally;
+cmd(forward-word) moves to the end of the next one, cmd(backward-word)
+to the start of the previous. A sentence ends at `.`, `!`, or `?`
+followed by whitespace or the buffer's end. A *paragraph* is a run of
+non-blank lines: cmd(forward-paragraph) (`M-}`) lands on the blank line
+that ends it, cmd(backward-paragraph) (`M-{`) on the one above it.
 cmd(back-to-indentation) (`M-m`) is the useful cousin of
 cmd(move-beginning-of-line): it lands on the first non-blank character of
 the line rather than the true start, which is usually where you want to
@@ -94,7 +98,14 @@ is active, so you can select and delete in one stroke.
 
 `Enter` (cmd(newline)) inserts a line break and copies the current
 line's leading indentation onto the new line, so you stay at the same
-indent as you type. `C-o` (cmd(open-line)) opens a blank line *after*
+indent as you type.
+
+Typographic quotes live on the Option brackets, laid out so the
+*bracket* picks the side and *Shift* picks double: `A-[` `A-]` insert
+`‘` `’` (cmd(insert-single-open-quote) / cmd(insert-single-close-quote)),
+and `A-S-[` `A-S-]` insert `“` `”` (cmd(insert-double-open-quote) /
+cmd(insert-double-close-quote)). This replaces the macOS Option-compose
+defaults, which put the double quotes on the unshifted chords. `C-o` (cmd(open-line)) opens a blank line *after*
 point without moving onto it — handy for making room below. `Tab`
 (cmd(insert-tab)) inserts indentation: by default two spaces, but a
 literal tab where the major mode or your settings call for one (a
@@ -104,17 +115,64 @@ A few commands rearrange rather than add or remove:
 
 | Action | Key | Command |
 |--------|-----|---------|
-| Transpose the two characters before point | `C-t` | cmd(transpose-chars) |
+| Transpose the characters around point | `C-t` | cmd(transpose-chars) |
+| Transpose the words around point | `M-t` | cmd(transpose-words) |
+| Transpose this line with the one above | `C-x C-t` | cmd(transpose-lines) |
 | Re-wrap the paragraph to the fill column | `M-q` | cmd(fill-paragraph) |
 | Comment or uncomment the current line | `C-x ;` | cmd(comment-line) |
 
-cmd(transpose-chars) (`C-t`) swaps the two characters before the cursor
-— the standard fix for a transposed pair. cmd(fill-paragraph) (`M-q`)
-re-wraps the paragraph around point to the fill column (72), keeping the
-paragraph's indentation; it does nothing on a blank line. cmd(comment-line)
+The transpose family follows Emacs's drag model: the thing before point
+is pulled forward past the thing after it, and point ends up after both,
+so *repeated presses keep dragging it along*. cmd(transpose-chars)
+(`C-t`) mid-line drags the previous character rightward — the standard
+fix for a transposed pair; at the end of a line it swaps the two
+characters before point instead. cmd(transpose-words) (`M-t`) swaps the
+word at or after point with the one before it, punctuation between them
+staying put; cmd(transpose-lines) (`C-x C-t`) exchanges the current line
+with the one above. cmd(fill-paragraph) (`M-q`) re-wraps the paragraph
+around point to the fill column (72), keeping the paragraph's
+indentation; it does nothing on a blank line. cmd(comment-line)
 (`C-x ;`) toggles: it adds the comment prefix of the buffer's major mode
 if the line lacks it, and removes it if present — so the same key
 comments and uncomments.
+
+### Changing case
+
+| Action | Key | Command |
+|--------|-----|---------|
+| Uppercase to the end of the word | `M-u` | cmd(upcase-word) |
+| Lowercase to the end of the word | `M-l` | cmd(downcase-word) |
+| Capitalize to the end of the word | `M-c` | cmd(capitalize-word) |
+| Uppercase the region | `C-x C-u` | cmd(upcase-region) |
+| Lowercase the region | `C-x C-l` | cmd(downcase-region) |
+
+The word commands convert from point to the end of the word and leave
+the cursor there, so a run of `M-u` marches down the line word by word.
+With an active region they convert the region instead (Emacs's *dwim*
+behaviour), which usually saves reaching for the region commands at all.
+
+### Tidying whitespace
+
+| Action | Key | Command |
+|--------|-----|---------|
+| Delete the spaces and tabs around point | `M-\` | cmd(delete-horizontal-space) |
+| Collapse them to a single space | `M-SPC` | cmd(just-one-space) |
+| Join this line onto the previous one | `M-^` | cmd(delete-indentation) |
+| Collapse surrounding blank lines to one | `C-x C-o` | cmd(delete-blank-lines) |
+
+cmd(just-one-space) (`M-SPC`) inserts a space even when there is none —
+it *normalises* to exactly one. macOS claims `Cmd+Space` for Spotlight
+before any app sees it, so the command is *also* bound to Hyper+Space
+(`C-M-A-S-space`): a Karabiner rule shipped in
+`tools/karabiner/godot-cmd-space.json` rewrites `Cmd+Space` to that
+chord while the editor is frontmost, giving the real `M-SPC` key here
+without losing Spotlight anywhere else (and a Karabiner *hyper* key —
+fn, say — reaches it directly). cmd(delete-indentation) (`M-^`) is the
+upward twin of cmd(join-line): it joins the *current* line onto the end
+of the previous one. cmd(delete-blank-lines) (`C-x C-o`) on a blank line
+collapses the whole run of blank lines around it to one; on the sole
+blank line it deletes it; on a non-blank line it deletes the blank lines
+that follow.
 
 jmacs also carries a small set of whole-line operations:
 
@@ -145,6 +203,11 @@ whatever size that turns out to be.
 with multiple cursors, where it leaves the cursor set intact but turns
 each selection into a bare caret — covered in the Productivity chapter.
 
+Two more structural selectors: `M-@` (cmd(mark-word)) marks from point
+to the end of the next word, and each further press extends the region
+by another word; `M-h` (cmd(mark-paragraph)) selects the paragraph
+around point.
+
 ### The kill ring — cut, copy, paste
 
 jmacs does not lean on the system clipboard as its primary model.
@@ -161,6 +224,8 @@ last thing you cut, which is what makes paste-and-cycle possible.
 | Kill the next word | `M-d` | cmd(kill-word) |
 | Kill the previous word | `M-Backspace` | cmd(backward-kill-word) |
 | Kill the sentence | `M-k` | cmd(kill-sentence) |
+| Kill the whole line, newline included | `C-S-Backspace` | cmd(kill-whole-line) |
+| Kill through the next occurrence of a character | — | cmd(zap-to-char) |
 | Yank (paste) the most recent kill | `C-y` | cmd(yank) |
 | Cycle to an earlier kill | `M-y` | cmd(yank-pop) |
 
@@ -168,6 +233,13 @@ cmd(kill-region) (`C-w`) and cmd(copy-region) (`M-w`) act on the active
 region and do nothing without one. cmd(kill-line) (`C-k`) kills from
 point to the end of the line; pressed at a line's end, it kills the
 newline instead, so a run of `C-k` pulls lines up one at a time.
+
+Consecutive kills *accumulate*: a second kill with no other command in
+between grows the same kill-ring entry rather than starting a new one
+(backward kills prepend), so `C-k C-k C-k … C-y` reinserts everything
+you just killed as one block. Any other command — even a cursor motion
+— starts the next kill fresh. cmd(zap-to-char) (via `M-x`) reads one
+character and kills from point through its next occurrence.
 
 To paste, press `C-y` (cmd(yank)): it inserts the most recent kill at
 point. If the kill you want is not the latest, follow `C-y` with `M-y`

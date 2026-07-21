@@ -28,6 +28,43 @@
       ""
       (nth *kill-ring* (mod index (kill-ring-length)))))
 
+;; --- kill accumulation -------------------------------------------------
+;;
+;; Consecutive kill commands grow ONE kill-ring entry rather than each
+;; pushing their own (Emacs's kill accumulation): C-k C-k C-y reinserts
+;; both lines. "Consecutive" is judged by `*last-command*` — any other
+;; command in between breaks the run. A forward kill appends its text to
+;; the entry; a backward kill prepends.
+
+(define *kill-command-names*
+  '(kill-region kill-line kill-word kill-sentence backward-kill-word
+    kill-whole-line zap-to-char))
+
+(define (-kill-continues?)
+  "True when the previous command was also a kill, so this kill joins
+   the same kill-ring entry."
+  (and (member *last-command* *kill-command-names*)
+       (not (nil? *kill-ring*))))
+
+(define (-kill-ring-replace-top! text)
+  "Replace the most recent kill with TEXT, mirroring the clipboard."
+  (set! *kill-ring* (cons text (cdr *kill-ring*)))
+  (clipboard-set-text! text))
+
+(define (kill-add-forward! text)
+  "Record TEXT killed *forward*: appended to the previous kill when the
+   last command was also a kill, else pushed as a fresh entry."
+  (if (-kill-continues?)
+      (-kill-ring-replace-top! (str (kill-ring-top) text))
+      (kill-ring-add! text)))
+
+(define (kill-add-backward! text)
+  "Record TEXT killed *backward*: prepended to the previous kill when
+   the last command was also a kill, else pushed as a fresh entry."
+  (if (-kill-continues?)
+      (-kill-ring-replace-top! (str text (kill-ring-top)))
+      (kill-ring-add! text)))
+
 ;; --- yank state --------------------------------------------------------
 ;;
 ;; `yank` records where it inserted text so a following `yank-pop` can
@@ -56,18 +93,26 @@
 (defcommand kill-region ()
   "Cut the selected text to the kill ring."
   (when (region-active?)
-    (kill-ring-add! (region-text))
+    (kill-add-forward! (region-text))
     (delete-backward!)))
 
 (defcommand kill-line ()
   "Kill from the cursor to the end of the line; at a line's end, kill
-   the newline."
+   the newline. Consecutive kills grow one kill-ring entry."
   (let ((from (point))
         (to (line-end)))
     (when (> (buffer-length) from)
       (let ((end (if (< from to) to (+ from 1))))
-        (kill-ring-add! (buffer-substring from end))
+        (kill-add-forward! (buffer-substring from end))
         (delete-region! from end)))))
+
+(defcommand kill-whole-line ()
+  "Kill the entire current line, its newline included (C-S-backspace)."
+  (let ((start (line-start))
+        (end (min (+ (line-end) 1) (buffer-length))))
+    (when (< start end)
+      (kill-add-forward! (buffer-substring start end))
+      (delete-region! start end))))
 
 (define (-yank-sync-clipboard!)
   "Pull the system clipboard onto the kill ring when it holds non-empty
@@ -83,33 +128,54 @@
   "Insert the most recent kill at the cursor. First syncs in the system
    clipboard (so C-y also pastes text copied elsewhere), then inserts the
    ring's top. Records the insertion so a following `yank-pop` (M-y) can
-   cycle through the kill ring."
+   cycle through the kill ring. The recorded start is measured *after*
+   the insert — over an active selection the text replaces it and lands
+   at the selection start, not at point."
   (-yank-sync-clipboard!)
-  (let ((start (point))
-        (text (kill-ring-top)))
+  (let ((text (kill-ring-top)))
     (insert! text)
-    (record-yank! start text 0)))
+    (record-yank! (- (point) (string-length text)) text 0)))
 
 (defcommand kill-word ()
-  "Kill forward to the end of the next word."
+  "Kill forward to the end of the next word. Consecutive kills grow one
+   kill-ring entry."
   (let ((from (point))
         (to (word-forward-offset)))
     (when (> to from)
-      (kill-ring-add! (buffer-substring from to))
+      (kill-add-forward! (buffer-substring from to))
       (delete-region! from to))))
 
 (defcommand kill-sentence ()
-  "Kill forward to the end of the sentence."
+  "Kill forward to the end of the sentence. Consecutive kills grow one
+   kill-ring entry."
   (let ((from (point))
         (to (sentence-forward-offset)))
     (when (> to from)
-      (kill-ring-add! (buffer-substring from to))
+      (kill-add-forward! (buffer-substring from to))
       (delete-region! from to))))
 
 (defcommand backward-kill-word ()
-  "Kill backward to the start of the previous word."
+  "Kill backward to the start of the previous word. Consecutive kills
+   grow one kill-ring entry (a backward kill prepends its text)."
   (let ((from (point))
         (to (word-backward-offset)))
     (when (< to from)
-      (kill-ring-add! (buffer-substring to from))
+      (kill-add-backward! (buffer-substring to from))
       (delete-region! to from))))
+
+(defcommand zap-to-char ()
+  "Read a character, then kill from the cursor through the next
+   occurrence of it. Unbound; reach it via M-x."
+  (show-status! "Zap to char: ")
+  (read-next-key
+    (lambda (key)
+      (clear-status!)
+      (if (and (string? key) (= (string-length key) 1))
+          (let ((idx (string-index-of
+                       (buffer-substring (point) (buffer-length)) key 0)))
+            (if (< idx 0)
+                (show-status! (str "zap-to-char: no \"" key "\" found"))
+                (let ((end (+ (point) idx 1)))
+                  (kill-add-forward! (buffer-substring (point) end))
+                  (delete-region! (point) end))))
+          (show-status! "zap-to-char: quit")))))

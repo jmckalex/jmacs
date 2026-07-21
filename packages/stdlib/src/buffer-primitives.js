@@ -81,8 +81,10 @@ function asLiveMarker(name, value) {
   return m;
 }
 
-/** Whether a character is part of a word. */
-const isWordChar = (ch) => /\w/.test(ch);
+/** Whether a character is part of a word. Unicode-aware — any letter
+ *  or digit in any script counts (plus underscore), so word motion
+ *  does not stop dead at an accented letter ("café", "naïve"). */
+const isWordChar = (ch) => /[\p{L}\p{N}_]/u.test(ch);
 
 /** The offset of the next word boundary at or after `from`. */
 function forwardWord(text, from) {

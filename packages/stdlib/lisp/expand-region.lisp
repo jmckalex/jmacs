@@ -38,15 +38,11 @@
 ;; pair, or nil when no such structural unit applies at the offset. They
 ;; do not touch the buffer.
 
-;; Word characters: letters, digits and underscore. We probe membership
-;; with `string-contains?` since the Lisp has no character predicates.
-(define *expand-region-word-chars*
-  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
-
 (define (-word-char? ch)
-  "True when CH (a one-character string) is part of a word."
-  (and (= (string-length ch) 1)
-       (string-contains? *expand-region-word-chars* ch)))
+  "True when CH (a one-character string) is part of a word — a letter
+   or digit in any script, or underscore (the editor-wide definition;
+   see the `char-word?` primitive)."
+  (and (= (string-length ch) 1) (char-word? ch)))
 
 (define (-char-at text pos)
   "The one-character string at POS in TEXT, or the empty string when

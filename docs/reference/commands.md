@@ -118,6 +118,23 @@ ends at `.`, `!` or `?` followed by whitespace or the buffer's end.
 Move backward to the start of the sentence. Bound to `M-a`.
 :::
 
+:::function{name="forward-paragraph" path="reference/commands/forward-paragraph.html"}
+#### `forward-paragraph`
+`(forward-paragraph)`
+
+Move forward to the end of the paragraph — the start of the blank line
+that ends it, or the end of the buffer. Bound to `M-}`. A paragraph is
+a run of non-blank lines. Extends an active region.
+:::
+
+:::function{name="backward-paragraph" path="reference/commands/backward-paragraph.html"}
+#### `backward-paragraph`
+`(backward-paragraph)`
+
+Move backward to the start of the paragraph — the blank line above it,
+or the start of the buffer. Bound to `M-{`. Extends an active region.
+:::
+
 :::function{name="back-to-indentation" path="reference/commands/back-to-indentation.html"}
 #### `back-to-indentation`
 `(back-to-indentation)`
@@ -233,6 +250,23 @@ Select the entire buffer — move point to the end and set the mark at
 the start. Bound to `C-x h`. Defined in `editing.lisp`.
 :::
 
+:::function{name="mark-word" path="reference/commands/mark-word.html"}
+#### `mark-word`
+`(mark-word)`
+
+Set the mark at the end of the next word, selecting it; with a forward
+region already active, extend the region by another word — repeated
+presses grab word after word. Bound to `M-@`. Defined in `editing.lisp`.
+:::
+
+:::function{name="mark-paragraph" path="reference/commands/mark-paragraph.html"}
+#### `mark-paragraph`
+`(mark-paragraph)`
+
+Select the paragraph around the cursor: point at its start, mark at its
+end. Bound to `M-h`. Defined in `editing.lisp`.
+:::
+
 :::function{name="exchange-point-and-mark" path="reference/commands/exchange-point-and-mark.html"}
 #### `exchange-point-and-mark`
 `(exchange-point-and-mark)`
@@ -275,8 +309,138 @@ active. Bound to `Delete` and `C-d`.
 #### `transpose-chars`
 `(transpose-chars)`
 
-Swap the two characters before the cursor. Bound to `C-t`. Does nothing
-when the cursor is within the first two characters of the buffer.
+Interchange the characters around the cursor, moving forward — the
+character before point is dragged past the one after it, so repeated
+presses drag it rightward. At the end of a line (or the buffer) the two
+characters before the cursor are exchanged instead and the cursor stays
+put. Bound to `C-t`. Does nothing at the start of the buffer.
+:::
+
+:::function{name="transpose-words" path="reference/commands/transpose-words.html"}
+#### `transpose-words`
+`(transpose-words)`
+
+Interchange the word at or after the cursor with the word before it,
+leaving the cursor after both — repeated presses drag a word rightward.
+Punctuation and whitespace between the words stay put. Bound to `M-t`.
+Does nothing without two words to transpose.
+:::
+
+:::function{name="transpose-lines" path="reference/commands/transpose-lines.html"}
+#### `transpose-lines`
+`(transpose-lines)`
+
+Exchange the current line with the one above, leaving the cursor after
+both — repeated presses drag a line downward. Bound to `C-x C-t`. Does
+nothing on the first line. Defined in `line-ops.lisp`.
+:::
+
+:::function{name="insert-single-open-quote" path="reference/commands/insert-single-open-quote.html"}
+#### `insert-single-open-quote`
+`(insert-single-open-quote)`
+
+Insert a left single curly quote `‘`. Bound to `A-[`. The quote family
+puts the *side* on the bracket and *double* on Shift — the editor's own
+layout, replacing the macOS Option-compose defaults. Electric
+behaviours (auto-fill) run as for a typed character.
+:::
+
+:::function{name="insert-single-close-quote" path="reference/commands/insert-single-close-quote.html"}
+#### `insert-single-close-quote`
+`(insert-single-close-quote)`
+
+Insert a right single curly quote `’`. Bound to `A-]`.
+:::
+
+:::function{name="insert-double-open-quote" path="reference/commands/insert-double-open-quote.html"}
+#### `insert-double-open-quote`
+`(insert-double-open-quote)`
+
+Insert a left double curly quote `“`. Bound to `A-S-[`.
+:::
+
+:::function{name="insert-double-close-quote" path="reference/commands/insert-double-close-quote.html"}
+#### `insert-double-close-quote`
+`(insert-double-close-quote)`
+
+Insert a right double curly quote `”`. Bound to `A-S-]`.
+:::
+
+:::function{name="upcase-word" path="reference/commands/upcase-word.html"}
+#### `upcase-word`
+`(upcase-word)`
+
+Uppercase from the cursor to the end of the word and move there — or,
+with an active region, uppercase the region (dwim). Bound to `M-u`.
+:::
+
+:::function{name="downcase-word" path="reference/commands/downcase-word.html"}
+#### `downcase-word`
+`(downcase-word)`
+
+Lowercase from the cursor to the end of the word and move there — or,
+with an active region, lowercase the region (dwim). Bound to `M-l`.
+:::
+
+:::function{name="capitalize-word" path="reference/commands/capitalize-word.html"}
+#### `capitalize-word`
+`(capitalize-word)`
+
+Capitalize from the cursor to the end of the word (first letter up, the
+rest down) and move there — or, with an active region, capitalize every
+word in it (dwim). Bound to `M-c`.
+:::
+
+:::function{name="upcase-region" path="reference/commands/upcase-region.html"}
+#### `upcase-region`
+`(upcase-region start end)`
+
+Uppercase the active region. Bound to `C-x C-u`.
+:::
+
+:::function{name="downcase-region" path="reference/commands/downcase-region.html"}
+#### `downcase-region`
+`(downcase-region start end)`
+
+Lowercase the active region. Bound to `C-x C-l`.
+:::
+
+:::function{name="delete-horizontal-space" path="reference/commands/delete-horizontal-space.html"}
+#### `delete-horizontal-space`
+`(delete-horizontal-space)`
+
+Delete all spaces and tabs around the cursor, bounded by the current
+line. Bound to `M-\`.
+:::
+
+:::function{name="just-one-space" path="reference/commands/just-one-space.html"}
+#### `just-one-space`
+`(just-one-space)`
+
+Replace the spaces and tabs around the cursor with a single space,
+inserting one when there is none. Bound to `M-SPC` and to Hyper+Space
+(`C-M-A-S-space`). macOS claims `Cmd+Space` for Spotlight before apps
+see it; the Karabiner rule in `tools/karabiner/godot-cmd-space.json`
+rewrites `Cmd+Space` to Hyper+Space while the editor is frontmost, so
+the natural key works here and Spotlight survives everywhere else.
+:::
+
+:::function{name="delete-indentation" path="reference/commands/delete-indentation.html"}
+#### `delete-indentation`
+`(delete-indentation)`
+
+Join the current line onto the end of the previous one, collapsing the
+newline and surrounding whitespace to a single space — the upward twin
+of cmd(join-line). Bound to `M-^`.
+:::
+
+:::function{name="delete-blank-lines" path="reference/commands/delete-blank-lines.html"}
+#### `delete-blank-lines`
+`(delete-blank-lines)`
+
+On a blank line, delete all surrounding blank lines, leaving one; on an
+isolated blank line, delete it; on a non-blank line, delete the blank
+lines that follow. Bound to `C-x C-o`.
 :::
 
 :::function{name="newline" path="reference/commands/newline.html"}
@@ -467,7 +631,33 @@ Kill forward to the end of the sentence. Bound to `M-k`.
 `(backward-kill-word)`
 
 Kill backward to the start of the previous word. Bound to `M-Backspace`.
+As a backward kill, consecutive kills *prepend* to the accumulated
+entry.
 :::
+
+:::function{name="kill-whole-line" path="reference/commands/kill-whole-line.html"}
+#### `kill-whole-line`
+`(kill-whole-line)`
+
+Kill the entire current line, its newline included. Bound to
+`C-S-Backspace`. Repeated presses accumulate the lines into one
+kill-ring entry.
+:::
+
+:::function{name="zap-to-char" path="reference/commands/zap-to-char.html"}
+#### `zap-to-char`
+`(zap-to-char)`
+
+Read one character from the keyboard, then kill from the cursor through
+its next occurrence. Unbound (Emacs's `M-z` is undo here); reach it via
+`M-x`.
+:::
+
+Consecutive kill commands *accumulate*: a kill immediately following
+another kill grows the same kill-ring entry (forward kills append,
+backward kills prepend) rather than pushing a new one, so
+`C-k C-k … C-y` reinserts everything as one block. Any other command
+between them starts the next kill fresh.
 
 :::function{name="yank" path="reference/commands/yank.html"}
 #### `yank`

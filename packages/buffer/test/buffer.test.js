@@ -179,6 +179,53 @@ test('moveDown keeps the column across lines', () => {
   assert.deepEqual(buf.positionAt(buf.point), { line: 0, column: 2 });
 });
 
+test('vertical motion remembers the goal column through short lines', () => {
+  const buf = createBuffer('a long first line\nab\nanother long line');
+  buf.moveTo(10); // line 0, column 10
+  buf.moveDown(); // 'ab' is short — clamps to its end
+  assert.deepEqual(buf.positionAt(buf.point), { line: 1, column: 2 });
+  buf.moveDown(); // ...but the goal column survives
+  assert.deepEqual(buf.positionAt(buf.point), { line: 2, column: 10 });
+  buf.moveUp();
+  buf.moveUp();
+  assert.deepEqual(buf.positionAt(buf.point), { line: 0, column: 10 });
+});
+
+test('a horizontal move breaks the goal-column run', () => {
+  const buf = createBuffer('a long first line\nab\nanother long line');
+  buf.moveTo(10);
+  buf.moveDown(); // clamped to column 2 on 'ab'
+  buf.moveLeft(); // column 1 — and the goal is forgotten
+  buf.moveDown();
+  assert.deepEqual(buf.positionAt(buf.point), { line: 2, column: 1 });
+});
+
+test('an edit breaks the goal-column run', () => {
+  const buf = createBuffer('a long first line\nab\nanother long line');
+  buf.moveTo(10);
+  buf.moveDown();
+  buf.insert('x'); // now at column 3 on 'abx' — goal forgotten
+  buf.moveDown();
+  assert.deepEqual(buf.positionAt(buf.point), { line: 2, column: 3 });
+});
+
+test('the goal column resets at the buffer edges', () => {
+  const buf = createBuffer('long line here\nab');
+  buf.moveTo(10);
+  buf.moveDown(); // clamps on 'ab' (last line keeps the goal alive)
+  buf.moveDown(); // last line: moves to the buffer end, drops the goal
+  assert.equal(buf.point, buf.length);
+  buf.moveUp();
+  assert.deepEqual(buf.positionAt(buf.point), { line: 0, column: 2 });
+});
+
+test('selections snapshots never leak the goal column', () => {
+  const buf = createBuffer('abcd\nef\nijkl');
+  buf.moveTo(3);
+  buf.moveDown();
+  assert.deepEqual(Object.keys(buf.selections[0]).sort(), ['mark', 'point']);
+});
+
 test('moveLineStart and moveLineEnd reach the line edges', () => {
   const buf = createBuffer('first\nsecond line\nthird');
   buf.moveTo(9); // somewhere in 'second line'

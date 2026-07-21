@@ -1,0 +1,40 @@
+{
+  "title": "Godot: Cmd+Space is M-SPC (just-one-space)",
+  "rules": [
+    {
+      "description": "While Godot is frontmost, Cmd+Space becomes Hyper+Space (the editor binds C-M-A-S-space to just-one-space); Spotlight keeps Cmd+Space in every other app",
+      "manipulators": [
+        {
+          "type": "basic",
+          "from": {
+            "key_code": "spacebar",
+            "modifiers": {
+              "mandatory": ["command"],
+              "optional": ["caps_lock"]
+            }
+          },
+          "to": [
+            {
+              "key_code": "spacebar",
+              "modifiers": [
+                "left_control",
+                "left_command",
+                "left_option",
+                "left_shift"
+              ]
+            }
+          ],
+          "conditions": [
+            {
+              "type": "frontmost_application_if",
+              "bundle_identifiers": [
+                "^com\\.godot\\.editor$",
+                "^com\\.github\\.Electron$"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
