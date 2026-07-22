@@ -72,12 +72,26 @@ export function foldRanges(text, captures) {
       lineCount - 1,
       offsetToLine(lineStarts, cap.end)
     );
-    // `end` is EXCLUSIVE. When it lands exactly at a line start, the capture
-    // covers nothing on that line, so the last folded line is the one before.
-    // A tree-sitter markdown `section` ends precisely where the next
-    // section's heading begins (sections tile the document), so without this
-    // step folding `# one` would swallow the `# two` heading line too.
-    if (endLine > startLine && cap.end === lineStarts[endLine]) endLine -= 1;
+    // `end` is EXCLUSIVE. When it lands at a line start — or anywhere inside
+    // that line's leading whitespace — of a line that carries real content,
+    // the capture covers nothing visible there, so the last folded line is
+    // the one before. This is how tree-sitter markdown `section`s tile: each
+    // ends exactly where the next section's heading begins, and a heading may
+    // sit after up to three spaces of indent (in which case the boundary can
+    // land just past that indent, not at column 0). Without this step,
+    // folding `# one` (or `## one`) swallows the next heading's line. A
+    // fully blank end line stays folded — only a line whose content belongs
+    // to the NEXT construct is released.
+    if (endLine > startLine) {
+      const endLS = lineStarts[endLine];
+      const endLE = endLine + 1 < lineCount ? lineStarts[endLine + 1] : text.length;
+      if (
+        text.slice(endLS, cap.end).trim() === '' &&
+        text.slice(cap.end, endLE).trim() !== ''
+      ) {
+        endLine -= 1;
+      }
+    }
     if (endLine <= startLine) continue;
     // Drop a fold whose HEADER line is blank. A tree-sitter `section` can
     // begin on the empty line after a metadata/frontmatter header (the first

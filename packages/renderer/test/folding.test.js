@@ -482,3 +482,32 @@ test('an end past a line start (even by one char) still folds that line', () => 
     { startLine: 0, endLine: 2 },
   ]);
 });
+
+test('an end inside the next heading\'s leading indent does not fold that line', () => {
+  // Markdown allows up to three leading spaces on a heading. After a list,
+  // tree-sitter markdown can put the section boundary just PAST that indent
+  // (the previous section's end covers the space, the next section starts at
+  // the '#'). The indented heading's line must not be folded away.
+  // Lines: 0:'## one' 1:'- item' 2:'' 3:' ## two' 4:'body'
+  const text = '## one\n- item\n\n ## two\nbody';
+  const boundary = text.indexOf(' ## two') + 1; // end covers the leading space
+  const captures = [
+    { start: 0, end: boundary },
+    { start: boundary, end: text.length },
+  ];
+  assert.deepEqual(foldRanges(text, captures), [
+    { startLine: 0, endLine: 2 }, // stops before the indented heading
+    { startLine: 3, endLine: 4 },
+  ]);
+});
+
+test('an end at the start of a fully blank line keeps that line folded', () => {
+  // Only a line whose content belongs to the next construct is released;
+  // a trailing blank line inside the capture still folds away.
+  // Lines: 0:'# one' 1:'text' 2:'' 3:'tail'
+  const text = '# one\ntext\n\ntail';
+  const captures = [{ start: 0, end: text.indexOf('\n\n') + 1 }]; // end AT the blank line's start
+  assert.deepEqual(foldRanges(text, captures), [
+    { startLine: 0, endLine: 2 }, // the blank line stays inside the fold
+  ]);
+});
