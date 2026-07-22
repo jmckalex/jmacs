@@ -133,7 +133,9 @@ is active, so you can select and delete in one stroke.
 
 `Enter` (cmd(newline)) — `C-j` is a synonym — inserts a line break and
 copies the current line's leading indentation onto the new line, so you
-stay at the same indent as you type. `C-o` (cmd(open-line)) opens a
+stay at the same indent as you type. (Only the indent *before* the
+cursor is copied: a break at the very start of an indented line opens a
+clean empty line above rather than duplicating the indent.) `C-o` (cmd(open-line)) opens a
 blank line *after* point without moving onto it — handy for making room
 below.
 

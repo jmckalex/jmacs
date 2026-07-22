@@ -496,3 +496,29 @@ test('the new commands are bound to their Emacs keys', async () => {
     );
   }
 });
+
+// --- newline indent copy (the staircase bug) ----------------------------
+
+test('newline at the start of an indented line does not duplicate the indent', async () => {
+  const { buffer, run } = await editor('first\n second');
+  run('(goto! 6)'); // start of ' second'
+  run("(run-command 'newline)");
+  assert.equal(buffer.text, 'first\n\n second');
+  run("(run-command 'newline)");
+  assert.equal(buffer.text, 'first\n\n\n second'); // no space staircase
+});
+
+test('newline at the end of an indented line still auto-indents', async () => {
+  const { buffer, run } = await editor('  indented');
+  run('(goto! 10)');
+  run("(run-command 'newline)");
+  assert.equal(buffer.text, '  indented\n  ');
+  assert.equal(buffer.point, 13);
+});
+
+test('newline inside the leading whitespace preserves the total indent', async () => {
+  const { buffer, run } = await editor('    foo');
+  run('(goto! 2)');
+  run("(run-command 'newline)");
+  assert.equal(buffer.text, '  \n    foo'); // 2 kept above, 2+2 below
+});

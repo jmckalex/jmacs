@@ -122,8 +122,16 @@
   (delete-forward!))
 
 (defcommand newline ()
-  "Insert a line break, copying the current line's indentation."
-  (insert! (str "\n" (line-indent))))
+  "Insert a line break, copying the current line's indentation — but
+   only as much of it as lies BEFORE the cursor. A break at (or inside)
+   the leading whitespace leaves the remainder to travel down with the
+   text, so the total indent is preserved rather than duplicated —
+   repeated Enter at the start of an indented line no longer grows a
+   staircase of spaces."
+  (let* ((indent (line-indent))
+         (col (- (point) (line-start)))
+         (keep (min (string-length indent) col)))
+    (insert! (str "\n" (substring indent 0 keep)))))
 
 (defcommand open-line ()
   "Insert a newline after the cursor, leaving the cursor before it."

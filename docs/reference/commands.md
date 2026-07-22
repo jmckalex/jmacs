@@ -545,7 +545,10 @@ lines that follow. Bound to `C-x C-o`.
 `(newline)`
 
 Insert a line break, copying the current line's leading indentation
-onto the new line. Bound to `Enter` and `C-j`.
+onto the new line — but only as much of it as lies *before* the
+cursor: a break at (or inside) the leading whitespace lets the
+remainder travel down with the text, so the total indent is preserved
+rather than duplicated. Bound to `Enter` and `C-j`.
 :::
 
 :::function{name="open-line" path="reference/commands/open-line.html"}
