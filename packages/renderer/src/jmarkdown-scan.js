@@ -29,7 +29,9 @@
  *   - embedded JavaScript chains `ident(...).prop(...)` → javascript
  *     injection (the real grammar, in place of Sublime's hand-rolled
  *     tokenizer)
- *   - `<script>` blocks → html injection
+ *   - `<script>` / `<style>` blocks → html injection (raw-text close);
+ *     block-level HTML (known block tags + dashed custom elements) →
+ *     html injection through the first blank line
  *
  * Plus three small dialect constructs Sublime leaves plain, approved
  * in the feature plan: `\cite{…}` family commands, `[^label:`/`[fn:`
@@ -74,6 +76,19 @@ import { scanMermaid } from './mermaid-scan.js';
 /** LaTeX-bodied `@begin(…)` environment names (the Sublime list). */
 const LATEX_ENVIRONMENTS =
   /^(?:TeX|equation\*?|align\*?|gather\*?|multline\*?|tikzpicture|TiKZ|tikz)$/;
+
+/** Block-level HTML tag names (CommonMark's type-6 list plus the media
+ *  and embedded-content elements), case-insensitive. A line opening one
+ *  of these — or any dashed custom element — starts an HTML block. */
+const HTML_BLOCK_TAGS = new RegExp(
+  '^(?:address|article|aside|audio|blockquote|body|canvas|caption|center|col|' +
+  'colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|' +
+  'form|frame|frameset|h[1-6]|head|header|hr|html|iframe|img|legend|li|link|' +
+  'main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|picture|pre|' +
+  'section|source|summary|svg|table|tbody|td|template|tfoot|th|thead|title|' +
+  'tr|track|ul|video)$',
+  'i'
+);
 
 /**
  * Scan a JMarkdown document.
@@ -420,6 +435,47 @@ function scanBlocks(ctx, from) {
       });
       blank(ctx.buf, ls, lineEnd(ctx, last));
       k = last + 1;
+      continue;
+    }
+
+    // --- <style> blocks → the html grammar (css nests via html.js) ---
+    // Raw-text semantics like <script>: the block runs to the closing
+    // tag regardless of blank lines. tree-sitter-html injects the body
+    // into css, so the sheet highlights properly — and blanking stops
+    // the inline pass reading `div.center` as an expression chain.
+    if (/^\s{0,3}<style\b/.test(line)) {
+      let c = k;
+      while (c < ctx.lineCount && !/<\/style>/.test(lineAt(ctx, c))) c += 1;
+      const last = Math.min(c, ctx.lineCount - 1);
+      ctx.out.injections.push({
+        start: ls,
+        end: lineEnd(ctx, last),
+        language: 'html',
+      });
+      blank(ctx.buf, ls, lineEnd(ctx, last));
+      k = last + 1;
+      continue;
+    }
+
+    // --- block-level HTML → the html grammar --------------------------
+    // A line opening (or closing) a KNOWN block-level tag — or a custom
+    // element (any dashed name, e.g. <dissertation-feedback>) — at up to
+    // three spaces of indent starts an HTML block, CommonMark-style: it
+    // runs to the first blank line. The whole run is injected into the
+    // html grammar and blanked. Inline HTML *within* a prose paragraph
+    // is deliberately not consumed here — the inline grammar injects
+    // each html_tag on its own (see languages/jmarkdown-inline.js).
+    if ((m = /^\s{0,3}<\/?([A-Za-z][A-Za-z0-9-]*)(?=[\s/>]|$)/.exec(line)) &&
+        (HTML_BLOCK_TAGS.test(m[1]) || m[1].includes('-'))) {
+      let c = k;
+      while (c + 1 < ctx.lineCount && lineAt(ctx, c + 1).trim() !== '') c += 1;
+      ctx.out.injections.push({
+        start: ls,
+        end: lineEnd(ctx, c),
+        language: 'html',
+      });
+      blank(ctx.buf, ls, lineEnd(ctx, c));
+      k = c + 1;
       continue;
     }
 

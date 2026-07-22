@@ -15,7 +15,8 @@
  *     and injects latex into math).
  *   - `injectionProvider` adds the scanner's regions: LaTeX into
  *     `:::TiKZ` and `@begin(TeX|equation|…)` bodies, javascript into
- *     embedded expression chains, html into `<script>` blocks, the
+ *     embedded expression chains, html into `<script>`/`<style>` and
+ *     block-level HTML runs (tree-sitter-html nests css/js bodies), the
  *     header's `Extension`/`Custom element` bodies, and a `@name…{…}`
  *     directive's attribute list (wrapped as `<x … />` so tree-sitter-
  *     html captures the attributes). Provider injections are appended

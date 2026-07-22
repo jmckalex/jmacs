@@ -39,10 +39,18 @@ const QUERY = `
   (hard_line_break) @constant
 `;
 
+// Inline HTML: inject the html grammar over each raw `html_tag` node
+// so tag names, attributes and values highlight in prose (mirrors
+// languages/jmarkdown-inline.js).
+const INJECTION_QUERY = `
+  ((html_tag) @injection.content (#set! injection.language "html"))
+`;
+
 registerLanguage({
   tag: 'markdown_inline',
   grammar: 'tree-sitter-markdown-inline.wasm',
   query: QUERY,
   suffixes: [],
+  injectionQuery: INJECTION_QUERY,
   injectionProvider: markdownMathInjections,
 });
