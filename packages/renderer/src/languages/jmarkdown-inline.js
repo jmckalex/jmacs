@@ -38,10 +38,19 @@ const QUERY = `
   (hard_line_break) @constant
 `;
 
+// Inline HTML: each raw tag in prose (`… <span class="x">…</span> …`)
+// is its own `html_tag` node; inject the html grammar over it so tag
+// names, attributes and values highlight (tree-sitter-html parses a
+// lone open or close tag as a fragment without complaint).
+const INJECTION_QUERY = `
+  ((html_tag) @injection.content (#set! injection.language "html"))
+`;
+
 registerLanguage({
   tag: 'jmarkdown_inline',
   grammar: 'tree-sitter-markdown-inline.wasm',
   query: QUERY,
   suffixes: [],
+  injectionQuery: INJECTION_QUERY,
   injectionProvider: markdownMathInjections,
 });

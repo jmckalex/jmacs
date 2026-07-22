@@ -504,3 +504,55 @@ test('a colon in an ordinary first line does not open a header', () => {
   assert.equal(scan.captures.filter((c) => c.face === 'jmd-meta-key').length, 0);
   assert.ok(!owned(scan, text, 'See here'));
 });
+
+// --- block HTML → html injections (inline-html-highlighting) -----------
+
+test('<style> blocks inject html and silence the inline pass', () => {
+  const text = '<style>\n  div.center {\n    text-align: center;\n  }\n</style>\nafter\n';
+  const scan = scanJmarkdown(text);
+  const html = scan.injections.find((i) => i.language === 'html');
+  assert.ok(html, 'a html injection covers the style block');
+  assert.equal(text.slice(html.start, html.end).startsWith('<style>'), true);
+  assert.equal(text.slice(html.start, html.end).endsWith('</style>'), true);
+  // The blanked body must produce NO javascript chain injection for
+  // `div.center` (the misfire this feature fixes).
+  assert.equal(scan.injections.filter((i) => i.language === 'javascript').length, 0);
+});
+
+test('an indented <style> block (up to three spaces) is still consumed', () => {
+  const text = '  <style>\n    h2 { color: red; }\n  </style>\n';
+  const scan = scanJmarkdown(text);
+  const html = scan.injections.find((i) => i.language === 'html');
+  assert.ok(html);
+  assert.ok(text.slice(html.start, html.end).includes('</style>'));
+});
+
+test('a block-level tag runs to the first blank line', () => {
+  const text = '<div class="x">\ncontent line\n</div>\n\nprose after\n';
+  const scan = scanJmarkdown(text);
+  const html = scan.injections.find((i) => i.language === 'html');
+  assert.ok(html);
+  assert.equal(text.slice(html.start, html.end), '<div class="x">\ncontent line\n</div>');
+});
+
+test('a dashed custom element counts as a block tag', () => {
+  const text = '<dissertation-feedback data-candidate="70118">\nbody\n</dissertation-feedback>\n';
+  const scan = scanJmarkdown(text);
+  const html = scan.injections.find((i) => i.language === 'html');
+  assert.ok(html);
+  assert.ok(text.slice(html.start, html.end).startsWith('<dissertation-feedback'));
+});
+
+test('inline HTML in prose is NOT consumed as a block', () => {
+  // A span is not a block-level tag: the paragraph must survive for the
+  // inline grammar (which injects each html_tag itself).
+  const text = 'prose with <span class="foo">a span</span> inside\n';
+  const scan = scanJmarkdown(text);
+  assert.equal(scan.injections.filter((i) => i.language === 'html').length, 0);
+});
+
+test('autolinks and << lines do not trigger the block-HTML rule', () => {
+  const text = '<https://example.com>\n\n>> centred <<\n';
+  const scan = scanJmarkdown(text);
+  assert.equal(scan.injections.filter((i) => i.language === 'html').length, 0);
+});

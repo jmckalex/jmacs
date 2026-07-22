@@ -50,6 +50,10 @@ const INJECTION_QUERY = `
     (info_string (language) @injection.language)
     (code_fence_content) @injection.content)
   ((paragraph) @injection.content (#set! injection.language "markdown_inline"))
+  ; Block-level HTML (<style>, <div>, a lone tag line, …): inject the
+  ; html grammar; its own query nests css into <style> bodies and
+  ; javascript into <script> bodies.
+  ((html_block) @injection.content (#set! injection.language "html"))
 `;
 
 registerLanguage({
