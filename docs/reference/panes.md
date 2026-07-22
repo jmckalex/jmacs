@@ -205,18 +205,17 @@ list. Bound to `C-x 1`. See also cmd(delete-pane).
 #### `close-tab`
 
 Close a tab in the focused tabline — the operation behind the tab's
-**× control**, which is the way to invoke it (no key is bound; `Cmd+W`
-reaches the editor as `M-w`, cmd(copy-region)). What closing does is
+**× control**, and equally behind `M-x close-tab`, which closes the
+*active* tab through the same path (no key is bound; `Cmd+W` reaches
+the editor as `M-w`, cmd(copy-region)). What closing does is
 governed by `*close-tab-kills-view*`; by default the view is **killed**
 — its buffer leaves the buffer list, as most editors do. Closing the
 *last* tab collapses the tabline to a bare leaf showing `*scratch*` (an
 existing empty scratch is reused rather than minting `*scratch*<2>`),
 with the closed buffer killed or kept by the same rule. A live-process
-view (a shell or gnuplot session) is reaped on close either way.
-
-The `M-x close-tab` command in `panes.lisp` predates the
-server-owned tabline and is currently out of order — it signals an
-error rather than closing anything. Use the × control.
+view (a shell or gnuplot session) is reaped on close either way. In a
+pane with no tab strip, `M-x close-tab` reports on the status line and
+does nothing.
 :::
 
 :::function{name="close-tab-kills-view" path="reference/panes/close-tab-kills-view.html"}
@@ -255,20 +254,20 @@ cmd(swap-views), cmd(send-view-to-other-pane).
 `(send-view-to-other-pane)`
 
 *Move* the focused view to the next pane in display order, rather than
-swapping. Bound to `C-x x` — but the command predates the server
-architecture and is **currently out of order**: pressing it does
-nothing visible (the failure is logged to the console only). Until it
-is re-ported, get the same effect by hand — focus the destination pane
-and switch to the buffer there with `C-x b`. See also
-cmd(swap-with-other-pane).
+swapping. Bound to `C-x x`. The destination shows the moved view —
+curated as a new active tab when the destination is a tabline — and
+focus follows it, so the next edit lands in the moved view. The source
+pane re-points to its neighbouring tab, or to an empty `*scratch*` when
+the moved view was its only one (an existing empty scratch is reused).
+With a single pane it reports on the status line and does nothing. See
+also cmd(swap-with-other-pane).
 :::
 
 :::function{name="send-tab-to-other-pane" path="reference/panes/send-tab-to-other-pane.html"}
 #### `send-tab-to-other-pane`
 `(send-tab-to-other-pane)`
 
-Alias for cmd(send-view-to-other-pane), and out of order for the same
-reason. Unbound.
+Alias for cmd(send-view-to-other-pane). Unbound.
 :::
 
 :::function{name="swap-views" path="reference/panes/swap-views.html"}

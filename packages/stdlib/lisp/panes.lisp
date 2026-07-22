@@ -151,17 +151,15 @@
   (delete-pane!))
 
 (defcommand close-tab ()
-  "Close the active tab in the focused tabline-view. The view leaves
-   the strip but stays alive in the global list (reachable via
-   `switch-view`). When it was the LAST tab, the pane collapses into its
-   sibling (`close-pane`) — the view still stays alive; at the sole root
-   pane there is nothing to collapse into, so the last tab stays put. To
-   remove the view itself, use `kill-view`."
-  (let ((tlv (current-tabline)))
-    (when (not (nil? tlv))
-      (if (> (length (tabline-tabs tlv)) 1)
-          (remove-tab! tlv (tabline-active tlv))
-          (close-pane)))))
+  "Close the active tab in the focused tabline-view — the same path as
+   clicking the tab's ×. By default the closed view is KILLED
+   (`*close-tab-kills-view*`, #t); set that to #f to un-curate instead,
+   keeping the buffer alive in the global list. Closing the last tab
+   collapses the strip to a plain pane showing an empty *scratch*. In a
+   pane with no tab strip this reports on the status line and does
+   nothing."
+  (unless (close-active-tab!)
+    (show-status! "close-tab: no tab strip in this pane")))
 
 ;; --- moving views between panes ---------------------------------------
 ;; Three workflows the user wanted:
@@ -184,20 +182,14 @@
     (if (or (nil? next) (eq? before next)) nil next)))
 
 (defcommand send-view-to-other-pane ()
-  "Send the focused view to the next pane in display order. Both ends
-   are promoted to tabline-views (idempotent — a pane that's already
-   a tabline is left alone) and the focused tab moves across via
-   `move-tab!`. The view becomes the active tab in the destination.
-   If the source had only this one tab, its strip becomes empty
-   afterwards — `(close-pane)` will collapse it.
-   No-op when there's only one pane in the window."
-  (let* ((src-pane (current-pane))
-         (dst-pane (-other-leaf-pane)))
-    (when (and (not (nil? src-pane)) (not (nil? dst-pane)))
-      (let* ((src-tlv (promote-to-tabline! src-pane))
-             (dst-tlv (promote-to-tabline! dst-pane)))
-        (when (and (not (nil? src-tlv)) (not (nil? dst-tlv)))
-          (move-tab! src-tlv (tabline-active src-tlv) dst-tlv))))))
+  "Send the focused view to the next pane in display order; it becomes
+   that pane's view (curated as a new active tab when the destination
+   is a tabline) and focus follows it. The source pane re-points to its
+   neighbouring tab, or to an empty *scratch* when the moved view was
+   its only one. Reports on the status line when this is the only
+   pane."
+  (unless (send-view-to-other-pane!)
+    (show-status! "send-view-to-other-pane: this is the only pane")))
 
 (defcommand send-tab-to-other-pane ()
   "Send the focused tab to the next pane's tabline. Alias for
