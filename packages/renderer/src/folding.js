@@ -68,10 +68,16 @@ export function foldRanges(text, captures) {
   const byStart = new Map();
   for (const cap of captures) {
     const startLine = offsetToLine(lineStarts, cap.start);
-    const endLine = Math.min(
+    let endLine = Math.min(
       lineCount - 1,
       offsetToLine(lineStarts, cap.end)
     );
+    // `end` is EXCLUSIVE. When it lands exactly at a line start, the capture
+    // covers nothing on that line, so the last folded line is the one before.
+    // A tree-sitter markdown `section` ends precisely where the next
+    // section's heading begins (sections tile the document), so without this
+    // step folding `# one` would swallow the `# two` heading line too.
+    if (endLine > startLine && cap.end === lineStarts[endLine]) endLine -= 1;
     if (endLine <= startLine) continue;
     // Drop a fold whose HEADER line is blank. A tree-sitter `section` can
     // begin on the empty line after a metadata/frontmatter header (the first

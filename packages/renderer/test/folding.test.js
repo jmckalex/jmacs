@@ -445,3 +445,40 @@ test('stickyHeaderRows returns nothing with no scopes or a zero line height', ()
     []
   );
 });
+
+test('an exclusive end at a line start does not fold that line (section tiling)', () => {
+  // The tree-sitter markdown `section` node for `# one` ends exactly where
+  // the next section begins — at column 0 of the `# two` line. Folding
+  // section one must NOT swallow the `# two` heading line.
+  // Lines: 0:'# one' 1:'text' 2:'' 3:'# two' 4:'more'
+  const text = '# one\ntext\n\n# two\nmore';
+  const sectionOne = { start: 0, end: text.indexOf('# two') };
+  const sectionTwo = { start: text.indexOf('# two'), end: text.length };
+  assert.deepEqual(foldRanges(text, [sectionOne, sectionTwo]), [
+    { startLine: 0, endLine: 2 }, // through the blank line, not the heading
+    { startLine: 3, endLine: 4 },
+  ]);
+});
+
+test('back-to-back headings produce no fold for the empty section', () => {
+  // `# one\n# two` — section one is just its own heading line; there is
+  // nothing under it to fold.
+  const text = '# one\n# two\nbody';
+  const captures = [
+    { start: 0, end: 6 },            // section one: exactly the first line
+    { start: 6, end: text.length },  // section two: heading + body
+  ];
+  assert.deepEqual(foldRanges(text, captures), [
+    { startLine: 1, endLine: 2 },
+  ]);
+});
+
+test('an end past a line start (even by one char) still folds that line', () => {
+  // A capture whose end is mid-line keeps the old behaviour — the end line
+  // is included.
+  const text = 'a {\nb\n}\nafter';
+  const captures = [{ start: 2, end: 7 }]; // '{' through '}' (mid line 2)
+  assert.deepEqual(foldRanges(text, captures), [
+    { startLine: 0, endLine: 2 },
+  ]);
+});
