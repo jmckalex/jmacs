@@ -403,15 +403,15 @@ candidly, not every boundary reports somewhere you can see:
   report: unlike successful results, which are truncated to about two
   hundred characters, an error message arrives entire.
 - **A command run from a key, `M-x`, or a menu**: the error is caught
-  at the server boundary (the keystroke is consumed, not replayed) and
+  at the server boundary (the keystroke is consumed, not replayed),
   logged as `intent error: …` on the *server process's console* — the
-  terminal you launched Godot from — and nowhere in the editor itself.
-  A failing command therefore looks like a dead key. When a key seems
-  to silently do nothing, run the command's code in the REPL, where
-  the same failure is reported properly; and when writing your own
-  commands, surface predictable refusals with `show-status!` (see
-  *Error Messages Are User Interface* above) so they never fall into
-  this hole.
+  terminal you launched Godot from — and echoed as `error: …` in the
+  editor's status line, so a failing command announces itself. The
+  echo carries only the message; for the full picture, re-run the
+  command's code in the REPL, where the failure is reported entire.
+  When writing your own commands, still surface predictable refusals
+  with `show-status!` (see *Error Messages Are User Interface* above) —
+  a considered message beats a raw `error:` echo.
 - **Startup and reload**: a broken `init.lisp` or `custom.lisp` is
   caught — the editor still boots without it — and reported as
   `init.lisp load failed: …`, again on the server console; the

@@ -1119,6 +1119,12 @@ function applyIntent(client, intent) {
     }
   } catch (error) {
     console.error(`[mwb-server] intent error: ${error.message}`);
+    // A failing command must not be silent (the 2026-07 docs audit found two
+    // commands that had been dead for weeks with no visible symptom): surface
+    // the error in the echo area, the same channel show-status! uses.
+    try {
+      spine.showStatus(`error: ${error.message}`);
+    } catch { /* spine shutting down — the console line above suffices */ }
   } finally {
     currentEchoId = undefined;
   }

@@ -197,12 +197,13 @@ belongs to named keys like `S-left`.) The two panes keep their
 identities and sizes; only their contents swap. The command does
 nothing when there is just one pane.
 
-Its companion cmd(send-view-to-other-pane) (`C-x x`) — *move* the
-focused view to the next pane instead of swapping — predates the
-server architecture and is currently out of order: pressing it does
-nothing visible (the failure is logged to the console only). Until it
-is re-ported, get the same effect by hand: focus the destination pane
-and switch to the buffer there with `C-x b`.
+Its companion cmd(send-view-to-other-pane) (`C-x x`) *moves* the
+focused view to the next pane instead of swapping: the destination
+shows it (curated as a new active tab if the destination has a tab
+strip) and focus follows the moved view. The source pane re-points to
+its neighbouring tab — or to an empty `*scratch*` when the moved view
+was its only one. With a single pane it reports on the status line and
+does nothing.
 
 #### Numbered swap and permute
 

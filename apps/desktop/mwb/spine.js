@@ -1567,6 +1567,57 @@ export function createSpine(options, effects = {}) {
         }
         return NIL;
       },
+      // (close-active-tab!) — close the focused tabline's ACTIVE tab through
+      // the same path as a tab-strip × click (the 'close-tab' pane intent):
+      // honours *close-tab-kills-view* and the last-tab collapse-to-scratch.
+      // Returns #t when a tab was closed, #f when the focused pane has no
+      // tab strip (panes.lisp reports that on the status line). The Model-B
+      // replacement for the renderer-era current-tabline/remove-tab! body.
+      'close-active-tab!': () => {
+        const model = currentPaneModel();
+        const leaf = model.focusedLeaf();
+        const st = leaf ? model.stateOf(leaf.id) : null;
+        if (!st || st.tabline !== true || st.bufferId == null) return false;
+        return applyPaneIntent(activeClientIndex, {
+          op: 'close-tab',
+          bufferId: st.bufferId,
+        }) === true;
+      },
+      // (send-view-to-other-pane!) — move the focused view to the next pane
+      // in display order (C-x x). The destination shows it — curated as a
+      // new active tab when the destination is a tabline — and focus follows
+      // the moved view. The source re-points to its neighbouring tab, or to
+      // an empty *scratch* when the moved view was its only one. Returns #f
+      // (nothing moved) when this is the only pane. The Model-B replacement
+      // for the renderer-era promote-to-tabline!/move-tab! body.
+      'send-view-to-other-pane!': () => {
+        const model = currentPaneModel();
+        if (model.panesInSpiralOrder().length < 2) return false;
+        const id = model.focusedBufferId();
+        if (id == null) return false;
+        const leaf = model.focusedLeaf();
+        const st = leaf ? model.stateOf(leaf.id) : null;
+        const multiTab = !!st && st.tabline === true
+          && Array.isArray(st.tabs) && st.tabs.length > 1;
+        if (multiTab) {
+          model.closeFocusedTab(id); // un-curate; re-points to a neighbour tab
+        } else {
+          // The moved view was the pane's only one: leave an empty *scratch*
+          // behind (reusing an existing one rather than minting *scratch*<2>).
+          const isEmptyScratch = (e) => !!e
+            && (e.filePath == null || e.filePath === '')
+            && String(e.buffer.name || '').replace(/(<\d+>)+$/, '') === '*scratch*'
+            && (e.buffer.text || '').trim() === '';
+          const reuse = registry.list().find((e) => e.id !== id && isEmptyScratch(e));
+          const scratchId = reuse ? reuse.id : registry.add('', '*scratch*', null).id;
+          if (st && st.tabline === true) model.toggleFocusedTabline(false);
+          model.setFocusedBuffer(scratchId);
+        }
+        model.otherPane();          // focus the destination pane
+        model.setFocusedBuffer(id); // show (or curate) the moved view there
+        rebindFocusedPane();        // the next edit lands in the moved view
+        return true;
+      },
       // (panes-in-spiral-order) — the leaves in clockwise-badge order, as a
       // Lisp list (swap-views/permute-views read its length). Geometry-derived.
       'panes-in-spiral-order': () => arrayToList(currentPaneModel().panesInSpiralOrder()),
@@ -6190,6 +6241,12 @@ export function createSpine(options, effects = {}) {
     // JS notebook: evaluate a cell server-side (Node, no CSP) → serializable result.
     runNotebookCell,
     replEval,
+    /** Set the echo-area status from the host — the server's error surface,
+     *  same channel as the show-status! primitive. */
+    showStatus(text) {
+      statusText = String(text ?? '');
+      onStatus(statusText);
+    },
     // Hover-doc: resolve the symbol + doc summary under a buffer offset (request/
     // response), and open a doc page by name (fire-and-forget). docs.lisp-backed.
     docHover,

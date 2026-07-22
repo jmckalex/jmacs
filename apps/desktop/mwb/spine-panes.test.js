@@ -477,3 +477,99 @@ test('a move-views PANE_INTENT moves the leaves structurally + re-pushes PANE_TR
   assert.equal(n1.id, l0.id);
   assert.ok(log.paneTrees.length > before);
 });
+
+// --- M-x close-tab / C-x x through the spine (2026-07 revival) ----------
+// Both commands were dead after the renderer-interpreter deletion (their
+// tabline primitives never existed server-side). close-tab now drives the
+// same 'close-tab' pane-intent path as the tab-strip x; C-x x moves the
+// focused view through the pane model directly.
+
+test('M-x close-tab closes the ACTIVE tab (kills by default, like the x)', () => {
+  const files = { '/x.js': { text: 'x', name: 'x.js' } };
+  const { spine } = makeSpine('seed', 'scratch.txt', { openFile: (p) => files[p] ?? null });
+  const seedId = spine.currentBufferIdOf(0);
+  spine.runCommand('toggle-tabline');
+  const xId = spine.visitFile('/x.js'); // tabs: seed, x (x active)
+
+  spine.runCommand('close-tab');
+  const leaf = wireLeaves(spine.paneSnapshot(0))[0];
+  assert.deepEqual(leaf.tabs.map((t) => t.bufferId), [seedId], 'the active x tab closed');
+  assert.equal(leaf.bufferId, seedId, 'the neighbour tab became active');
+  assert.equal(spine.bufferIdByName('x.js'), null, 'the closed view was killed (default)');
+  assert.equal(spine.currentBufferIdOf(0), seedId, 'the client follows the survivor');
+  void xId;
+});
+
+test('M-x close-tab in a plain pane reports and changes nothing', () => {
+  const { spine, log } = makeSpine('seed', 'scratch.txt');
+  const before = wireLeaves(spine.paneSnapshot(0)).length;
+  spine.runCommand('close-tab');
+  assert.equal(wireLeaves(spine.paneSnapshot(0)).length, before, 'tree unchanged');
+  assert.ok(
+    log.status.some((s) => String(s).includes('no tab strip')),
+    'the no-op was reported on the status line'
+  );
+  assert.equal(
+    spine.currentBufferIdOf(0),
+    spine.bufferIdByName('scratch.txt'),
+    'still on the same buffer'
+  );
+});
+
+test('C-x x moves the focused view to the other pane; source keeps a scratch', () => {
+  const files = { '/b.js': { text: 'b', name: 'b.js' } };
+  const { spine } = makeSpine('seed', 'a.txt', { openFile: (p) => files[p] ?? null });
+  cx(spine, '3');                      // split; focus in the NEW pane
+  const bId = spine.visitFile('/b.js'); // focused pane now shows b.js
+
+  cx(spine, 'x');                      // send-view-to-other-pane
+  const snap = spine.paneSnapshot(0);
+  const leaves = wireLeaves(snap);
+  const focused = leaves.find((l) => l.id === wireFocusedLeafId(snap));
+  const other = leaves.find((l) => l.id !== wireFocusedLeafId(snap));
+  assert.equal(focused.bufferId, bId, 'focus followed the moved view');
+  assert.equal(
+    other.bufferId,
+    spine.bufferIdByName('*scratch*'),
+    'the source pane fell back to an empty *scratch*'
+  );
+  assert.equal(spine.currentBufferIdOf(0), bId, 'the next edit lands in the moved view');
+});
+
+test('C-x x from a multi-tab source un-curates the tab and curates it at the destination', () => {
+  const files = { '/b.js': { text: 'b', name: 'b.js' } };
+  const { spine } = makeSpine('seed', 'a.txt', { openFile: (p) => files[p] ?? null });
+  const seedId = spine.currentBufferIdOf(0);
+  spine.runCommand('toggle-tabline');
+  const bId = spine.visitFile('/b.js'); // tabline tabs: seed, b (b active)
+  cx(spine, '3');                      // split; focus moves to the NEW plain pane
+  cx(spine, 'o');                      // focus back to the tabline pane
+
+  cx(spine, 'x');                      // move b across
+  const snap = spine.paneSnapshot(0);
+  const leaves = wireLeaves(snap);
+  const focused = leaves.find((l) => l.id === wireFocusedLeafId(snap));
+  const tabline = leaves.find((l) => Array.isArray(l.tabs));
+  assert.equal(focused.bufferId, bId, 'the moved tab is focused at the destination');
+  assert.deepEqual(
+    tabline.tabs.map((t) => t.bufferId),
+    [seedId],
+    'the source tabline re-pointed to its remaining tab'
+  );
+});
+
+test('C-x x in a single-pane window is a reported no-op', () => {
+  const { spine, log } = makeSpine('seed', 'a.txt');
+  cx(spine, 'x');
+  assert.equal(wireLeaves(spine.paneSnapshot(0)).length, 1, 'no pane appeared');
+  assert.ok(
+    log.status.some((s) => String(s).includes('only pane')),
+    'the no-op was reported on the status line'
+  );
+});
+
+test('spine.showStatus surfaces host-side text through the status effect', () => {
+  const { spine, log } = makeSpine();
+  spine.showStatus('error: boom');
+  assert.deepEqual(log.status.at(-1), 'error: boom');
+});
