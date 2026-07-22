@@ -48,6 +48,17 @@ const INJECTION_QUERY = `
    (#set! injection.language "javascript"))
   ((style_element (raw_text) @injection.content)
    (#set! injection.language "css"))
+  ; A style="…" attribute's value is CSS declarations, not a bare
+  ; string: inject the css grammar over the value, wrapped as *{...}
+  ; so the fragment parses as a rule body (the same convention the
+  ; jmarkdown scanner uses for @directive style attributes).
+  ((attribute
+     (attribute_name) @_style_attr
+     (quoted_attribute_value (attribute_value) @injection.content))
+   (#eq? @_style_attr "style")
+   (#set! injection.language "css")
+   (#set! injection.wrapPrefix "*{")
+   (#set! injection.wrapSuffix "}"))
 `;
 
 // Foldable scopes: an element only counts when it has BOTH a start

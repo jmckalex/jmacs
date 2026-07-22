@@ -673,11 +673,21 @@ function collectInjections(injectionQuery, rootNode) {
       match.setProperties?.['injection.language'] ??
       null;
     if (!language) continue;
-    result.push({
+    const injection = {
       start: contentNode.startIndex,
       end: contentNode.endIndex,
       language,
-    });
+    };
+    // Optional synthetic wrapping, same contract as provider injections
+    // (see spliceInjections): the inner highlighter runs on
+    // `wrapPrefix + slice + wrapSuffix`. Lets a query inject a fragment
+    // that only parses in context — e.g. a style="…" attribute value
+    // wrapped as `*{…}` so tree-sitter-css sees a declaration block.
+    const wrapPrefix = match.setProperties?.['injection.wrapPrefix'];
+    const wrapSuffix = match.setProperties?.['injection.wrapSuffix'];
+    if (typeof wrapPrefix === 'string') injection.wrapPrefix = wrapPrefix;
+    if (typeof wrapSuffix === 'string') injection.wrapSuffix = wrapSuffix;
+    result.push(injection);
   }
   return result;
 }

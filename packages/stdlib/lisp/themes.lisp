@@ -393,8 +393,10 @@
   :default-midnight        (face :foreground "#79c0ff")
   :default-solarized-dark  (face :foreground "#8488cd")
   :default-emacs           (face :foreground "#8cde94")
-  ;; Panic Dark: booleans/null share the keyword blue (value.boolean).
-  :default-nova            (face :foreground "#60aeeb"))
+  ;; Was the keyword blue (Panic Dark's value.boolean); constants now
+  ;; take the warm orange so @constant reads apart from @keyword —
+  ;; CSS property names vs values was an undifferentiated wall of blue.
+  :default-nova            (face :foreground "#ffa956"))
 
 (defface 'function
   :doc "Function names — definitions and calls."
