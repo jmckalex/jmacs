@@ -31,7 +31,11 @@
 (define-mode markdown-mode
   :name "Markdown"
   :highlight :markdown
-  :keymap 'markdown-mode-map)
+  :keymap 'markdown-mode-map
+  ;; Markdown's list indents (3 spaces under `1. `, 2 under `- `) don't
+  ;; sit on the tab-width grid, so the indent-guide lines mislead more
+  ;; than they help. Off by default; toggle-indent-guides overrides.
+  :indent-guides #f)
 
 ;; Languages with their own tree-sitter grammar live under
 ;; `languages/`, each in its own drop-in file. The ones still defined
@@ -225,6 +229,50 @@
         nil
         (let ((h (get m :highlight nil)))
           (if (nil? h) nil (keyword->string h))))))
+
+;; --- indent guides -----------------------------------------------------
+;; Whether the vertical indent-guide lines are drawn for the current
+;; buffer. Three layers, most specific wins:
+;;   1. the buffer's own override (toggle-indent-guides, or the
+;;      indent-guides-on / indent-guides-off mode-hook helpers),
+;;   2. the major mode's :indent-guides property (#f in the Markdown
+;;      modes, whose list indents don't sit on the tab-width grid),
+;;   3. on.
+;; The buffer override lives on the buffer itself (buffer-indent-guides),
+;; not in a minor mode: mode hooks and default-minor-mode activation
+;; re-run on every mode re-derive, so minor-mode state they touch cannot
+;; hold a per-buffer override. The spine reads `indent-guides-active?`
+;; under each buffer's binding and sends the result to the clients with
+;; the view-state.
+
+(define (indent-guides-default)
+  "The major mode's :indent-guides property — on when the mode doesn't say."
+  (let ((m (buffer-major-mode)))
+    (if (nil? m) #t (get m :indent-guides #t))))
+
+(define (indent-guides-active?)
+  "Whether indent guides are on for the current buffer: its own override
+   when one is set, else the major mode's default."
+  (let ((o (buffer-indent-guides)))
+    (if (nil? o) (indent-guides-default) o)))
+
+(define (indent-guides-on)
+  "Force indent guides ON in the current buffer. A mode-hook helper."
+  (set-indent-guides! #t))
+
+(define (indent-guides-off)
+  "Force indent guides OFF in the current buffer. A mode-hook helper:
+   (add-hook php-mode (lambda () (indent-guides-off)))"
+  (set-indent-guides! #f))
+
+(defcommand toggle-indent-guides ()
+  "Toggle the vertical indent-guide lines in the current buffer. The
+   toggle sticks to this buffer; where no toggle has been made, the
+   major mode's :indent-guides property decides (on unless the mode
+   turns them off — the Markdown modes do)."
+  (let ((now (indent-guides-active?)))
+    (set-indent-guides! (not now))
+    (show-status! (if now "Indent guides off" "Indent guides on"))))
 
 ;; --- minor modes -------------------------------------------------------
 ;; Minor modes are orthogonal, toggleable. They stack by an explicit

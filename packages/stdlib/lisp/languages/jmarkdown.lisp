@@ -26,7 +26,11 @@
   ;; and load order doesn't matter — the procedure is defined below. Kept
   ;; on the mode map (not set! after register-mode) so the registered
   ;; copy carries it. See `jmarkdown-fill-indent`.
-  :fill-indent-function 'jmarkdown-fill-indent)
+  :fill-indent-function 'jmarkdown-fill-indent
+  ;; JMarkdown's list indents (3 spaces under `1. `) don't sit on the
+  ;; tab-width grid, so the indent-guide lines mislead more than they
+  ;; help. Off by default; toggle-indent-guides overrides per buffer.
+  :indent-guides #f)
 
 (register-mode ".jmd" jmarkdown-mode)
 
