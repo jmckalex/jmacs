@@ -40,10 +40,17 @@ const QUERY = `
 `;
 
 // Inline HTML: inject the html grammar over each raw `html_tag` node
-// so tag names, attributes and values highlight in prose (mirrors
-// languages/jmarkdown-inline.js).
+// so tag names, attributes and values highlight in prose. A lone
+// closing tag needs a synthetic `<x>` opener to parse (mirrors
+// languages/jmarkdown-inline.js, where the full story is told).
 const INJECTION_QUERY = `
-  ((html_tag) @injection.content (#set! injection.language "html"))
+  ((html_tag) @injection.content
+   (#not-match? @injection.content "^</")
+   (#set! injection.language "html"))
+  ((html_tag) @injection.content
+   (#match? @injection.content "^</")
+   (#set! injection.language "html")
+   (#set! injection.wrapPrefix "<x>"))
 `;
 
 registerLanguage({

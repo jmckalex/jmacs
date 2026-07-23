@@ -40,10 +40,20 @@ const QUERY = `
 
 // Inline HTML: each raw tag in prose (`… <span class="x">…</span> …`)
 // is its own `html_tag` node; inject the html grammar over it so tag
-// names, attributes and values highlight (tree-sitter-html parses a
-// lone open or close tag as a fragment without complaint).
+// names, attributes and values highlight. An OPENING (or self-closing)
+// tag parses as a fragment on its own; a lone CLOSING tag is a bare
+// ERROR to tree-sitter-html, so it gets a synthetic `<x>` opener —
+// the pair parses as an element whose erroneous_end_tag name and
+// delimiters the html query faces as @tag, and the wrapper's own
+// captures are clipped away (see treesitter.js spliceInjections).
 const INJECTION_QUERY = `
-  ((html_tag) @injection.content (#set! injection.language "html"))
+  ((html_tag) @injection.content
+   (#not-match? @injection.content "^</")
+   (#set! injection.language "html"))
+  ((html_tag) @injection.content
+   (#match? @injection.content "^</")
+   (#set! injection.language "html")
+   (#set! injection.wrapPrefix "<x>"))
 `;
 
 registerLanguage({
