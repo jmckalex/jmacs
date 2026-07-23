@@ -114,6 +114,11 @@ export function createClientBuffer(options = {}) {
   // whose extension was re-registered to another mode (.md -> jmarkdown-mode) is
   // highlighted by the mode, not its filename. '' = fall back to the filename.
   let highlightLang = '';
+  // Whether the renderer should draw the indent-guide lines for this buffer
+  // (the buffer's toggle override, else the mode's :indent-guides property).
+  // Defaults ON — guides are the norm; a fresh mirror before its first VIEW
+  // draws them, and the first VIEW corrects a Markdown buffer within a frame.
+  let indentGuidesActive = true;
 
   /** @type {Set<(event: BufferEvent) => void>} */
   const listeners = new Set();
@@ -265,21 +270,25 @@ export function createClientBuffer(options = {}) {
    * mode toggle that moved no cursor can still force one render.
    *
    * @param {{ majorModeName?: string, mathPreviewActive?: boolean,
-   *   highlightLang?: string }} v
-   * @returns {boolean} Whether majorModeName, mathPreviewActive or highlightLang
-   *   changed (a highlightLang change must force a re-render so the editor
-   *   re-highlights with the mode's grammar).
+   *   highlightLang?: string, indentGuidesActive?: boolean }} v
+   * @returns {boolean} Whether majorModeName, mathPreviewActive, highlightLang
+   *   or indentGuidesActive changed (a highlightLang change must force a
+   *   re-render so the editor re-highlights with the mode's grammar; an
+   *   indent-guides toggle must force one so the guide layer appears/clears).
    */
   function applyViewMode(v) {
     const nextName = typeof v.majorModeName === 'string' ? v.majorModeName : '';
     const nextActive = v.mathPreviewActive === true;
     const nextHighlight = typeof v.highlightLang === 'string' ? v.highlightLang : '';
+    const nextGuides = v.indentGuidesActive !== false;
     const changed = nextName !== majorModeName
       || nextActive !== mathPreviewActive
-      || nextHighlight !== highlightLang;
+      || nextHighlight !== highlightLang
+      || nextGuides !== indentGuidesActive;
     majorModeName = nextName;
     mathPreviewActive = nextActive;
     highlightLang = nextHighlight;
+    indentGuidesActive = nextGuides;
     return changed;
   }
 
@@ -381,6 +390,9 @@ export function createClientBuffer(options = {}) {
     /** The major mode's highlight grammar tag (e.g. 'jmarkdown'), server-pushed;
      *  '' before the first VIEW. The editor view highlights by this when set. */
     get highlightLang() { return highlightLang; },
+    /** Whether the renderer should draw the indent-guide lines for this
+     *  buffer (server-pushed; true before the first VIEW). */
+    get indentGuidesActive() { return indentGuidesActive; },
 
     // --- mutators (intent-emitting) ------------------------------------
     // These are what `view.js` (and the IME path) call. Instead of

@@ -354,6 +354,10 @@ export const PANE_INTENT = Object.freeze({
  * @property {boolean} [mathPreviewActive] - Whether `math-preview-mode` is on
  *   for this buffer; the client typesets math only when true (its own
  *   interpreter is inert under GODOT_SERVER=1, so this state is server-owned).
+ * @property {boolean} [indentGuidesActive] - Whether the renderer should draw
+ *   the vertical indent-guide lines for this buffer (the buffer's
+ *   toggle-indent-guides override, else the major mode's :indent-guides
+ *   property — the Markdown modes turn them off). Absent means on.
  * @property {string} modeline - The fully-rendered modeline string.
  * @property {string} status - The echo-area message (show-status!), or ''.
  * @property {MinibufferState} minibuffer - The minibuffer prompt state.

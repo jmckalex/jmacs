@@ -5437,6 +5437,19 @@ export function createSpine(options, effects = {}) {
     }
   }
 
+  /** Whether indent guides are on for the current buffer — the stdlib's
+   *  `indent-guides-active?` (the buffer's own toggle override, else the major
+   *  mode's :indent-guides property, else on), read under the active binding.
+   *  Tolerant: any failure yields the default (true), so a missing stdlib
+   *  never blanks the guides. */
+  function indentGuidesActive() {
+    try {
+      return interpreter.call('indent-guides-active?') !== false;
+    } catch {
+      return true;
+    }
+  }
+
   /** The major-mode display name AND mode menu a SPECIFIC entry would show.
    *  Binds the entry once (like the old majorModeNameFor) and derives both, so a
    *  background window/pane on another buffer reports the right mode + menu with
@@ -5450,7 +5463,12 @@ export function createSpine(options, effects = {}) {
         menu = data ? { label: name, entries: data.entries, sections: data.sections } : null;
         modeMenuCache.set(name, menu);
       }
-      return { name, menu, highlight: majorModeHighlight() };
+      return {
+        name,
+        menu,
+        highlight: majorModeHighlight(),
+        guides: indentGuidesActive(),
+      };
     };
     if (entry === activeEntry) return build();
     const savedEntry = activeEntry;
@@ -5460,7 +5478,7 @@ export function createSpine(options, effects = {}) {
       interpreter.call('-spine-choose-major-mode');
       return build();
     } catch {
-      return { name: '', menu: null, highlight: '' };
+      return { name: '', menu: null, highlight: '', guides: true };
     } finally {
       bindActive(savedEntry, savedView);
       interpreter.call('-spine-choose-major-mode');
@@ -5535,6 +5553,7 @@ export function createSpine(options, effects = {}) {
         highlightLang: '',
         modeMenu: null,
         mathPreviewActive: false,
+        indentGuidesActive: true,
         modeline: renderModeline({ name: ds.name, modified: false, mode: ds.kind, noPosition: true }),
         status: statusText,
         statusSegments: viewStatusSegments(),
@@ -5551,7 +5570,12 @@ export function createSpine(options, effects = {}) {
     // a client under GODOT_SERVER=1 can pick the math scanner provider + decide
     // whether to typeset — its own interpreter is inert, so the buffer's
     // minor-mode/major-mode state is only knowable from the server.
-    const { name: modeName, menu: modeMenu, highlight: highlightLang } = modeInfoFor(entry, v);
+    const {
+      name: modeName,
+      menu: modeMenu,
+      highlight: highlightLang,
+      guides: indentGuidesActive,
+    } = modeInfoFor(entry, v);
     return {
       point: v.point,
       // The cursor's 1-based source line (positionAt is 0-based). Travels as its
@@ -5569,6 +5593,11 @@ export function createSpine(options, effects = {}) {
       // interpreter is inert) so the macOS app menu can follow the buffer's mode.
       modeMenu,
       mathPreviewActive: bufferHasMathPreview(buf),
+      // Whether the renderer should draw the indent-guide lines for this
+      // buffer — the buffer's toggle override, else the mode's :indent-guides
+      // property (the Markdown modes turn them off). Read in modeInfoFor
+      // under the entry's binding, like the mode name.
+      indentGuidesActive,
       modeline: renderModeline({
         name: buf.name, modified, line: line + 1, column,
         mode: modeName,

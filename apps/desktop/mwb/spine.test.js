@@ -603,6 +603,24 @@ test('viewState reports point, mark, name, modeline and modified flag', () => {
   assert.match(vs.modeline, /^●/);
 });
 
+test('the wire view-state carries indentGuidesActive: mode default + the toggle override', () => {
+  // A plain text buffer: no mode opinion → guides on. (viewStateOf is the
+  // builder the VIEW message uses; the no-arg viewState() is a self-test
+  // helper that carries no mode fields.)
+  assert.equal(makeSpine('hi', 'note.txt').spine.viewStateOf(0).indentGuidesActive, true);
+
+  // A Markdown buffer: the mode ships :indent-guides #f → guides off.
+  const { spine } = makeSpine('- item\n   nested', 'doc.md');
+  assert.equal(spine.viewStateOf(0).indentGuidesActive, false);
+
+  // toggle-indent-guides sets a sticky per-buffer override, echoed in
+  // the next view-state; toggling again returns to the mode default.
+  spine.runCommand('toggle-indent-guides');
+  assert.equal(spine.viewStateOf(0).indentGuidesActive, true);
+  spine.runCommand('toggle-indent-guides');
+  assert.equal(spine.viewStateOf(0).indentGuidesActive, false);
+});
+
 test('viewState carries the 1-based cursorLine (Markdown-preview forward search)', () => {
   const { spine } = makeSpine('line one\nline two\nline three', 'doc.md');
   assert.equal(spine.viewState().cursorLine, 1, 'point at start → line 1');
