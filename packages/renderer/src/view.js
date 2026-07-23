@@ -35,6 +35,7 @@ import {
   stickyHeaderRows,
 } from './folding.js';
 import { lineIndentColumns, computeIndentGuides } from './indent-guides.js';
+import { createScrollMemory } from './scroll-memory.js';
 import { computeMathLayout, spliceInlineWidgets } from './math-layout.js';
 import { createFollowTracker } from './follow-cursor.js';
 
@@ -1464,6 +1465,15 @@ export function createEditorView(buffer, container, options = {}) {
   // instead of yanking it back to the caret (the "autosave scrolls my editor"
   // bug). See follow-cursor.js.
   const followTracker = createFollowTracker();
+  // Per-buffer viewport memory (Emacs's window-start): this one editor
+  // element shows many buffers over its life (server-tabline tabs, C-x b,
+  // a leaf's static-buffer ⇄ live-mirror swap), and its scrollTop is shared
+  // across all of them — a short buffer clamps it to 0, and the long buffer
+  // would come back at the top of the file. setView records the viewport on
+  // every switch away and restores it on return, instead of forcing the
+  // caret-follow. Keyed by stable buffer id/name — server mirrors are
+  // rebuilt on every switch, so object identity never survives a round trip.
+  const scrollMemory = createScrollMemory();
   // Recenter / flash are *deferred to the end of a render*, not run
   // synchronously by their callers. `goto-line!` (and any buffer move)
   // repositions the cursor on the next animation frame, so a recenter or
@@ -1691,6 +1701,15 @@ export function createEditorView(buffer, container, options = {}) {
 
   // Scrolling changes which lines are visible — re-render the window.
   root.addEventListener('scroll', schedule);
+  // …and keeps the per-buffer viewport memory fresh. Every real scroll —
+  // the user's wheel, a caret follow, a recenter — IS the buffer's current
+  // viewport, so recording them all is correct; setView's restore reads
+  // this back when the buffer returns to the front. (A shrink-clamp fires
+  // a scroll event too, after the swap has re-pointed activeBuffer, so the
+  // 0 lands on the short buffer, not the one being left.)
+  root.addEventListener('scroll', () => {
+    scrollMemory.save(activeBuffer, root.scrollTop);
+  });
   // Mouse: click to place the cursor, drag to select.
   //
   // The row comes from the y through the line grid (folding-aware). The
@@ -2277,6 +2296,12 @@ export function createEditorView(buffer, container, options = {}) {
       }
       const bufferChanged = nextBuffer !== activeBuffer;
       if (bufferChanged) {
+        // Record the outgoing buffer's viewport before the new buffer's
+        // render can clamp the shared scrollTop (a shorter buffer clamps
+        // it to 0). The scroll listener keeps the memory fresh between
+        // switches; this is the belt for a scroll the event hasn't
+        // delivered yet.
+        scrollMemory.save(activeBuffer, root.scrollTop);
         unsubscribe();
         activeBuffer = nextBuffer;
         unsubscribe = activeBuffer.onChange(scheduleFollowingCursor);
@@ -2287,20 +2312,52 @@ export function createEditorView(buffer, container, options = {}) {
       // 0-height layout. The reveal pass redraws against the real
       // viewport.
       //
-      // A switch / reveal (the default) FORCES the follow so the target's
-      // caret is shown. A server-driven reconcile passes `followMode: 'auto'`:
-      // then the follow is gated on the caret actually having moved, so a
-      // repaint that left the caret put (an overlay update, a redundant
-      // view/cursor message) preserves the user's scroll instead of yanking
-      // it back. A switch to a DIFFERENT buffer always forces (its caret may
-      // sit at the same numeric offset yet be off-screen).
-      const forced = options.followMode !== 'auto' || bufferChanged;
-      if (forced) followTracker.forceOnce();
+      // A server-driven reconcile passes `followMode: 'auto'`: the follow
+      // is gated on the caret actually having moved, so a repaint that
+      // left the caret put (an overlay update, a redundant view/cursor
+      // message) preserves the user's scroll instead of yanking it back.
+      //
+      // Everything else is a MOUNT-grade call — a buffer/tab switch, a
+      // pane-layout re-point, a reveal after a hidden spell. Those used to
+      // force the caret-follow unconditionally; now a buffer with a
+      // remembered viewport RESTORES it instead (Emacs's window-start —
+      // the tab you scrolled and left comes back where it was, and a
+      // same-buffer re-mount while you're scrolled away is a no-op rather
+      // than a yank to the caret). The forced follow survives as the
+      // first-visit fallback, where there is nothing to restore and the
+      // caret may sit off-screen.
+      const mounting = options.followMode !== 'auto' || bufferChanged;
+      const restoreScroll = mounting ? scrollMemory.saved(activeBuffer) : null;
+      const forced = mounting && restoreScroll === null;
+      if (forced) {
+        followTracker.forceOnce();
+      } else if (restoreScroll !== null) {
+        // Baseline the tracker on the incoming buffer's caret so neither
+        // this render nor the switch's trailing view/cursor reconciles
+        // read the new offset as "the caret moved" and yank the restored
+        // viewport back to it.
+        followTracker.recentered(getPoint());
+      }
       globalThis.__godotTrace?.('setView', {
-        followMode: options.followMode ?? null, bufferChanged, forced,
+        followMode: options.followMode ?? null,
+        bufferChanged,
+        forced,
+        restoreScroll,
       });
       followCursor = true;
       render();
+      if (restoreScroll !== null) {
+        const target = restoreScroll;
+        root.scrollTop = target;
+        // A reveal from a hidden spell can have a not-yet-grown layout on
+        // the synchronous render; re-apply once when the first set didn't
+        // stick. One frame — the user can't have scrolled in between.
+        if (typeof win.requestAnimationFrame === 'function' && root.scrollTop !== target) {
+          win.requestAnimationFrame(() => {
+            if (root.scrollTop !== target) root.scrollTop = target;
+          });
+        }
+      }
     },
 
     focus: () => focusInput(),

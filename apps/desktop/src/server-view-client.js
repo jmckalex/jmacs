@@ -473,6 +473,10 @@ export function createServerViewClient({
     mirror = createClientBuffer({
       initialText: msg.text,
       name: msg.name || 'server-buffer',
+      // The wire buffer id: the identity that survives this rebuild (the
+      // renderer's per-buffer scroll memory keys by it, so a tab switched
+      // away and back keeps its viewport).
+      id: typeof msg.bufferId === 'string' ? msg.bufferId : undefined,
       point: msg.point,
       sendIntent,
     });

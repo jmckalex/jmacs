@@ -16,6 +16,9 @@ import { createClientBuffer } from './client-buffer.js';
 test('exposes the full read surface view.js reads', () => {
   const b = createClientBuffer({ initialText: 'hello\nworld', name: 'a.js' });
   assert.equal(b.name, 'a.js');
+  // The wire buffer id (per-buffer scroll memory keys by it): absent → null.
+  assert.equal(b.id, null);
+  assert.equal(createClientBuffer({ id: 'buf-7' }).id, 'buf-7');
   assert.equal(b.text, 'hello\nworld');
   assert.equal(b.length, 11);
   assert.equal(b.lineCount, 2);

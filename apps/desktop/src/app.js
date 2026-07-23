@@ -2984,6 +2984,9 @@ if (window.host && window.host.serverMode) {
       buf = createClientBuffer({
         initialText: text,
         name: wire.name || '*buffer*',
+        // Same id as the live mirror when this buffer is focused, so the
+        // static⇄live swap keeps one scroll-memory entry per buffer.
+        id: typeof wire.bufferId === 'string' ? wire.bufferId : undefined,
         point: Number.isFinite(wire.point) ? wire.point : 0,
         sendIntent: () => {}, // display-only; edits route through the server
       });

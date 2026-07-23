@@ -62,6 +62,10 @@ import { normaliseCursors, overlaysToDecorations } from './protocol.js';
  * @param {string} [options.name='mirror'] - The buffer name (the
  *   renderer reads this to pick the tree-sitter language — so a real file
  *   name like `app.js` highlights as JavaScript).
+ * @param {string} [options.id] - The server's buffer id. Mirrors are
+ *   REBUILT on every buffer switch (a fresh SNAPSHOT → a fresh mirror), so
+ *   this is the identity that survives a round trip; the renderer's
+ *   per-buffer scroll memory keys by it.
  * @param {number} [options.point=0] - The initial cursor offset.
  * @param {IntentSink} [options.sendIntent] - Where to route edit/motion
  *   intents (the wire up to the server). Called as `sendIntent(intent,
@@ -79,6 +83,7 @@ import { normaliseCursors, overlaysToDecorations } from './protocol.js';
 export function createClientBuffer(options = {}) {
   const storage = createStorage(options.initialText ?? '');
   let name = options.name ?? 'mirror';
+  const id = typeof options.id === 'string' && options.id ? options.id : null;
   const sendIntent = typeof options.sendIntent === 'function'
     ? options.sendIntent
     : () => {};
@@ -343,6 +348,9 @@ export function createClientBuffer(options = {}) {
     // --- identity / read surface (delegated to L1 verbatim) ------------
     get name() { return name; },
     set name(v) { name = String(v); },
+    /** The server's buffer id — the identity that survives a mirror
+     *  rebuild (per-buffer scroll memory keys by it). Null when unknown. */
+    get id() { return id; },
 
     get text() { return storage.toString(); },
     toString() { return storage.toString(); },
