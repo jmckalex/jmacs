@@ -28,10 +28,13 @@ The major mode is what makes a `.lisp` buffer feel like Lisp and a
   mode's buffers: `:indent-tabs?` and `:tab-width` beat
   `*indent-tabs-mode*` and `*tab-width*` (`makefile-mode` pins
   `:indent-tabs?` on, because a Makefile recipe must start with a real
-  tab), `:fill-column` beats `*fill-column*`, and a
+  tab), `:fill-column` beats `*fill-column*`, a
   `:fill-indent-function` tells auto-fill how to indent continuation
   lines (`jmarkdown-mode` supplies one so wrapped list items stay
-  aligned).
+  aligned), and `:indent-guides #f` turns off the vertical indent-guide
+  lines (the Markdown modes do — their three-space list indents don't
+  sit on the tab-width grid; cmd(toggle-indent-guides) overrides per
+  buffer).
 
 The shipped major modes include `fundamental-mode` (the fallback, with
 no special behaviour), `lisp-mode`, `markdown-mode`, `jmarkdown-mode`
