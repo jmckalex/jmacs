@@ -2984,6 +2984,9 @@ if (window.host && window.host.serverMode) {
       buf = createClientBuffer({
         initialText: text,
         name: wire.name || '*buffer*',
+        // Same id as the live mirror when this buffer is focused, so the
+        // static⇄live swap keeps one scroll-memory entry per buffer.
+        id: typeof wire.bufferId === 'string' ? wire.bufferId : undefined,
         point: Number.isFinite(wire.point) ? wire.point : 0,
         sendIntent: () => {}, // display-only; edits route through the server
       });
@@ -4461,6 +4464,18 @@ function resolvedMathPreviewActive(buffer, mode) {
   return isMathPreviewActive(buffer, mode);
 }
 
+/** Whether the indent-guide lines are on for BUFFER. The server pushes the
+ *  effective value onto the mirror (`buffer.indentGuidesActive` — the
+ *  buffer's toggle-indent-guides override, else the major mode's
+ *  :indent-guides property). Default on when the flag is absent (a bare L2
+ *  buffer in tests / a fresh mirror before its first VIEW). */
+function resolvedIndentGuidesActive(buffer) {
+  if (buffer && typeof buffer.indentGuidesActive === 'boolean') {
+    return buffer.indentGuidesActive;
+  }
+  return true;
+}
+
 /** The math-preview replaced ranges for LEAF's view this render, or an
  *  empty list when the leaf's buffer does not have math-preview-mode on,
  *  its major mode has no math provider, or the feature isn't available.
@@ -4808,6 +4823,14 @@ function ensureEditorViewForLeaf(leaf) {
       const v = peelTabline(instance._boundLeaf.view);
       const buf = v && !isTablineView(v) ? v.buffer : null;
       return resolvedMajorModeName(buf);
+    },
+    // Indent guides per buffer: the server pushes the effective value
+    // (toggle-indent-guides override, else the mode's :indent-guides
+    // property) onto the mirror; read fresh each render like the mode name.
+    getShowIndentGuides: () => {
+      const v = peelTabline(instance._boundLeaf.view);
+      const buf = v && !isTablineView(v) ? v.buffer : null;
+      return resolvedIndentGuidesActive(buf);
     },
     getOverrideGeneration: () => highlightOverrideStore.generation(),
     onRenderError: (error) => reportRendererFault('render error', error),
@@ -7104,6 +7127,7 @@ function ensureTabElement(state, child) {
       // (major-mode name + active flag) the server pushed onto the mirror.
       getReplacedRanges: () => getMathReplacedRanges({ id: child, view: child, element: el }),
       getMajorModeName: () => resolvedMajorModeName(child.buffer ?? null),
+      getShowIndentGuides: () => resolvedIndentGuidesActive(child.buffer ?? null),
       getOverrideGeneration: () => highlightOverrideStore.generation(),
       onRenderError: (error) => reportRendererFault('render error', error),
     });

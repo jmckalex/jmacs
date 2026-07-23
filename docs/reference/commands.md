@@ -674,6 +674,37 @@ character. Use `tabify-buffer` to retab a spaces-indented file after
 turning `*indent-tabs-mode*` on. Unbound; reach them via `M-x`.
 :::
 
+:::function{name="toggle-indent-guides" path="reference/commands/toggle-indent-guides.html"}
+#### `toggle-indent-guides`
+`(toggle-indent-guides)`
+
+Toggle the vertical indent-guide lines in the current buffer, echoing
+the new state. Run with `M-x`. The toggle is a sticky per-buffer
+override; where no toggle has been made, the major mode's
+`:indent-guides` property decides — guides are on unless the mode turns
+them off, which `markdown-mode` and `jmarkdown-mode` do (their
+three-space list indents don't sit on the tab-width grid, so the lines
+mislead more than they help).
+:::
+
+:::function{name="indent-guides-on" aliases="indent-guides-off" path="reference/commands/indent-guides-on.html"}
+#### `indent-guides-on` / `indent-guides-off`
+`(indent-guides-on)` / `(indent-guides-off)`
+
+Force the current buffer's indent guides on / off — the same sticky
+override cmd(toggle-indent-guides) sets, as plain procedures for mode
+hooks. To turn guides off for a whole mode from `init.lisp`:
+
+```lisp
+(add-hook python-mode (lambda () (indent-guides-off)))
+```
+
+(For your own mode definitions, prefer putting `:indent-guides #f` on
+the mode map — the hook form re-asserts the override on every mode
+re-derive, so a manual cmd(toggle-indent-guides) won't stick in hooked
+buffers.)
+:::
+
 ### Auto-fill
 
 Defined in `auto-fill.lisp`. A wrap-as-you-type minor mode: with it on,

@@ -263,6 +263,20 @@ export function createBufferPrimitives(session) {
       buffer().minorModes = args[0];
       return NIL;
     },
+    // --- indent guides — a per-buffer display override ------------------
+    // The slot is tri-state: unset (nil — follow the major mode's
+    // :indent-guides property, default on), #t (force on), #f (force
+    // off). `indent-guides-active?` (modes.lisp) resolves the effective
+    // value; the spine pushes it to each client with the view-state.
+    'buffer-indent-guides': () => {
+      const buf = currentBuffer();
+      if (!buf || typeof buf.indentGuides !== 'boolean') return NIL;
+      return buf.indentGuides;
+    },
+    'set-indent-guides!': (args) => {
+      buffer().indentGuides = typeof args[0] === 'boolean' ? args[0] : null;
+      return NIL;
+    },
     'word-forward-offset': () => forwardWord(buffer().text, buffer().point),
     'word-backward-offset': () => backwardWord(buffer().text, buffer().point),
     'sentence-forward-offset': () =>

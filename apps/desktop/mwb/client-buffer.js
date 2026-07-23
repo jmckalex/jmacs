@@ -62,6 +62,10 @@ import { normaliseCursors, overlaysToDecorations } from './protocol.js';
  * @param {string} [options.name='mirror'] - The buffer name (the
  *   renderer reads this to pick the tree-sitter language — so a real file
  *   name like `app.js` highlights as JavaScript).
+ * @param {string} [options.id] - The server's buffer id. Mirrors are
+ *   REBUILT on every buffer switch (a fresh SNAPSHOT → a fresh mirror), so
+ *   this is the identity that survives a round trip; the renderer's
+ *   per-buffer scroll memory keys by it.
  * @param {number} [options.point=0] - The initial cursor offset.
  * @param {IntentSink} [options.sendIntent] - Where to route edit/motion
  *   intents (the wire up to the server). Called as `sendIntent(intent,
@@ -79,6 +83,7 @@ import { normaliseCursors, overlaysToDecorations } from './protocol.js';
 export function createClientBuffer(options = {}) {
   const storage = createStorage(options.initialText ?? '');
   let name = options.name ?? 'mirror';
+  const id = typeof options.id === 'string' && options.id ? options.id : null;
   const sendIntent = typeof options.sendIntent === 'function'
     ? options.sendIntent
     : () => {};
@@ -114,6 +119,11 @@ export function createClientBuffer(options = {}) {
   // whose extension was re-registered to another mode (.md -> jmarkdown-mode) is
   // highlighted by the mode, not its filename. '' = fall back to the filename.
   let highlightLang = '';
+  // Whether the renderer should draw the indent-guide lines for this buffer
+  // (the buffer's toggle override, else the mode's :indent-guides property).
+  // Defaults ON — guides are the norm; a fresh mirror before its first VIEW
+  // draws them, and the first VIEW corrects a Markdown buffer within a frame.
+  let indentGuidesActive = true;
 
   /** @type {Set<(event: BufferEvent) => void>} */
   const listeners = new Set();
@@ -265,21 +275,25 @@ export function createClientBuffer(options = {}) {
    * mode toggle that moved no cursor can still force one render.
    *
    * @param {{ majorModeName?: string, mathPreviewActive?: boolean,
-   *   highlightLang?: string }} v
-   * @returns {boolean} Whether majorModeName, mathPreviewActive or highlightLang
-   *   changed (a highlightLang change must force a re-render so the editor
-   *   re-highlights with the mode's grammar).
+   *   highlightLang?: string, indentGuidesActive?: boolean }} v
+   * @returns {boolean} Whether majorModeName, mathPreviewActive, highlightLang
+   *   or indentGuidesActive changed (a highlightLang change must force a
+   *   re-render so the editor re-highlights with the mode's grammar; an
+   *   indent-guides toggle must force one so the guide layer appears/clears).
    */
   function applyViewMode(v) {
     const nextName = typeof v.majorModeName === 'string' ? v.majorModeName : '';
     const nextActive = v.mathPreviewActive === true;
     const nextHighlight = typeof v.highlightLang === 'string' ? v.highlightLang : '';
+    const nextGuides = v.indentGuidesActive !== false;
     const changed = nextName !== majorModeName
       || nextActive !== mathPreviewActive
-      || nextHighlight !== highlightLang;
+      || nextHighlight !== highlightLang
+      || nextGuides !== indentGuidesActive;
     majorModeName = nextName;
     mathPreviewActive = nextActive;
     highlightLang = nextHighlight;
+    indentGuidesActive = nextGuides;
     return changed;
   }
 
@@ -334,6 +348,9 @@ export function createClientBuffer(options = {}) {
     // --- identity / read surface (delegated to L1 verbatim) ------------
     get name() { return name; },
     set name(v) { name = String(v); },
+    /** The server's buffer id — the identity that survives a mirror
+     *  rebuild (per-buffer scroll memory keys by it). Null when unknown. */
+    get id() { return id; },
 
     get text() { return storage.toString(); },
     toString() { return storage.toString(); },
@@ -381,6 +398,9 @@ export function createClientBuffer(options = {}) {
     /** The major mode's highlight grammar tag (e.g. 'jmarkdown'), server-pushed;
      *  '' before the first VIEW. The editor view highlights by this when set. */
     get highlightLang() { return highlightLang; },
+    /** Whether the renderer should draw the indent-guide lines for this
+     *  buffer (server-pushed; true before the first VIEW). */
+    get indentGuidesActive() { return indentGuidesActive; },
 
     // --- mutators (intent-emitting) ------------------------------------
     // These are what `view.js` (and the IME path) call. Instead of

@@ -364,6 +364,7 @@ export function createServerViewClient({
       getCursors: () => (mirror ? mirror.cursors : [{ point: 0, mark: null }]),
       getDecorations: () => (mirror ? mirror.decorations : []),
       getMajorModeName: () => null,
+      getShowIndentGuides: () => (mirror ? mirror.indentGuidesActive : true),
       onRenderError: (e) => log(`[godot-g2] render error: ${e && e.message}`),
     };
   }
@@ -472,6 +473,10 @@ export function createServerViewClient({
     mirror = createClientBuffer({
       initialText: msg.text,
       name: msg.name || 'server-buffer',
+      // The wire buffer id: the identity that survives this rebuild (the
+      // renderer's per-buffer scroll memory keys by it, so a tab switched
+      // away and back keeps its viewport).
+      id: typeof msg.bufferId === 'string' ? msg.bufferId : undefined,
       point: msg.point,
       sendIntent,
     });

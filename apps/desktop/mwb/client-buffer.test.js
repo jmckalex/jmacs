@@ -16,6 +16,9 @@ import { createClientBuffer } from './client-buffer.js';
 test('exposes the full read surface view.js reads', () => {
   const b = createClientBuffer({ initialText: 'hello\nworld', name: 'a.js' });
   assert.equal(b.name, 'a.js');
+  // The wire buffer id (per-buffer scroll memory keys by it): absent → null.
+  assert.equal(b.id, null);
+  assert.equal(createClientBuffer({ id: 'buf-7' }).id, 'buf-7');
   assert.equal(b.text, 'hello\nworld');
   assert.equal(b.length, 11);
   assert.equal(b.lineCount, 2);
@@ -81,6 +84,31 @@ test('applyViewMode tracks the highlight grammar; a grammar change forces a re-r
   // A missing / garbled field reads as '' (fall back to the filename downstream).
   assert.equal(b.applyViewMode({ majorModeName: 'JMarkdown' }), true);
   assert.equal(b.highlightLang, '');
+});
+
+test('applyViewMode tracks the indent-guides flag; a toggle forces a re-render', () => {
+  const b = createClientBuffer({ initialText: '- item', name: 'note.md' });
+  // Guides default ON before the first VIEW (they are the norm; the first
+  // VIEW corrects a Markdown buffer within a frame).
+  assert.equal(b.indentGuidesActive, true);
+
+  // The server pushes the effective value (mode :indent-guides / the
+  // buffer's toggle override). Only `false` turns them off; adopting it
+  // reports a change so the guide layer clears without a cursor move.
+  assert.equal(b.applyViewMode({ majorModeName: 'Markdown', indentGuidesActive: false }), true);
+  assert.equal(b.indentGuidesActive, false);
+
+  // Identical state: no change.
+  assert.equal(b.applyViewMode({ majorModeName: 'Markdown', indentGuidesActive: false }), false);
+
+  // A guides change ALONE (same mode/preview/grammar) still counts as changed.
+  assert.equal(b.applyViewMode({ majorModeName: 'Markdown', indentGuidesActive: true }), true);
+  assert.equal(b.indentGuidesActive, true);
+
+  // A missing field reads as on (the default), and going off→absent changes.
+  assert.equal(b.applyViewMode({ majorModeName: 'Markdown', indentGuidesActive: false }), true);
+  assert.equal(b.applyViewMode({ majorModeName: 'Markdown' }), true);
+  assert.equal(b.indentGuidesActive, true);
 });
 
 // --- cursor as window-state -------------------------------------------
