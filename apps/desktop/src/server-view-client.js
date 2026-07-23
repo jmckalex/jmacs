@@ -364,6 +364,7 @@ export function createServerViewClient({
       getCursors: () => (mirror ? mirror.cursors : [{ point: 0, mark: null }]),
       getDecorations: () => (mirror ? mirror.decorations : []),
       getMajorModeName: () => null,
+      getShowIndentGuides: () => (mirror ? mirror.indentGuidesActive : true),
       onRenderError: (e) => log(`[godot-g2] render error: ${e && e.message}`),
     };
   }

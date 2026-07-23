@@ -115,6 +115,11 @@ const STICKY_LOOKAHEAD = 64;
  *   the cursor / selection rects in lockstep with the CSS tab-size
  *   variable. Defaults to `() => 4` (matches the CSS fallback and
  *   the `*tab-width*` defcustom default).
+ * @param {() => boolean} [options.getShowIndentGuides] - Whether to draw
+ *   the vertical indent-guide lines. Read on every render, so a
+ *   toggle-indent-guides command (or a mode default — the Markdown modes
+ *   turn them off) takes effect on the next frame. Defaults to
+ *   `() => true`.
  * @param {() => import('./projection.js').DecorationRange[]}
  *   [options.getDecorations] - Face-tagged offset ranges to paint as
  *   styled boxes behind the text (e.g. snippet fields + mirrors). Read
@@ -157,6 +162,10 @@ export function createEditorView(buffer, container, options = {}) {
     typeof options.getTabWidth === 'function'
       ? options.getTabWidth
       : () => 4;
+  const getShowIndentGuides =
+    typeof options.getShowIndentGuides === 'function'
+      ? options.getShowIndentGuides
+      : () => true;
   // The highlighter grammar for the active buffer. The MAJOR MODE is the source
   // of truth (server-pushed `highlightLang`), so a file whose extension was
   // re-registered to another mode — e.g. `.md` in jmarkdown-mode — highlights by
@@ -1172,18 +1181,23 @@ export function createEditorView(buffer, container, options = {}) {
 
     // Indent guides — a thin vertical line behind the text at each
     // indentation level it crosses, over the visible window. Positioned
-    // in the shared ch/lh space, so they scroll with the text.
+    // in the shared ch/lh space, so they scroll with the text. Skipped
+    // entirely (and the layer cleared) when the host turns them off for
+    // this buffer — toggle-indent-guides, or a mode whose indents don't
+    // sit on the tab-width grid (the Markdown modes).
     const guideEls = [];
-    for (const g of computeIndentGuides(visibleIndents, tabWidth)) {
-      const guide = el('div', 'editor-indent-guide');
-      // Rainbow by nesting level (col / tabWidth), cycling every 6 — the
-      // colours live in CSS so the palette stays themeable.
-      const level = Math.max(1, Math.round(g.col / tabWidth));
-      guide.classList.add(`editor-indent-guide-c${(level - 1) % 6}`);
-      guide.style.left = `${g.col}ch`;
-      guide.style.top = `calc(${firstRow + g.start} * 1lh)`;
-      guide.style.height = `calc(${g.end - g.start + 1} * 1lh)`;
-      guideEls.push(guide);
+    if (getShowIndentGuides()) {
+      for (const g of computeIndentGuides(visibleIndents, tabWidth)) {
+        const guide = el('div', 'editor-indent-guide');
+        // Rainbow by nesting level (col / tabWidth), cycling every 6 — the
+        // colours live in CSS so the palette stays themeable.
+        const level = Math.max(1, Math.round(g.col / tabWidth));
+        guide.classList.add(`editor-indent-guide-c${(level - 1) % 6}`);
+        guide.style.left = `${g.col}ch`;
+        guide.style.top = `calc(${firstRow + g.start} * 1lh)`;
+        guide.style.height = `calc(${g.end - g.start + 1} * 1lh)`;
+        guideEls.push(guide);
+      }
     }
     indentGuideLayer.replaceChildren(...guideEls);
     // Pills first, then chevrons on top (a chevron sits at the top of
